@@ -109,6 +109,11 @@ func TestWorkItemsDependenciesAndBoard(t *testing.T) {
 	if len(detail["blockers"].([]any)) != 1 {
 		t.Fatalf("blockers = %v; want 1", detail["blockers"])
 	}
+	// The edge names the other item, so a blockers panel needs no extra reads.
+	blockerRef := detail["blockers"].([]any)[0].(map[string]any)["other"].(map[string]any)
+	if blockerRef["title"] != "Blocker" || blockerRef["id"] != blocker["id"] {
+		t.Fatalf("edge did not carry the related item: %+v", blockerRef)
+	}
 
 	// A cycle is a 409 with a specific code, not a 500 and not a silent drop.
 	cycle := o.do("POST", "/api/items/"+blocker["id"].(string)+"/dependencies",

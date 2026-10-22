@@ -34,18 +34,18 @@ const (
 // (title, description) is intentionally absent, because the base score must not
 // be steerable by what an item says about itself.
 type Item struct {
-	ID       string
-	Number   int64
-	Status   string
-	Priority *string // effective priority, after inheritance
-	Labels   []string
-	Unblocks int  // open items that wait on this one, transitively
-	OpenPR   *bool // nil when there is no PR signal at all
-	CreatedAt time.Time
-	Paused    bool
-	Blocked   bool
-	IsEpic    bool
-	PinnedAt  *time.Time
+	ID          string
+	Number      int64
+	Status      string
+	Priority    *string // effective priority, after inheritance
+	Labels      []string
+	Unblocks    int   // open items that wait on this one, transitively
+	OpenPR      *bool // nil when there is no PR signal at all
+	CreatedAt   time.Time
+	Paused      bool
+	Blocked     bool
+	IsEpic      bool
+	PinnedAt    *time.Time
 	PauseReason string
 }
 

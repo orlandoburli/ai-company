@@ -561,6 +561,19 @@ type Dependency struct {
 	BlockedByID string    `json:"blocked_by_id"`
 	Kind        string    `json:"kind"`
 	CreatedAt   time.Time `json:"created_at"`
+
+	// Other is the item at the far end of the edge: the blocker for a
+	// dependent's edge, the dependent for a blocker's. Included so a UI can name
+	// what blocks what without a request per edge.
+	Other ItemRef `json:"other"`
+}
+
+// ItemRef is the minimum an edge needs to be readable.
+type ItemRef struct {
+	ID     string `json:"id"`
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // CreateDependency adds an edge, rejecting self-edges and cycles in SQL so the
@@ -574,6 +587,11 @@ func (s *Store) CreateDependency(ctx context.Context, sc tenancy.Scope, itemID, 
 			VALUES ($1, $2, $3, $4, 'blocked_by', nullif($5, ''))
 			RETURNING created_at`,
 			d.ID, sc.TenantID, itemID, blockedByID, actorUserID).Scan(&d.CreatedAt); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `
+			SELECT id, number, title, status FROM items WHERE id = $1`, blockedByID).
+			Scan(&d.Other.ID, &d.Other.Number, &d.Other.Title, &d.Other.Status); err != nil {
 			return err
 		}
 		return recordActivity(ctx, tx, sc, itemID, actorUserID, "item.dependency_added", nil, d)
@@ -605,17 +623,21 @@ func (s *Store) Dependencies(ctx context.Context, sc tenancy.Scope, itemID strin
 	blockers, dependents = []Dependency{}, []Dependency{}
 	err = s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT id, from_item_id, to_item_id, kind, created_at
-			  FROM item_dependencies
-			 WHERE from_item_id = $1 OR to_item_id = $1
-			 ORDER BY created_at`, itemID)
+			SELECT d.id, d.from_item_id, d.to_item_id, d.kind, d.created_at,
+			       o.id, o.number, o.title, o.status
+			  FROM item_dependencies d
+			  JOIN items o
+			    ON o.id = CASE WHEN d.from_item_id = $1 THEN d.to_item_id ELSE d.from_item_id END
+			 WHERE d.from_item_id = $1 OR d.to_item_id = $1
+			 ORDER BY d.created_at`, itemID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var d Dependency
-			if err := rows.Scan(&d.ID, &d.ItemID, &d.BlockedByID, &d.Kind, &d.CreatedAt); err != nil {
+			if err := rows.Scan(&d.ID, &d.ItemID, &d.BlockedByID, &d.Kind, &d.CreatedAt,
+				&d.Other.ID, &d.Other.Number, &d.Other.Title, &d.Other.Status); err != nil {
 				return err
 			}
 			if d.ItemID == itemID {

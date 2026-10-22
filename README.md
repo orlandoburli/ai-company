@@ -59,6 +59,7 @@ See `docs/mvp-design.md` §13 for the full concept mapping.
 
 - [docs/requirements.md](docs/requirements.md) — full product requirements
 - [docs/mvp-design.md](docs/mvp-design.md) — MVP architecture, data model, screens and milestones
+- [docs/implementation-notes.md](docs/implementation-notes.md) — what is built, current deviations and known gaps
 
 ## Development
 
