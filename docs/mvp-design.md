@@ -1120,7 +1120,7 @@ cmd.WaitDelay = 10 * time.Second                     // then SIGKILL the whole g
   kills healthy Node and Go processes at a few hundred MB. Sample RSS instead
   (`ps`/`libproc`) and kill the group on a sustained breach. `RLIMIT_NPROC` is
   **per-UID on macOS, not per-tree**, and it counts every process the operator
-  already owns: 480 concurrent processes were measured on this machine (browser,
+  already owns: 545 concurrent processes were measured on this machine (browser,
   IDE, agent CLIs), so any cap near a few hundred is immediately fatal and would
   present as a broken shim rather than a limit. Treat it as a forkbomb backstop
   only, set it far above the machine's idle count, and never as a per-run quota
@@ -1143,6 +1143,23 @@ cmd.WaitDelay = 10 * time.Second                     // then SIGKILL the whole g
 (Seatbelt) is the only kernel-enforced filesystem control on macOS without a VM;
 the profile is applied per spawn and **inherited across fork/exec**, so
 grandchildren stay contained.
+
+**Accepted risk — broad reads, narrow writes.** The working profile uses a bare
+`(allow file-read*)` because a *path-filtered* `file-read*` aborts the process on
+this platform rather than denying it (measured; see
+`internal/spike/sandbox_test.go::TestPathFilteredFileReadAborts`). Containment is
+therefore enforced by narrowing **writes** to the run root and worktree, plus
+`(deny mach-lookup)` and loopback-only network. Consequence: **an agent can read
+any file the operator's UID can read** — `~/.gitconfig`, `~/.netrc`,
+`~/.config/gh/hosts.yml`, `~/.claude.json`. It cannot write outside its worktree,
+cannot resolve a hostname, and cannot act outward without a checkpoint. The
+credential story rests on the other chokepoints (proxy-injected model key,
+`--bare` never reading OAuth/Keychain, server-held GitHub App tokens, denied
+mach-lookup), not on read confinement. If a future macOS or `sandbox-exec`
+accepts path-filtered reads, tighten this back down — the spike test reports it.
+Two SBPL operations are unavailable here and must not appear in the profile:
+`file-read-metadata*` and `sandbox`, both of which fail as unbound variables
+rather than being ignored.
 
 ```scheme
 (version 1)
