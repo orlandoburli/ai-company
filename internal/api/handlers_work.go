@@ -153,6 +153,15 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	if p := strings.TrimSpace(req.ParentID); p != "" {
 		parentID = &p
 	}
+	// Depth bound (docs/mvp-design.md): six item levels, root counting as one.
+	// Checked before the write so the client sees the 422; the store keeps its
+	// own walk guard as a backstop.
+	if parentID != nil {
+		if err := s.work.CheckItemDepth(r.Context(), sc, "", *parentID); err != nil {
+			s.writeWorkError(w, err)
+			return
+		}
+	}
 	var due *time.Time
 	if d := strings.TrimSpace(req.DueDate); d != "" {
 		t, err := time.Parse("2006-01-02", d)
@@ -251,6 +260,17 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 	sc, ok := s.scope(w, r)
 	if !ok {
 		return
+	}
+	// A non-empty parent_id re-parents the item. The depth rule applies to the
+	// whole moving subtree: its deepest descendant, not just the item, must
+	// stay within six levels.
+	if req.ParentID != nil {
+		if parent := strings.TrimSpace(*req.ParentID); parent != "" {
+			if err := s.work.CheckItemDepth(r.Context(), sc, r.PathValue("id"), parent); err != nil {
+				s.writeWorkError(w, err)
+				return
+			}
+		}
 	}
 	it, err := s.work.UpdateItem(r.Context(), sc, r.PathValue("id"), work.ItemPatch{
 		Title:          req.Title,
@@ -397,10 +417,16 @@ func (s *Server) writeWorkError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "dependency_cycle", "That dependency would create a cycle.")
 	case errors.Is(err, work.ErrSelfDependency):
 		writeError(w, http.StatusConflict, "self_dependency", "An item cannot depend on itself.")
+	case errors.Is(err, work.ErrParentCycle):
+		writeError(w, http.StatusUnprocessableEntity, "parent_cycle",
+			"That move would make the tree circular: an item cannot be moved under its own descendant.")
 	case errors.Is(err, work.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict", "That already exists.")
 	case errors.Is(err, work.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, work.ErrTooDeep):
+		writeError(w, http.StatusUnprocessableEntity, "tree_too_deep",
+			"The item tree is limited to 6 levels (the root counts as 1), and this change would push a descendant past that.")
 	case errors.Is(err, tenancy.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden", "Your role does not allow this action.")
 	default:

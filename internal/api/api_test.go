@@ -25,6 +25,13 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessWith(t, api.WithSecureCookies(false))
+}
+
+// newHarnessWith builds the harness with extra server options, which is how
+// rate-limit tests use small windows instead of the production defaults.
+func newHarnessWith(t *testing.T, opts ...api.Option) *harness {
+	t.Helper()
 	db := pgtest.FreshDB(t)
 
 	// The server runs as the application role, exactly as deployed. Assertions
@@ -41,7 +48,7 @@ func newHarness(t *testing.T) *harness {
 	// A discarded logger keeps failing-test output readable; the access log is
 	// asserted on separately in production, not here.
 	h := api.New(app, slog.New(slog.NewTextHandler(io.Discard, nil)),
-		api.WithSecureCookies(false)).Handler()
+		append([]api.Option{api.WithSecureCookies(false)}, opts...)...).Handler()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 

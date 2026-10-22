@@ -35,6 +35,16 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	id, ok := tenancy.IdentityFrom(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in to continue.")
+		return
+	}
+	// Authenticated but still abuse-prone: a compromised or careless admin
+	// account is one person's quota, keyed on their user id.
+	if !s.rateAllow(w, BucketCreateInvite, id.UserID) {
+		return
+	}
 	hash, ok := tenancy.SessionHashFrom(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in to continue.")
@@ -155,6 +165,12 @@ func (s *Server) handlePeekInvite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAcceptInvite(w http.ResponseWriter, r *http.Request) {
 	var req acceptInviteRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// Unauthenticated intake keyed on the client IP: acceptance both spends a
+	// one-time token and creates an account, so token grinding and signup
+	// spam are the same abuse here.
+	if !s.rateAllow(w, BucketAcceptInvite, clientKey(r)) {
 		return
 	}
 	token := strings.TrimSpace(req.Token)

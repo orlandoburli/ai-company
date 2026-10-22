@@ -82,6 +82,44 @@ board and the queue have something real to render.
 
 Default sign-in: `owner@acme.dev` / `correct-horse-battery-staple`.
 
+### Smoke check
+
+`make smoke` end-to-end checks a **running, seeded** server: `/healthz`,
+login (session cookie in a temporary jar), `/api/queue` with a pinned item
+first and no paused item, a non-empty `/api/tree` and at least one product in
+`/api/products`. Assertions use `python3` (no `jq` dependency) and the cookie
+jar is removed on exit.
+
+```sh
+make dev                # or: make api   (run in one terminal, then:)
+make smoke              # hits http://localhost:8080 by default
+AIC_URL=http://localhost:18081 make smoke   # any other instance
+```
+
+| Variable | Default |
+| --- | --- |
+| `AIC_URL` | `http://localhost:8080` |
+| `AIC_EMAIL` | `owner@acme.dev` (the seeded owner) |
+| `AIC_PASSWORD` | `correct-horse-battery-staple` |
+
+### Rate limits
+
+`POST /api/auth/login`, `POST /api/auth/accept-invite` and `POST /api/invites`
+are rate limited in memory, per process:
+
+| Endpoint | Key | Default limit |
+| --- | --- | --- |
+| `POST /api/auth/login` | client IP + lowercased email | 10 failed attempts / 5 min |
+| `POST /api/auth/accept-invite` | client IP | 20 attempts / hour |
+| `POST /api/invites` | acting user id | 30 invites / hour |
+
+Exhausting a bucket answers `429 rate_limited` with a `Retry-After` header in
+seconds; a successful login clears its own counter so a typo storm does not
+lock the legitimate user out. Keys use the TCP peer address (`r.RemoteAddr`),
+never `X-Forwarded-For` — that header is client-controlled without a trusted
+proxy. Limits are per-process and reset on restart; the MVP runs one process
+(see `docs/mvp-design.md` §10 and `docs/implementation-notes.md`).
+
 | Target | What it does |
 | --- | --- |
 | `make dev` | `migrate`, `seed`, then API and web together |
@@ -89,7 +127,8 @@ Default sign-in: `owner@acme.dev` / `correct-horse-battery-staple`.
 | `make seed` | development tenant + backlog as `DATABASE_URL` |
 | `make api` | API only |
 | `make web-install` / `make web` | web dependencies / Next.js dev server |
-| `make test` | `go test -count=1 ./...` against `AIC_TEST_DSN` |
+| `make test` | `go test -count=1` over `cmd` and `internal` against `AIC_TEST_DSN` |
+| `make smoke` | end-to-end check against a running, seeded server |
 | `make build`, `make fmt`, `make vet` | build, format, vet |
 
 | Variable | Default |
@@ -161,7 +200,7 @@ curl -b cookies.txt localhost:8080/api/auth/me
 | Route | Purpose |
 | --- | --- |
 | `POST /api/auth/register` | create tenant + owner, returns a session |
-| `POST /api/auth/login` | `tenant_id` optional when the user has one membership |
+| `POST /api/auth/login` | `tenant_id` optional when the user has one membership; rate limited on repeated failures (`429 rate_limited`) |
 | `POST /api/auth/logout` | revokes the session server-side |
 | `GET /api/auth/me` | current user, active tenant, available tenants |
 | `POST /api/auth/switch-tenant` | rotates the session into another membership |

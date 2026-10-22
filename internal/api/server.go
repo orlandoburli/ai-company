@@ -31,6 +31,7 @@ type Server struct {
 	tenancy      *tenancy.Store
 	work         *work.Store
 	log          *slog.Logger
+	limits       *rateLimiter
 	secureCookie bool
 	sessionTTL   time.Duration
 }
@@ -56,6 +57,7 @@ func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
 		tenancy:    tenancy.NewStore(db),
 		work:       work.NewStore(db),
 		log:        log,
+		limits:     newRateLimiter(defaultRateLimits()),
 		sessionTTL: 30 * 24 * time.Hour,
 	}
 	for _, o := range opts {

@@ -65,3 +65,14 @@ func newOwnerHarness(t *testing.T) ownerHarness {
 	}
 	return ownerHarness{harness: h, ownerCookie: res.cookie}
 }
+
+// newOwnerHarnessFor wraps an existing harness (one built with custom options,
+// e.g. rate-limit overrides) with a registered owner.
+func newOwnerHarnessFor(t *testing.T, h *harness) ownerHarness {
+	t.Helper()
+	res := h.register("owner@example.com", goodPassword, "Acme", "acme")
+	if res.status != http.StatusCreated {
+		t.Fatalf("register: %d %s", res.status, res.body)
+	}
+	return ownerHarness{harness: h, ownerCookie: res.cookie}
+}

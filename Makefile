@@ -10,7 +10,7 @@ ADDR         ?= :8080
 SEED_FLAGS   ?=
 WEB_DIR      := web
 
-.PHONY: dev migrate seed api web web-install test build fmt vet
+.PHONY: dev migrate seed api smoke web web-install test build fmt vet
 
 # Migrate, seed and run API + web together. The seed is idempotent, so this is
 # safe to run every time.
@@ -34,6 +34,11 @@ seed:
 
 api:
 	@DATABASE_URL="$(DATABASE_URL)" AIC_ADDR="$(ADDR)" go run ./cmd/server
+
+# End-to-end sanity check against a running, seeded server. Defaults match the
+# tenant cmd/seed creates; AIC_URL / AIC_EMAIL / AIC_PASSWORD override them.
+smoke:
+	@./scripts/smoke.sh
 
 web-install:
 	cd $(WEB_DIR) && npm install

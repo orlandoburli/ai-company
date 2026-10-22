@@ -36,13 +36,15 @@ var (
 	ErrCycle          = errors.New("work: dependency would create a cycle")
 	ErrSelfDependency = errors.New("work: an item cannot depend on itself")
 	ErrInvalid        = errors.New("work: invalid value")
+	ErrParentCycle    = errors.New("work: parent link would make the tree circular")
 )
 
-// SQLSTATEs raised by the schema for dependency rules.
+// SQLSTATEs raised by the schema for tree and log rules.
 const (
 	codeDependencyCycle = "AIC01"
 	codeSelfDependency  = "AIC02"
 	codeAppendOnly      = "AIC03"
+	codeTreeCycle       = "AIC04"
 )
 
 func newID() string { return strings.ToUpper(uuid.NewString()) }
@@ -743,6 +745,8 @@ func mapPGError(err error) error {
 			return ErrCycle
 		case codeSelfDependency:
 			return ErrSelfDependency
+		case codeTreeCycle:
+			return ErrParentCycle
 		case codeAppendOnly:
 			return fmt.Errorf("work: activity log is append-only")
 		case "23505":

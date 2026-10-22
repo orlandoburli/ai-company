@@ -113,6 +113,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	email := normalizeEmail(req.Email)
 
+	// The limiter key is client IP + lowercased email (see clientKey for why
+	// the IP is r.RemoteAddr). The counter is charged only on a failed
+	// verification below, and cleared on success, so a burst of wrong
+	// passwords exhausts the bucket while a legitimate attempt that happens to
+	// follow one is not locked out.
+	key := clientKey(r) + "\x00" + email
+
 	user, err := s.tenancy.FindUserByEmail(r.Context(), email)
 	if err != nil && !errors.Is(err, tenancy.ErrNotFound) {
 		s.internal(w, "find user", err)
@@ -122,9 +129,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Always spend the same work: an unknown email takes one dummy Argon2id
 	// verification, so response time does not reveal whether the account exists.
 	if err := auth.VerifyOrDummy(user.PasswordHash, req.Password); err != nil {
+		if !s.rateAllow(w, BucketLogin, key) {
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Email or password is incorrect.")
 		return
 	}
+	s.rateClear(BucketLogin, key)
 
 	memberships, err := s.tenancy.MembershipsForUser(r.Context(), user.ID)
 	if err != nil {

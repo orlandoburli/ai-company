@@ -102,13 +102,64 @@ so nothing persists a ranking run yet and no LLM pass exists.
 - Unknown, expired, revoked and already-used tokens are indistinguishable
   (`400 invalid_invite`).
 
+## Rate limiting
+
+The abuse-prone endpoints are rate limited in memory (`internal/api/ratelimit.go`):
+
+| Bucket | Endpoint | Key | Default |
+| --- | --- | --- | --- |
+| `login` | `POST /api/auth/login` | client IP + lowercased email | 10 / 5 min |
+| `accept-invite` | `POST /api/auth/accept-invite` | client IP | 20 / hour |
+| `create-invite` | `POST /api/invites` | acting user id | 30 / hour |
+
+Behaviour:
+
+- A fixed-window counter per key; exhausting one answers
+  `429 rate_limited` ("Too many attempts. Try again later.") with a
+  `Retry-After` header in seconds.
+- The login counter is charged only on a failed verification and cleared on
+  success, so a burst of wrong passwords exhausts the bucket but a legitimate
+  attempt that follows a typo storm is never locked out.
+- Keys are `r.RemoteAddr`, not `X-Forwarded-For`: without a trusted proxy that
+  header is client-supplied and would hand an attacker unlimited keys. Wire
+  trusted-proxy parsing in at the edge if that changes.
+- Limits are **per-process** and **reset on restart**: counters live in the
+  server's memory. That is deliberate for the MVP, which runs exactly one
+  process (`docs/mvp-design.md` §10); horizontal scaling needs a shared counter
+  store instead.
+- Memory is bounded: unauthenticated keys are attacker-controlled, so the
+  counter map prunes expired entries lazily and holds at most 8192 keys, ever,
+  with no goroutine behind it.
+
+## Item tree depth
+
+The design requires depth ≤ 6 for the item tree. It is enforced at the API:
+`POST /api/items` with a `parent_id` and `PATCH /api/items/{id}` with a
+non-empty `parent_id` answer `422 tree_too_deep` when the placement would put
+any item past level six, with the root counted as one. On a move the rule
+applies to the deepest descendant of the moving subtree, not just the moved
+item, so a deep branch cannot be smuggled under a low parent. The recursive
+walks in `internal/work` keep their depth-32 loop guards as a backstop, and
+there is still no database constraint — the depth lives in queries, not DDL.
+
+Parent cycles are closed by the database instead (`0006_tree_cycles.sql`): a
+trigger on `items` and `projects` walks the new parent's ancestor chain and
+raises SQLSTATE `AIC04` when it reaches the row's own id, so a move under one's
+own descendant is rejected for every caller, not just the API's depth check.
+`internal/work` maps `AIC04` to `ErrParentCycle`, which the API surfaces as
+`422 parent_cycle` ("That move would make the tree circular.") for both items
+and projects. The trigger is not `SECURITY DEFINER` and walks only the row's
+tenant, so the check runs through row-level security like every other access.
+
+
 ## Known gaps
 
 - `item_failures`, backoff and `exhausted` (M3/M4). No failure counter exists
   yet.
 - `priority_rankings` / ranking runs, LLM ranking, stale-run fallback (M4).
 - Start-now (M4) and agent assignees (`agents` arrives in M2).
-- No rate limiting on login, invite creation or invite acceptance.
 - No email delivery; no password reset.
-- Item tree depth is bounded in code (32) but not enforced as a database
-  constraint; the design asks for depth ≤ 6 at the API level.
+- Rate limiting charges the login bucket after Argon2 verification, so it stops
+  credential stuffing but does not shield CPU from a flood of login attempts.
+- Project nesting has no depth limit (items are capped at 6); cycles are
+  rejected by `0006_tree_cycles.sql`.
