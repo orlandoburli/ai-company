@@ -1382,6 +1382,31 @@ column at all, so a query bug cannot enumerate hashes even within a tenant.
 - **Agents get no DB access at all:** no connstring, no role, no socket — even
   the loopback rule excludes the Postgres port.
 
+### Authentication and sessions (M0 implementation notes)
+
+- **Passwords:** Argon2id, stored as PHC strings
+  (`$argon2id$v=19$m=65536,t=3,p=2$salt$hash`). Cost parameters travel with each
+  hash, so they can be raised later without a flag day — old hashes keep
+  verifying with the parameters they were created with. Minimum 12 characters;
+  maximum 1024 as a hashing-cost denial-of-service guard.
+- **Session tokens are opaque and stored only as SHA-256 digests.** A database
+  dump therefore does not yield live sessions; the plaintext exists only in the
+  client's cookie.
+- **Cookie:** `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` whenever the app
+  is served over HTTPS (`AIC_SECURE_COOKIES`). No token in a URL, ever.
+- **Login does not reveal whether an account exists.** Unknown email and wrong
+  password return byte-identical responses, and the unknown-email path still
+  performs one Argon2id verification against a dummy hash so response time does
+  not become the oracle instead.
+- **The role comes from the membership, not the session**, read on every request.
+  A demotion applies immediately, and revoking a membership invalidates the
+  session rather than leaving a stale role alive until expiry.
+- **Switching tenant rotates the token** and revokes the previous one, so a
+  copied cookie does not survive the switch.
+- Two pools, as above: the **owner** pool only ever resolves identity
+  (login, membership list, session lookup); everything on a request path uses the
+  **`aic_app`** pool, which owns nothing and cannot bypass RLS.
+
 ### Deferred, with escalation triggers
 
 Deferred: a dedicated `_aicagent` UID, per-agent containers, Lima/OrbStack VMs,

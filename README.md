@@ -84,3 +84,24 @@ AIC_TEST_DSN="postgres://aic_owner@/aic_test?host=/tmp&port=55432" go test ./...
 
 `internal/spike` is a throwaway verification harness for the macOS sandbox; see
 its README. It is not production code and must not be promoted.
+
+### Running
+
+```sh
+export DATABASE_URL="postgres://aic_owner@localhost/aic"
+go run ./cmd/server          # migrates on start, listens on :8080
+```
+
+```sh
+curl -c cookies.txt -X POST localhost:8080/api/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"me@acme.dev","password":"correct-horse-battery-staple","name":"Orlando","tenant_name":"Acme","tenant_slug":"acme"}'
+curl -b cookies.txt localhost:8080/api/auth/me
+```
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/auth/register` | create tenant + owner, returns a session |
+| `POST /api/auth/login` | `tenant_id` optional when the user has one membership |
+| `POST /api/auth/logout` | revokes the session server-side |
+| `GET /api/auth/me` | current user, active tenant, available tenants |
+| `POST /api/auth/switch-tenant` | rotates the session into another membership |

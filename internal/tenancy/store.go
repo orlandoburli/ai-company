@@ -58,11 +58,12 @@ func (s *Store) RegisterTenant(ctx context.Context, email, passwordHash, name, t
 		return Identity{}, Membership{}, fmt.Errorf("commit: %w", err)
 	}
 
+	m := Membership{TenantID: tenantID, TenantName: tenantName, TenantSlug: slug, Role: RoleOwner}
 	return Identity{
-			UserID: userID, Email: email, Name: name,
-		},
-		Membership{TenantID: tenantID, TenantName: tenantName, TenantSlug: slug, Role: RoleOwner},
-		nil
+		UserID: userID, Email: email, Name: name,
+		TenantID: tenantID, Role: RoleOwner,
+		Memberships: []Membership{m},
+	}, m, nil
 }
 
 // ResolveSession returns the identity and memberships behind a session token
@@ -94,8 +95,25 @@ func (s *Store) ResolveSession(ctx context.Context, tokenHash string) (Identity,
 	if err != nil {
 		return Identity{}, nil, err
 	}
+
+	// The role comes from the membership, not the session, so a demotion takes
+	// effect on the next request rather than at session expiry. A session whose
+	// tenant membership has been revoked stops resolving entirely.
+	var active Membership
+	found := false
+	for _, m := range memberships {
+		if m.TenantID == tenantID {
+			active, found = m, true
+			break
+		}
+	}
+	if !found {
+		return Identity{}, nil, ErrNotFound
+	}
+
 	return Identity{
 		UserID: userID, Email: email, Name: name,
+		TenantID: active.TenantID, Role: active.Role,
 		Memberships: memberships, ExpiresAt: expiresAt,
 	}, memberships, nil
 }
@@ -148,4 +166,59 @@ func (s *Store) CreateSession(ctx context.Context, userID, tenantID, tokenHash s
 		return "", fmt.Errorf("create session: %w", err)
 	}
 	return id, nil
+}
+
+// User is the identity-plane record needed to authenticate. PasswordHash is part
+// of this struct and is read only through the owner pool; the app role has no
+// column grant for it.
+type User struct {
+	ID           string
+	Email        string
+	Name         string
+	PasswordHash string
+}
+
+// FindUserByEmail returns the user with this email. It returns ErrNotFound for
+// unknown addresses; callers must not surface that distinction, because it turns
+// login into an account-enumeration oracle.
+func (s *Store) FindUserByEmail(ctx context.Context, email string) (User, error) {
+	var u User
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, email, name, password_hash
+		  FROM users
+		 WHERE lower(email) = lower($1)`,
+		strings.TrimSpace(email)).
+		Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("find user: %w", err)
+	}
+	return u, nil
+}
+
+// DeleteSession revokes a session by its token digest. Deleting an already
+// absent session is not an error: logout must be idempotent.
+func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserSessions revokes every session for a user, used on password change
+// and on account disable.
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete user sessions: %w", err)
+	}
+	return nil
+}
+
+// MembershipsForUser lists every tenant a user belongs to. It runs on the owner
+// pool because it is part of identity resolution (login, tenant picker), which
+// necessarily happens before a tenant scope exists.
+func (s *Store) MembershipsForUser(ctx context.Context, userID string) ([]Membership, error) {
+	return s.membershipsFor(ctx, userID)
 }

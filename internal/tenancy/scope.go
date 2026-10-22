@@ -97,13 +97,35 @@ func WithScope(ctx context.Context, s Scope) context.Context {
 // user may belong to several tenants).
 type sessionKey struct{}
 
-// Identity is a resolved session, before tenant selection.
+// Identity is a resolved session. TenantID and Role describe the tenant this
+// session is *currently acting in*; Memberships lists every tenant the user may
+// switch to.
 type Identity struct {
-	UserID      string
-	Email       string
-	Name        string
+	UserID string
+	Email  string
+	Name   string
+
+	TenantID string
+	Role     Role
+
 	Memberships []Membership
 	ExpiresAt   time.Time
+}
+
+// Scope returns the request scope for this session. Middleware attaches the
+// result to the request context, so repository calls have no way to invent one.
+func (i Identity) Scope() Scope {
+	return Scope{TenantID: i.TenantID, UserID: i.UserID, Role: i.Role}
+}
+
+// CanActIn reports whether the user is a member of tenantID.
+func (i Identity) CanActIn(tenantID string) bool {
+	for _, m := range i.Memberships {
+		if m.TenantID == tenantID {
+			return true
+		}
+	}
+	return false
 }
 
 // Membership is one tenant a user belongs to.
