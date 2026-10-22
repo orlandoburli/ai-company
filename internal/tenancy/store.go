@@ -11,13 +11,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// Store resolves sessions and memberships. These queries run BEFORE a tenant
-// scope exists, so they execute as the table owner rather than through RLS.
+// Store resolves sessions, memberships and tenants.
+//
+// Every method here goes through a SECURITY DEFINER function (see
+// migrations/0002_identity_force_rls.sql) because the application role has no
+// table privileges on the identity plane and every tenant-scoped table is
+// FORCE ROW LEVEL SECURITY. There is deliberately no privileged connection
+// available to request-path code: the privileged surface is a short list of
+// functions, each keyed on a session token or an email rather than on a
+// caller-supplied "which tenant" parameter.
 type Store struct {
 	db *sql.DB
 }
 
-// NewStore builds a tenancy store.
+// NewStore builds a tenancy store over the application connection.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 // ErrNotFound is returned when a session, user or membership does not exist.
@@ -25,37 +32,16 @@ var ErrNotFound = errors.New("tenancy: not found")
 
 func newID() string { return strings.ToUpper(uuid.NewString()) }
 
-// RegisterTenant creates a tenant and its first user (the owner) atomically.
-// The owner is tenant #1 for a self-hosted single-operator install, and the
-// registrant of a tenant created through the UI.
+// RegisterTenant creates a tenant, its first user (the owner) and the owner
+// membership in one statement, so a tenant never exists without an owner.
 func (s *Store) RegisterTenant(ctx context.Context, email, passwordHash, name, tenantName, slug string) (Identity, Membership, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Identity{}, Membership{}, fmt.Errorf("begin: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
+	tenantID, userID, membershipID := newID(), newID(), newID()
+	email = strings.ToLower(strings.TrimSpace(email))
 
-	now := time.Now().UTC()
-	tenantID, userID := newID(), newID()
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tenants (id, name, slug, created_at) VALUES ($1, $2, $3, $4)`,
-		tenantID, tenantName, slug, now); err != nil {
-		return Identity{}, Membership{}, fmt.Errorf("insert tenant: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, name, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		userID, strings.ToLower(strings.TrimSpace(email)), passwordHash, name, now); err != nil {
-		return Identity{}, Membership{}, fmt.Errorf("insert user: %w", err)
-	}
-	membershipID := newID()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tenant_memberships (id, tenant_id, user_id, role, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		membershipID, tenantID, userID, RoleOwner, now); err != nil {
-		return Identity{}, Membership{}, fmt.Errorf("insert membership: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Identity{}, Membership{}, fmt.Errorf("commit: %w", err)
+	if _, err := s.db.ExecContext(ctx, `
+		SELECT public.auth_register_tenant($1, $2, $3, $4, $5, $6, $7, $8)`,
+		tenantID, tenantName, slug, userID, email, passwordHash, name, membershipID); err != nil {
+		return Identity{}, Membership{}, fmt.Errorf("register tenant: %w", err)
 	}
 
 	m := Membership{TenantID: tenantID, TenantName: tenantName, TenantSlug: slug, Role: RoleOwner}
@@ -67,38 +53,34 @@ func (s *Store) RegisterTenant(ctx context.Context, email, passwordHash, name, t
 }
 
 // ResolveSession returns the identity and memberships behind a session token
-// hash. Expired sessions are rejected rather than returned.
+// digest. Expiry is evaluated in Postgres against the database clock, so a
+// skewed application host cannot extend a session.
 func (s *Store) ResolveSession(ctx context.Context, tokenHash string) (Identity, []Membership, error) {
 	var (
-		userID, email, name string
-		expiresAt           time.Time
-		tenantID            string
+		sessionID, userID, tenantID, email, name string
+		expiresAt                                time.Time
 	)
-	// session_id intentionally not selected
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.email, u.name, s.expires_at, s.tenant_id
-		  FROM sessions s
-		  JOIN users u ON u.id = s.user_id
-		 WHERE s.token_hash = $1`, tokenHash).
-		Scan(&userID, &email, &name, &expiresAt, &tenantID)
+		SELECT session_id, user_id, tenant_id, email, name, expires_at
+		  FROM public.auth_resolve_session($1)`, tokenHash).
+		Scan(&sessionID, &userID, &tenantID, &email, &name, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Identity{}, nil, ErrNotFound
 	}
 	if err != nil {
 		return Identity{}, nil, fmt.Errorf("resolve session: %w", err)
 	}
-	if time.Now().After(expiresAt) {
-		return Identity{}, nil, ErrNotFound
-	}
 
-	memberships, err := s.membershipsFor(ctx, userID)
+	// Memberships are derived from the same token inside SQL, so this call cannot
+	// be pointed at another user.
+	memberships, err := s.sessionMemberships(ctx, tokenHash)
 	if err != nil {
 		return Identity{}, nil, err
 	}
 
-	// The role comes from the membership, not the session, so a demotion takes
-	// effect on the next request rather than at session expiry. A session whose
-	// tenant membership has been revoked stops resolving entirely.
+	// The role is read from the membership on every request, so a demotion takes
+	// effect immediately. A session whose membership has been revoked stops
+	// resolving even though the session row still exists.
 	var active Membership
 	found := false
 	for _, m := range memberships {
@@ -118,18 +100,31 @@ func (s *Store) ResolveSession(ctx context.Context, tokenHash string) (Identity,
 	}, memberships, nil
 }
 
-func (s *Store) membershipsFor(ctx context.Context, userID string) ([]Membership, error) {
+func (s *Store) sessionMemberships(ctx context.Context, tokenHash string) ([]Membership, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.slug, m.role
-		  FROM tenant_memberships m
-		  JOIN tenants t ON t.id = m.tenant_id
-		 WHERE m.user_id = $1
-		 ORDER BY t.name`, userID)
+		SELECT tenant_id, tenant_name, tenant_slug, role
+		  FROM public.auth_session_memberships($1)`, tokenHash)
+	if err != nil {
+		return nil, fmt.Errorf("session memberships: %w", err)
+	}
+	defer rows.Close()
+	return scanMemberships(rows)
+}
+
+// MembershipsForUser lists every tenant a user belongs to. Used by login, where
+// the user id comes from auth_user_by_email and not from the request body.
+func (s *Store) MembershipsForUser(ctx context.Context, userID string) ([]Membership, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tenant_id, tenant_name, tenant_slug, role
+		  FROM public.auth_memberships_for_user($1)`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("memberships: %w", err)
 	}
 	defer rows.Close()
+	return scanMemberships(rows)
+}
 
+func scanMemberships(rows *sql.Rows) ([]Membership, error) {
 	var out []Membership
 	for rows.Next() {
 		var m Membership
@@ -141,36 +136,45 @@ func (s *Store) membershipsFor(ctx context.Context, userID string) ([]Membership
 	return out, rows.Err()
 }
 
-// CreateSession issues a session for a user in a tenant they belong to. It
-// refuses to mint a session for a tenant the user is not a member of.
+// CreateSession issues a session for a user in a tenant they belong to. The
+// membership check happens inside the function, so a code path that skips the
+// application-level check still cannot mint a cross-tenant session.
 func (s *Store) CreateSession(ctx context.Context, userID, tenantID, tokenHash string, ttl time.Duration) (string, error) {
-	var allowed bool
-	err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM tenant_memberships
-		                WHERE user_id = $1 AND tenant_id = $2)`,
-		userID, tenantID).Scan(&allowed)
-	if err != nil {
-		return "", fmt.Errorf("check membership: %w", err)
-	}
-	if !allowed {
-		// Refusing here matters: otherwise a valid session token could be
-		// paired with a tenant the user has no membership in.
-		return "", ErrNotFound
-	}
-
 	id := newID()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, user_id, tenant_id, token_hash, expires_at, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, userID, tenantID, tokenHash, time.Now().UTC().Add(ttl), time.Now().UTC()); err != nil {
+	var created bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT public.auth_create_session($1, $2, $3, $4, $5)`,
+		id, userID, tenantID, tokenHash, time.Now().UTC().Add(ttl)).
+		Scan(&created); err != nil {
 		return "", fmt.Errorf("create session: %w", err)
+	}
+	if !created {
+		return "", ErrNotFound
 	}
 	return id, nil
 }
 
-// User is the identity-plane record needed to authenticate. PasswordHash is part
-// of this struct and is read only through the owner pool; the app role has no
-// column grant for it.
+// DeleteSession revokes a session by its token digest. Deleting an already
+// absent session is not an error: logout must be idempotent.
+func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
+	if _, err := s.db.ExecContext(ctx, `SELECT public.auth_delete_session($1)`, tokenHash); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserSessions revokes every session for a user, used on password change
+// and on account disable.
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	if _, err := s.db.ExecContext(ctx, `SELECT public.auth_delete_user_sessions($1)`, userID); err != nil {
+		return fmt.Errorf("delete user sessions: %w", err)
+	}
+	return nil
+}
+
+// User is the identity-plane record needed to authenticate. PasswordHash is read
+// only through auth_user_by_email; the app role has no column privilege that
+// would let it select users at all.
 type User struct {
 	ID           string
 	Email        string
@@ -185,8 +189,7 @@ func (s *Store) FindUserByEmail(ctx context.Context, email string) (User, error)
 	var u User
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, email, name, password_hash
-		  FROM users
-		 WHERE lower(email) = lower($1)`,
+		  FROM public.auth_user_by_email($1)`,
 		strings.TrimSpace(email)).
 		Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -196,29 +199,4 @@ func (s *Store) FindUserByEmail(ctx context.Context, email string) (User, error)
 		return User{}, fmt.Errorf("find user: %w", err)
 	}
 	return u, nil
-}
-
-// DeleteSession revokes a session by its token digest. Deleting an already
-// absent session is not an error: logout must be idempotent.
-func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = $1`, tokenHash); err != nil {
-		return fmt.Errorf("delete session: %w", err)
-	}
-	return nil
-}
-
-// DeleteUserSessions revokes every session for a user, used on password change
-// and on account disable.
-func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
-		return fmt.Errorf("delete user sessions: %w", err)
-	}
-	return nil
-}
-
-// MembershipsForUser lists every tenant a user belongs to. It runs on the owner
-// pool because it is part of identity resolution (login, tenant picker), which
-// necessarily happens before a tenant scope exists.
-func (s *Store) MembershipsForUser(ctx context.Context, userID string) ([]Membership, error) {
-	return s.membershipsFor(ctx, userID)
 }

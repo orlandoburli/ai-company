@@ -87,10 +87,21 @@ its README. It is not production code and must not be promoted.
 
 ### Running
 
+Schema and runtime are separate roles on purpose: the server must not be able to
+create tables, and a superuser bypasses row-level security regardless of
+`FORCE`.
+
 ```sh
-export DATABASE_URL="postgres://aic_owner@localhost/aic"
-go run ./cmd/server          # migrates on start, listens on :8080
+# 1. schema — owner role
+DATABASE_URL="postgres://aic_owner@localhost/aic" go run ./cmd/migrate
+
+# 2. runtime — non-owner, non-BYPASSRLS role granted aic_app
+DATABASE_URL="postgres://aic@localhost/aic" go run ./cmd/server
 ```
+
+The runtime role is `aic_app` itself or a login role that is a member of it
+(`GRANT aic_app TO aic`). See `docs/mvp-design.md` §10 for why the identity
+plane is reachable only through `SECURITY DEFINER` functions.
 
 ```sh
 curl -c cookies.txt -X POST localhost:8080/api/auth/register -H 'Content-Type: application/json' \

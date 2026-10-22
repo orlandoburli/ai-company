@@ -14,10 +14,20 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 )
+
+// DB is a migrated, disposable database plus the DSN needed to reopen it as
+// another role. *sql.DB is embedded so callers that only need connectivity can
+// ignore the rest.
+type DB struct {
+	*sql.DB
+	DSN string
+}
 
 // DSN returns the admin connection string from the environment.
 func DSN(t testing.TB) string {
@@ -32,7 +42,7 @@ func DSN(t testing.TB) string {
 // FreshDB creates a uniquely named database, runs every migration against it,
 // and drops it when the test ends. A leftover row from another test therefore
 // cannot make this one pass.
-func FreshDB(t testing.TB) *sql.DB {
+func FreshDB(t testing.TB) *DB {
 	t.Helper()
 
 	base := DSN(t)
@@ -54,7 +64,8 @@ func FreshDB(t testing.TB) *sql.DB {
 		t.Fatalf("create %s: %v", name, err)
 	}
 
-	db, err := sql.Open("pgx", WithDatabase(t, base, name))
+	dsn := WithDatabase(t, base, name)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
 	}
@@ -68,9 +79,31 @@ func FreshDB(t testing.TB) *sql.DB {
 		admin.Close()
 	})
 
-	if _, err := migrations.Up(context.Background(), db); err != nil {
+	if _, err := migrationsUp(db); err != nil {
 		t.Fatalf("migrate %s: %v", name, err)
 	}
+	return &DB{DB: db, DSN: dsn}
+}
+
+// AsRole opens a separate pool whose every connection runs SET ROLE. Tests use
+// it to exercise the application role exactly as deployment does — a role with
+// no table privileges on the identity plane — rather than testing as the owner
+// and assuming the difference does not matter.
+func (d *DB) AsRole(t testing.TB, role string) *sql.DB {
+	t.Helper()
+
+	cfg, err := pgx.ParseConfig(d.DSN)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	quoted := pgx.Identifier{role}.Sanitize()
+	cfg.AfterConnect = func(ctx context.Context, c *pgconn.PgConn) error {
+		_, err := c.Exec(ctx, "SET ROLE "+quoted).ReadAll()
+		return err
+	}
+
+	db := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { db.Close() })
 	return db
 }
 
@@ -100,4 +133,8 @@ func identifierSafe(s string) string {
 		out = out[:40]
 	}
 	return out
+}
+
+func migrationsUp(db *sql.DB) ([]string, error) {
+	return migrations.Up(context.Background(), db)
 }

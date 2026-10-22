@@ -3,101 +3,55 @@ package tenancy_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 )
 
-// The isolation test is the exit criterion for M0 and runs from the first
-// milestone (FR-TN-1, mvp-design.md §10). It asserts three independent things:
+// The isolation tests are the exit criterion for M0 (FR-TN-1, mvp-design.md §10).
+// They are deliberately written against the *application* role, because a test
+// that runs as the owner proves nothing about what the app can reach.
 //
-//  1. the app role never sees another tenant's rows,
-//  2. a query that forgets the tenant predicate returns zero rows rather than
-//     everything (Postgres RLS as the backstop, not the only mechanism),
-//  3. code reaching the store without a scope fails loudly.
+// The guarantee is layered, and each layer is asserted separately:
 //
-// Each positive case is paired with a control, because "saw 0 rows" is also what
-// a missing GRANT looks like — and a vacuous isolation test passes forever.
+//  1. the app role has no table privileges on the identity plane at all,
+//  2. tenant-scoped tables are ENABLE + FORCE ROW LEVEL SECURITY, so even a
+//     non-superuser owner is bound by policy,
+//  3. access is possible only through SECURITY DEFINER functions whose
+//     parameters cannot name another tenant's data,
+//  4. code reaching the store without a scope fails loudly.
 
-func TestRegisterTenantCreatesOwnerMembership(t *testing.T) {
+// TestAppRoleHasNoIdentityTableAccess is the primary assertion. It is stronger
+// than "the policy filtered the rows": with no table privilege there is no query
+// shape, forgotten predicate or new code path that can read across tenants
+// directly.
+func TestAppRoleHasNoIdentityTableAccess(t *testing.T) {
 	db := freshDB(t)
-	s := tenancy.NewStore(db)
+	app := db.AsRole(t, "aic_app")
 
-	id, m := register(t, s, "solo@example.com", "Solo", "Solo Co", "solo-co")
-	if id.UserID == "" || m.TenantID == "" {
-		t.Fatal("registration returned empty ids")
-	}
-
-	// The owner pool must be able to read this: it is the login path.
-	var role string
-	if err := db.QueryRow(
-		`SELECT role FROM tenant_memberships WHERE user_id = $1`, id.UserID).Scan(&role); err != nil {
-		t.Fatalf("read membership: %v", err)
-	}
-	if tenancy.Role(role) != tenancy.RoleOwner {
-		t.Errorf("first registrant role = %q, want owner", role)
-	}
-}
-
-func TestAppRoleSeesOnlyItsTenant(t *testing.T) {
-	db := freshDB(t)
-	s := tenancy.NewStore(db)
-
-	_, a := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
-	bUser, b := register(t, s, "b@example.com", "B", "Tenant B", "tenant-b")
-	if a.TenantID == b.TenantID {
-		t.Fatalf("both registrations produced tenant %q", a.TenantID)
-	}
-
-	// Unscoped count per tenant: A must see exactly one membership, not two.
-	cases := []struct {
-		name   string
-		tenant string
-		want   int
-	}{
-		{"tenant A scope", a.TenantID, 1},
-		{"tenant B scope", b.TenantID, 1},
-		{"no scope (fails closed)", "", 0},
-	}
-	for _, c := range cases {
-		conn := appConn(t, db, c.tenant)
+	for _, table := range []string{"tenants", "users", "tenant_memberships", "sessions"} {
 		var n int
-		if err := conn.QueryRowContext(context.Background(),
-			`SELECT count(*) FROM tenant_memberships`).Scan(&n); err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+		err := app.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n)
+		if err == nil {
+			t.Errorf("aic_app could read %s (%d rows); it must have no table privilege on the identity plane", table, n)
+			continue
 		}
-		if n != c.want {
-			t.Errorf("%s: saw %d memberships, want %d", c.name, n, c.want)
+		if !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("%s: expected permission denied, got %v", table, err)
 		}
-	}
 
-	// Targeted read: A cannot fetch B's membership by its primary key, yet can
-	// still fetch its own. The second half is the control that proves the first
-	// half is RLS and not a broken grant.
-	conn := appConn(t, db, a.TenantID)
-	var got int
-	if err := conn.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM tenant_memberships WHERE user_id = $1`, bUser.UserID).Scan(&got); err != nil {
-		t.Fatalf("read tenant B membership as tenant A: %v", err)
-	}
-	if got != 0 {
-		t.Errorf("tenant A read %d of tenant B's memberships by user id, want 0", got)
-	}
-
-	if err := conn.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM tenant_memberships WHERE tenant_id = $1`, a.TenantID).Scan(&got); err != nil {
-		t.Fatalf("control read of own tenant: %v", err)
-	}
-	if got != 1 {
-		t.Fatalf("control failed: tenant A reads %d of its own memberships, want 1 (RLS may be over-blocking)", got)
+		// Writes are refused too, so an INSERT cannot be used as an oracle.
+		if _, err := app.Exec(`INSERT INTO ` + table + ` DEFAULT VALUES`); err == nil {
+			t.Errorf("aic_app could write %s", table)
+		}
 	}
 }
 
-// TestRLSConfigured checks the schema itself, so a future migration cannot
-// silently drop the policies while the behavioural tests above still pass by
-// accident of GRANTs.
-func TestRLSConfigured(t *testing.T) {
+// TestRLSIsForcedOnTenantTables checks the schema itself, so a later migration
+// cannot quietly downgrade to ENABLE while the behavioural tests keep passing.
+func TestRLSIsForcedOnTenantTables(t *testing.T) {
 	db := freshDB(t)
 
 	for _, table := range []string{"tenant_memberships", "sessions"} {
@@ -110,13 +64,10 @@ func TestRLSConfigured(t *testing.T) {
 			t.Fatalf("%s: %v", table, err)
 		}
 		if !enabled {
-			t.Errorf("%s: RLS not enabled", table)
+			t.Errorf("%s: RLS is not enabled", table)
 		}
-		// FORCE is intentionally off for the identity plane (login must read
-		// before a tenant is known). Asserted explicitly so turning it on is a
-		// deliberate change with a failing test, not a silent login outage.
-		if forced {
-			t.Errorf("%s: RLS is FORCED; login resolution runs on the owner pool and would see zero rows", table)
+		if !forced {
+			t.Errorf("%s: RLS is not FORCED; a non-superuser owner would bypass every policy", table)
 		}
 
 		var policies int
@@ -126,37 +77,129 @@ func TestRLSConfigured(t *testing.T) {
 			t.Fatalf("%s policies: %v", table, err)
 		}
 		if policies == 0 {
-			t.Errorf("%s: RLS enabled with no policy (denies everything, including legitimately scoped reads)", table)
+			t.Errorf("%s: RLS enabled with no policy", table)
 		}
-	}
-
-	// The app role must not be able to read password hashes at all.
-	var canReadHash bool
-	err := db.QueryRow(`
-		SELECT has_column_privilege('aic_app', 'users', 'password_hash', 'SELECT')`).Scan(&canReadHash)
-	if err != nil {
-		t.Fatalf("has_column_privilege: %v", err)
-	}
-	if canReadHash {
-		t.Error("aic_app can SELECT users.password_hash; column grant is not in effect")
 	}
 }
 
-// TestOwnerPoolResolvesIdentity records the identity-plane exception honestly:
-// the owner pool sees both tenants' memberships, and that is required for login.
-// It is a privilege of the connection, not a property of the schema.
-func TestOwnerPoolResolvesIdentity(t *testing.T) {
+// TestDefinerRoleIsClosed pins the properties that make the function surface a
+// controlled exception rather than a second superuser. A BYPASSRLS role that can
+// log in is a database-wide bypass with a password: it must never exist.
+func TestDefinerRoleIsClosed(t *testing.T) {
 	db := freshDB(t)
-	s := tenancy.NewStore(db)
-	register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
-	register(t, s, "b@example.com", "B", "Tenant B", "tenant-b")
 
-	var n int
-	if err := db.QueryRow(`SELECT count(*) FROM tenant_memberships`).Scan(&n); err != nil {
-		t.Fatal(err)
+	var canLogin, bypassRLS, isSuper bool
+	err := db.QueryRow(`
+		SELECT rolcanlogin, rolbypassrls, rolsuper
+		  FROM pg_roles WHERE rolname = 'aic_auth'`).Scan(&canLogin, &bypassRLS, &isSuper)
+	if err != nil {
+		t.Fatalf("read aic_auth: %v", err)
 	}
-	if n < 2 {
-		t.Fatalf("owner pool sees %d memberships, want 2; login resolution would be impossible", n)
+	if canLogin {
+		t.Error("aic_auth can log in; the privileged role must be unreachable as a credential")
+	}
+	if !bypassRLS {
+		t.Error("aic_auth lacks BYPASSRLS; its functions would be bound by policies and unable to resolve sessions")
+	}
+	if isSuper {
+		t.Error("aic_auth is a superuser; ownership of a few functions is the intended privilege, not the whole cluster")
+	}
+
+	// Functions default to EXECUTE for PUBLIC; if that were left in place every
+	// role would inherit the privileged surface.
+	var publicExecute bool
+	if err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1 FROM pg_proc p
+			  JOIN pg_namespace n ON n.oid = p.pronamespace
+			 WHERE n.nspname = 'public'
+			   AND p.proname LIKE 'auth_%'
+			   AND has_function_privilege('public', p.oid, 'EXECUTE')
+		)`).Scan(&publicExecute); err != nil {
+		t.Fatalf("check PUBLIC execute: %v", err)
+	}
+	if publicExecute {
+		t.Error("a public.auth_* function is executable by PUBLIC; revoke EXECUTE before granting to aic_app")
+	}
+}
+
+// TestRegisterTenantCreatesOwnerMembership covers the intended path end to end
+// through the function surface.
+func TestRegisterTenantCreatesOwnerMembership(t *testing.T) {
+	db := freshDB(t)
+	s := appStore(t, db)
+
+	id, m := register(t, s, "solo@example.com", "Solo", "Solo Co", "solo-co")
+	if id.UserID == "" || m.TenantID == "" || id.TenantID != m.TenantID {
+		t.Fatalf("inconsistent registration result: %+v / %+v", id, m)
+	}
+	if id.Role != tenancy.RoleOwner {
+		t.Errorf("registered identity role = %q, want owner", id.Role)
+	}
+
+	// Verified through the owner connection, which can see the row the app
+	// created but could not read back.
+	var role, hash string
+	if err := db.QueryRow(
+		`SELECT role FROM tenant_memberships WHERE user_id = $1`, id.UserID).Scan(&role); err != nil {
+		t.Fatalf("read membership: %v", err)
+	}
+	if tenancy.Role(role) != tenancy.RoleOwner {
+		t.Errorf("stored role = %q, want owner", role)
+	}
+	if err := db.QueryRow(
+		`SELECT password_hash FROM users WHERE id = $1`, id.UserID).Scan(&hash); err != nil {
+		t.Fatalf("read hash: %v", err)
+	}
+	if hash != "hash-solo@example.com" {
+		t.Errorf("stored hash = %q; registration must persist the hash it was given", hash)
+	}
+}
+
+// TestTwoTenantsIsolatedThroughStore exercises the real request path: two
+// tenants, two stores over the app role, no cross-visibility.
+func TestTwoTenantsIsolatedThroughStore(t *testing.T) {
+	db := freshDB(t)
+	s := appStore(t, db)
+	ctx := context.Background()
+
+	aID, a := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
+	bID, b := register(t, s, "b@example.com", "B", "Tenant B", "tenant-b")
+	if a.TenantID == b.TenantID {
+		t.Fatalf("both registrations produced tenant %q", a.TenantID)
+	}
+
+	// Each session sees exactly its own tenant.
+	for _, tc := range []struct {
+		name   string
+		user   string
+		tenant string
+	}{
+		{"A", aID.UserID, a.TenantID},
+		{"B", bID.UserID, b.TenantID},
+	} {
+		if _, err := s.CreateSession(ctx, tc.user, tc.tenant, "tok-"+tc.name, time.Hour); err != nil {
+			t.Fatalf("%s: create session: %v", tc.name, err)
+		}
+		id, memberships, err := s.ResolveSession(ctx, "tok-"+tc.name)
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, err)
+		}
+		if id.TenantID != tc.tenant {
+			t.Errorf("%s resolved tenant %q, want %q", tc.name, id.TenantID, tc.tenant)
+		}
+		if len(memberships) != 1 {
+			t.Errorf("%s sees %d memberships, want 1", tc.name, len(memberships))
+		}
+	}
+
+	// And a session cannot be minted across the boundary, even though the
+	// function takes both ids as parameters.
+	if _, err := s.CreateSession(ctx, aID.UserID, b.TenantID, "tok-cross", time.Hour); !errors.Is(err, tenancy.ErrNotFound) {
+		t.Errorf("cross-tenant session mint = %v, want ErrNotFound", err)
+	}
+	if n := countAsOwner(t, db.DB, "sessions"); n != 2 {
+		t.Errorf("%d session rows exist, want 2 (the refused mint must not leave a row)", n)
 	}
 }
 
@@ -207,56 +250,76 @@ func TestRoleCapabilities(t *testing.T) {
 	}
 }
 
-// TestSessionRefusesForeignTenant covers the case a valid token would otherwise
-// reach another tenant: minting a session for a tenant the user never joined.
+// TestSessionRefusesForeignTenant covers the token-pairing path: a valid
+// credential must not be usable against a tenant the user never joined.
 func TestSessionRefusesForeignTenant(t *testing.T) {
 	db := freshDB(t)
-	s := tenancy.NewStore(db)
-
-	aUser, a := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
-	_, b := register(t, s, "b@example.com", "B", "Tenant B", "tenant-b")
+	s := appStore(t, db)
 	ctx := context.Background()
 
-	if _, err := s.CreateSession(ctx, aUser.UserID, b.TenantID, "tok-foreign", 0); err == nil {
-		t.Error("minted a session for a tenant the user is not a member of")
+	aUser, _ := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
+	_, b := register(t, s, "b@example.com", "B", "Tenant B", "tenant-b")
+
+	if _, err := s.CreateSession(ctx, aUser.UserID, b.TenantID, "tok-foreign", 0); !errors.Is(err, tenancy.ErrNotFound) {
+		t.Errorf("foreign tenant = %v, want ErrNotFound", err)
 	}
-	if _, err := s.CreateSession(ctx, aUser.UserID, "nonexistent-tenant", "tok-ghost", 0); err == nil {
-		t.Error("minted a session for a nonexistent tenant")
+	if _, err := s.CreateSession(ctx, aUser.UserID, "nonexistent-tenant", "tok-ghost", 0); !errors.Is(err, tenancy.ErrNotFound) {
+		t.Errorf("nonexistent tenant = %v, want ErrNotFound", err)
 	}
-	if _, err := s.CreateSession(ctx, aUser.UserID, a.TenantID, "tok-own", 0); err != nil {
-		t.Errorf("control: could not mint a legitimate session: %v", err)
+	if _, err := s.CreateSession(ctx, aUser.UserID, aUser.TenantID, "tok-own", time.Hour); err != nil {
+		t.Errorf("control: legitimate session refused: %v", err)
 	}
 }
 
-// TestResolveSessionRejectsExpired guards the other half: an expired token must
-// not resolve even when the membership is valid.
+// TestResolveSessionRejectsExpired confirms expiry is evaluated by the database,
+// not by a Go-side comparison against a possibly skewed host clock.
 func TestResolveSessionRejectsExpired(t *testing.T) {
 	db := freshDB(t)
-	s := tenancy.NewStore(db)
-	aUser, a := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
+	s := appStore(t, db)
 	ctx := context.Background()
 
-	// A negative ttl puts expires_at unambiguously in the past.
-	if _, err := s.CreateSession(ctx, aUser.UserID, a.TenantID, "tok-expired", -time.Minute); err != nil {
+	a, _ := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
+
+	if _, err := s.CreateSession(ctx, a.UserID, a.TenantID, "tok-expired", -time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ResolveSession(ctx, "tok-expired"); err == nil {
-		t.Error("expired session resolved")
-	} else if !errors.Is(err, tenancy.ErrNotFound) {
-		t.Errorf("expired session returned %v, want ErrNotFound", err)
+	if _, _, err := s.ResolveSession(ctx, "tok-expired"); !errors.Is(err, tenancy.ErrNotFound) {
+		t.Errorf("expired session = %v, want ErrNotFound", err)
 	}
 
-	if _, err := s.CreateSession(ctx, aUser.UserID, a.TenantID, "tok-later", time.Minute); err != nil {
+	if _, err := s.CreateSession(ctx, a.UserID, a.TenantID, "tok-live", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	id, memberships, err := s.ResolveSession(ctx, "tok-later")
+	id, memberships, err := s.ResolveSession(ctx, "tok-live")
 	if err != nil {
 		t.Fatalf("live session did not resolve: %v", err)
 	}
-	if id.UserID != aUser.UserID {
-		t.Errorf("resolved user %q, want %q", id.UserID, aUser.UserID)
+	if id.UserID != a.UserID || id.TenantID != a.TenantID {
+		t.Errorf("resolved %+v, want user %s tenant %s", id, a.UserID, a.TenantID)
 	}
 	if len(memberships) != 1 {
 		t.Errorf("resolved %d memberships, want 1", len(memberships))
+	}
+}
+
+// TestLogoutDeletesRow covers revocation: after deleting the session the token
+// must not resolve, and the row must be gone rather than merely expired.
+func TestLogoutDeletesRow(t *testing.T) {
+	db := freshDB(t)
+	s := appStore(t, db)
+	ctx := context.Background()
+
+	a, _ := register(t, s, "a@example.com", "A", "Tenant A", "tenant-a")
+	if _, err := s.CreateSession(ctx, a.UserID, a.TenantID, "tok-bye", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(ctx, "tok-bye"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, _, err := s.ResolveSession(ctx, "tok-bye"); !errors.Is(err, tenancy.ErrNotFound) {
+		t.Errorf("revoked session still resolves: %v", err)
+	}
+	if n := countAsOwner(t, db.DB, "sessions"); n != 0 {
+		t.Errorf("%d session rows remain after logout", n)
 	}
 }

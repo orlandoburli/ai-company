@@ -3,9 +3,13 @@
 //
 // The rule the rest of the codebase depends on: a repository method takes a
 // Scope as its first argument, and a query that omits tenant_id is a compile-time
-// or review-time mistake rather than a silent leak. Postgres RLS is the backstop
-// (see migrations/0001_tenancy.sql), not the primary mechanism — defence in
-// depth means both.
+// or review-time mistake rather than a silent leak.
+//
+// Postgres is the backstop, not just the mirror of that rule: tenant-scoped
+// tables are ENABLE + FORCE ROW LEVEL SECURITY, and the application role has no
+// table privileges on the identity plane at all — it reaches those rows only
+// through SECURITY DEFINER functions (see migrations/0002_identity_force_rls.sql).
+// There is no privileged connection in the request path to make a mistake on.
 package tenancy
 
 import (

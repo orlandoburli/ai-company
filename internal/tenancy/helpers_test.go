@@ -9,56 +9,28 @@ import (
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 )
 
-// freshDB is a per-test, migrated, disposable database (see internal/store/postgres/pgtest).
-func freshDB(t *testing.T) *sql.DB {
+// freshDB is a per-test, migrated, disposable database. It also exposes a
+// superuser connection for assertions about rows the application role cannot
+// read.
+func freshDB(t *testing.T) *pgtest.DB {
 	t.Helper()
 	return pgtest.FreshDB(t)
 }
 
-// appConn returns a connection impersonating the application role with a tenant
-// scope applied — exactly what request-path code looks like.
-//
-// SET ROLE is used instead of a second credential so the test exercises the role
-// the app will really use (non-owner, NOBYPASSRLS) without a password
-// round-trip. It requires the DSN's user to be a superuser or a member of
-// aic_app; the GRANT below makes that true once.
-func appConn(t *testing.T, owner *sql.DB, tenantID string) *sql.Conn {
+// appStore builds the store over the *application* role, which owns nothing and
+// cannot bypass RLS. Testing through the owner connection would hide exactly the
+// privilege mistakes these tests exist to catch.
+func appStore(t *testing.T, db *pgtest.DB) *tenancy.Store {
 	t.Helper()
-	ctx := context.Background()
-
-	conn, err := owner.Conn(ctx)
-	if err != nil {
-		t.Fatalf("acquire conn: %v", err)
+	app := db.AsRole(t, "aic_app")
+	var role string
+	if err := app.QueryRow(`SELECT current_user`).Scan(&role); err != nil {
+		t.Fatalf("read current_user: %v", err)
 	}
-
-	if _, err := conn.ExecContext(ctx, `SET ROLE aic_app`); err != nil {
-		// Failure is fatal rather than skipped: a silently skipped isolation test
-		// is worse than no isolation test.
-		if _, gerr := conn.ExecContext(ctx, `GRANT aic_app TO CURRENT_USER`); gerr != nil {
-			conn.Close()
-			t.Fatalf("SET ROLE aic_app: %v (and GRANT failed: %v); connect as a superuser or a member of aic_app", err, gerr)
-		}
-		if _, err := conn.ExecContext(ctx, `SET ROLE aic_app`); err != nil {
-			conn.Close()
-			t.Fatalf("SET ROLE aic_app after grant: %v", err)
-		}
+	if role != "aic_app" {
+		t.Fatalf("store is running as %q, not aic_app; privilege assertions would be meaningless", role)
 	}
-
-	// set_config is parameterisable, unlike SET. An empty value leaves the
-	// policy's current_tenant_id() NULL, which is the "no scope" case.
-	if _, err := conn.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, false)`, tenantID); err != nil {
-		conn.Close()
-		t.Fatalf("set tenant scope: %v", err)
-	}
-
-	// Session state survives a trip through the pool, so undo it or a later test
-	// inherits a role and tenant it never asked for.
-	t.Cleanup(func() {
-		_, _ = conn.ExecContext(ctx, `RESET ROLE`)
-		_, _ = conn.ExecContext(ctx, `SELECT set_config('app.tenant_id', '', false)`)
-		conn.Close()
-	})
-	return conn
+	return tenancy.NewStore(app)
 }
 
 // register creates a tenant plus its owner user.
@@ -69,4 +41,16 @@ func register(t *testing.T, s *tenancy.Store, email, name, tenantName, slug stri
 		t.Fatalf("register %s: %v", email, err)
 	}
 	return id, m
+}
+
+// countAsOwner reads a table through the migration role, which is a superuser in
+// the test environment and therefore bypasses RLS even where FORCE is set. It is
+// used only to verify what the application role cannot see.
+func countAsOwner(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return n
 }

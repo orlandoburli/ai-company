@@ -16,24 +16,36 @@ import (
 )
 
 type harness struct {
-	t    *testing.T
-	db   *sql.DB
-	srv  *httptest.Server
-	base string
+	t     *testing.T
+	db    *sql.DB // application role: owns nothing, cannot bypass RLS
+	admin *pgtest.DB
+	srv   *httptest.Server
+	base  string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	db := pgtest.FreshDB(t)
 
+	// The server runs as the application role, exactly as deployed. Assertions
+	// about rows the app cannot read use the owner connection instead.
+	app := db.AsRole(t, "aic_app")
+	var role string
+	if err := app.QueryRow(`SELECT current_user`).Scan(&role); err != nil {
+		t.Fatalf("read current_user: %v", err)
+	}
+	if role != "aic_app" {
+		t.Fatalf("harness is running as %q, not aic_app; privilege assertions would be meaningless", role)
+	}
+
 	// A discarded logger keeps failing-test output readable; the access log is
 	// asserted on separately in production, not here.
-	h := api.New(db, slog.New(slog.NewTextHandler(io.Discard, nil)),
+	h := api.New(app, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		api.WithSecureCookies(false)).Handler()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	return &harness{t: t, db: db, srv: srv, base: srv.URL}
+	return &harness{t: t, db: app, admin: db, srv: srv, base: srv.URL}
 }
 
 type response struct {
@@ -253,7 +265,7 @@ func TestLogoutRevokesSession(t *testing.T) {
 	}
 
 	var n int
-	if err := h.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&n); err != nil {
+	if err := h.admin.QueryRow(`SELECT count(*) FROM sessions`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
@@ -283,10 +295,10 @@ func TestSwitchTenantToOwnSecondTenant(t *testing.T) {
 	// Give the same user membership in a second tenant, as an invitation would.
 	h.register("second@example.com", goodPassword, "Initech", "initech")
 	var secondTenant string
-	if err := h.db.QueryRow(`SELECT id FROM tenants WHERE slug = 'initech'`).Scan(&secondTenant); err != nil {
+	if err := h.admin.QueryRow(`SELECT id FROM tenants WHERE slug = 'initech'`).Scan(&secondTenant); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.db.Exec(
+	if _, err := h.admin.Exec(
 		`INSERT INTO tenant_memberships (id, tenant_id, user_id, role) VALUES ($1, $2, $3, 'member')`,
 		"mem-test", secondTenant, userID); err != nil {
 		t.Fatal(err)

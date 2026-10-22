@@ -35,7 +35,10 @@ func main() {
 func run() error {
 	addr := flag.String("addr", envOr("AIC_ADDR", ":8080"), "listen address")
 	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "Postgres connection URL (defaults to $DATABASE_URL)")
-	applyMigrations := flag.Bool("migrate", true, "apply pending migrations before serving")
+	// Off by default: the runtime role must not be able to create tables. Run
+	// cmd/migrate with an owner DSN as a deploy step instead. Leaving this on
+	// would either need an over-privileged runtime role or fail at startup.
+	applyMigrations := flag.Bool("migrate", false, "apply pending migrations before serving (requires a DSN that owns the schema)")
 	secureCookies := flag.Bool("secure-cookies", envBool("AIC_SECURE_COOKIES", true),
 		"mark the session cookie Secure (disable only for plain-http development)")
 	flag.Parse()

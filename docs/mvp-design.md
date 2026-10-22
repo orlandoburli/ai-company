@@ -368,9 +368,9 @@ never crosses tenant boundaries, and one user may hold a different role in
 each tenant. Postgres row-level security is **not** deferred to hosted: every
 tenant table ships in M0 with `ENABLE` + `FORCE ROW LEVEL SECURITY`, a
 `NOBYPASSRLS` app role and `SET LOCAL app.tenant_id` per transaction (§10). The
-identity plane (`tenants`, `users`, `tenant_memberships`, `sessions`) is the
-documented exception — `ENABLE` only, because login resolves memberships before
-a tenant exists. The policy is cheap to add while the schema is small and expensive to retrofit after
+identity plane (`tenants`, `users`, `tenant_memberships`, `sessions`) is reached
+only through `SECURITY DEFINER` functions, and the application role has no table
+privileges on it at all. The policy is cheap to add while the schema is small and expensive to retrofit after
 every query has been written. Isolation tests (seed two tenants, assert zero
 cross-reads) run in CI from M0.
 
@@ -1341,17 +1341,32 @@ git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 \
 
 ### Multi-tenancy
 
-- `FORCE ROW LEVEL SECURITY` on every **content** table from M0, with a
+- `FORCE ROW LEVEL SECURITY` on **every** tenant-scoped table from M0, with a
   `NOBYPASSRLS` application role, so the table owner does not quietly bypass the
-  policy either.
-- **The identity plane is the one exception, and it is `ENABLE` only:**
-  `tenants`, `users`, `tenant_memberships`, `sessions`. Login and the tenant
-  picker must read memberships *before* a tenant is known, on the owner
-  connection; `FORCE` would subject the owner to the policy as well and make
-  that query return zero rows, i.e. login could never succeed. The guarantee is
-  structural instead of policy-based — two pools: owner for identity
-  resolution, `aic_app` for everything else. Anything reachable from a request
-  path lives in the second pool and is `ENABLE + FORCE`.
+  policy either. `ENABLE` alone is not enough: it binds every role except the
+  owner, and "the app only uses the owner pool here" is a convention, not a
+  constraint. A convention is exactly what an application bug violates.
+- **The identity plane (`tenants`, `users`, `tenant_memberships`, `sessions`) is
+  not an exception — it is more closed, not less.** Login genuinely has to read
+  memberships before a tenant is known, which conflicts with a policy keyed on
+  `app.tenant_id`. The resolution is not a privileged connection but a small
+  `SECURITY DEFINER` surface: a `NOLOGIN … BYPASSRLS` role (`aic_auth`) owns a
+  handful of functions, the application role gets `EXECUTE` on those and **no
+  table privileges at all** on those four tables. Consequences:
+  - there is **no privileged connection in the request path** at runtime; the
+    privilege is a short list of functions, each auditable in one file;
+  - every function takes a **session token or an email**, never a
+    caller-supplied "which tenant" flag, so a bug cannot ask for another
+    tenant's rows — it would have to already hold the credential;
+  - each function pins `search_path = pg_catalog, public` and fully qualifies
+    its tables, because an unpinned `SECURITY DEFINER` function is a privilege
+    escalation waiting to happen;
+  - `EXECUTE` is revoked from `PUBLIC` before being granted to `aic_app`
+    (functions default to executable by everyone).
+- The runtime role must be **non-owner and non-`BYPASSRLS`**, and must not be a
+  superuser — a superuser bypasses RLS regardless of `FORCE`. Migrations run
+  separately, as the owner (`cmd/migrate`), which is why the server does not
+  migrate on boot by default.
 - `SET LOCAL app.tenant_id` in every transaction; the policy compares
   `tenant_id` against it. `current_setting(..., true)` returns NULL when unset,
   so an unscoped query returns **zero rows rather than everything** — fail
@@ -1361,15 +1376,11 @@ git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c gc.auto=0 \
 
 ```sql
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE items FORCE ROW LEVEL SECURITY;      -- content tables: owner included
+ALTER TABLE items FORCE ROW LEVEL SECURITY;      -- owner included
 CREATE POLICY tenant_isolation ON items
   USING (tenant_id = current_tenant_id())
   WITH CHECK (tenant_id = current_tenant_id());
 ```
-
-`users.password_hash` is additionally protected by **column-level grants**: the
-app role has `SELECT (id, email, name, created_at)` and no access to the hash
-column at all, so a query bug cannot enumerate hashes even within a tenant.
 
 - Tenant context is an **explicit required argument** — `TenantScope` on every
   repository method — never read from ambient state, a global, or implicitly
@@ -1403,9 +1414,11 @@ column at all, so a query bug cannot enumerate hashes even within a tenant.
   session rather than leaving a stale role alive until expiry.
 - **Switching tenant rotates the token** and revokes the previous one, so a
   copied cookie does not survive the switch.
-- Two pools, as above: the **owner** pool only ever resolves identity
-  (login, membership list, session lookup); everything on a request path uses the
-  **`aic_app`** pool, which owns nothing and cannot bypass RLS.
+- **One pool, one role, no bypass.** The server connects as `aic_app` (or a
+  login role granted it): non-owner, non-`BYPASSRLS`, with no table privileges on
+  the identity plane. Identity resolution goes through the `auth_*` functions
+  described above, so there is no second, privileged connection that a future
+  handler could accidentally pick up.
 
 ### Deferred, with escalation triggers
 
