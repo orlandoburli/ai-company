@@ -323,3 +323,54 @@ func TestLogoutDeletesRow(t *testing.T) {
 		t.Errorf("%d session rows remain after logout", n)
 	}
 }
+
+// TestFunctionLevelAuthorization is the defence-in-depth assertion: even if the
+// HTTP route gate were removed or bypassed, the database must still refuse a
+// member who tries to change tenant settings or other people's roles. Without
+// this, "authorisation is enforced twice" would be a comment rather than a fact.
+func TestFunctionLevelAuthorization(t *testing.T) {
+	db := freshDB(t)
+	s := appStore(t, db)
+	ctx := context.Background()
+
+	owner, m := register(t, s, "owner@example.com", "Owner", "Acme", "acme")
+
+	// A second user, invited as a plain member of the owner's tenant.
+	second, _ := register(t, s, "member@example.com", "Member", "Their Own Co", "their-own-co")
+	if _, err := db.Exec(
+		`INSERT INTO tenant_memberships (id, tenant_id, user_id, role) VALUES ($1, $2, $3, 'member')`,
+		"invite-1", m.TenantID, second.UserID); err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+
+	if _, err := s.CreateSession(ctx, second.UserID, m.TenantID, "tok-member", time.Hour); err != nil {
+		t.Fatalf("member session: %v", err)
+	}
+	if _, err := s.CreateSession(ctx, owner.UserID, m.TenantID, "tok-owner", time.Hour); err != nil {
+		t.Fatalf("owner session: %v", err)
+	}
+
+	// The member cannot rename the tenant, even calling the function directly.
+	if err := s.UpdateTenant(ctx, "tok-member", "Hijacked", ""); !errors.Is(err, tenancy.ErrForbiddenRole) {
+		t.Errorf("member UpdateTenant = %v, want ErrForbiddenRole", err)
+	}
+	// Nor change anyone's role.
+	if err := s.SetMemberRole(ctx, "tok-member", second.UserID, tenancy.RoleAdmin); !errors.Is(err, tenancy.ErrForbiddenRole) {
+		t.Errorf("member SetMemberRole = %v, want ErrForbiddenRole", err)
+	}
+
+	// The owner can, which is the control proving the refusals above are
+	// authorisation and not a broken function.
+	if err := s.UpdateTenant(ctx, "tok-owner", "Acme Renamed", ""); err != nil {
+		t.Errorf("owner UpdateTenant: %v", err)
+	}
+	if err := s.SetMemberRole(ctx, "tok-owner", second.UserID, tenancy.RoleAdmin); err != nil {
+		t.Errorf("owner SetMemberRole: %v", err)
+	}
+
+	// A token that was never issued cannot reach the functions either: the tenant
+	// is derived from the session, so there is nothing to point at.
+	if err := s.UpdateTenant(ctx, "tok-forged", "Nope", ""); !errors.Is(err, tenancy.ErrUnauthenticated) {
+		t.Errorf("forged token = %v, want ErrUnauthenticated", err)
+	}
+}

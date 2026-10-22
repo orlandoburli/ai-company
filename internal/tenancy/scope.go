@@ -150,3 +150,19 @@ func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(sessionKey{}).(Identity)
 	return id, ok
 }
+
+// sessionHashKey carries the session token digest for handlers that need to call
+// a function keyed on the session rather than on an id.
+type sessionHashKey struct{}
+
+// WithSessionHash attaches the session digest to ctx. Middleware sets it after
+// resolving the session; it is never read from a request body.
+func WithSessionHash(ctx context.Context, hash string) context.Context {
+	return context.WithValue(ctx, sessionHashKey{}, hash)
+}
+
+// SessionHashFrom returns the session digest, if present.
+func SessionHashFrom(ctx context.Context) (string, bool) {
+	h, ok := ctx.Value(sessionHashKey{}).(string)
+	return h, ok
+}

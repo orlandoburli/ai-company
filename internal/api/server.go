@@ -76,6 +76,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/auth/me", s.authenticated(s.handleMe))
 	mux.Handle("POST /api/auth/switch-tenant", s.authenticated(s.handleSwitchTenant))
 
+	mux.Handle("GET /api/tenant", s.authenticated(s.handleGetTenant))
+	mux.Handle("PATCH /api/tenant",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleUpdateTenant)))
+	mux.Handle("GET /api/tenant/members", s.authenticated(s.handleListMembers))
+	mux.Handle("PATCH /api/tenant/members/{userID}",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleSetMemberRole)))
+
 	return s.recoverer(s.accessLog(mux))
 }
 
@@ -90,7 +97,8 @@ func (s *Server) authenticated(next http.HandlerFunc) http.Handler {
 			return
 		}
 
-		id, _, err := s.tenancy.ResolveSession(r.Context(), auth.HashToken(c.Value))
+		digest := auth.HashToken(c.Value)
+		id, _, err := s.tenancy.ResolveSession(r.Context(), digest)
 		if err != nil {
 			// Expired, revoked, or forged — indistinguishable to the client, and
 			// the cookie is cleared so the browser stops presenting it.
@@ -104,6 +112,7 @@ func (s *Server) authenticated(next http.HandlerFunc) http.Handler {
 
 		ctx := tenancy.WithIdentity(r.Context(), id)
 		ctx = tenancy.WithScope(ctx, id.Scope())
+		ctx = tenancy.WithSessionHash(ctx, digest)
 		next(w, r.WithContext(ctx))
 	})
 }

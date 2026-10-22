@@ -200,3 +200,90 @@ func (s *Store) FindUserByEmail(ctx context.Context, email string) (User, error)
 	}
 	return u, nil
 }
+
+// Member is one person's membership in the active tenant.
+type Member struct {
+	UserID   string
+	Email    string
+	Name     string
+	Role     Role
+	JoinedAt time.Time
+}
+
+// Admin-plane errors. Each maps to a specific refusal reason returned by the
+// database function, so the API can choose a status code without guessing.
+var (
+	ErrForbiddenRole   = errors.New("tenancy: role may not perform this action")
+	ErrLastOwner       = errors.New("tenancy: tenant would be left without an owner")
+	ErrSelfRoleChange  = errors.New("tenancy: cannot change your own role")
+	ErrInvalidRole     = errors.New("tenancy: unknown role")
+	ErrUnauthenticated = errors.New("tenancy: session not valid")
+)
+
+// roleError maps a function's reason string to an error. NULL means success.
+func roleError(reason sql.NullString) error {
+	if !reason.Valid {
+		return nil
+	}
+	switch reason.String {
+	case "forbidden":
+		return ErrForbiddenRole
+	case "not_found":
+		return ErrNotFound
+	case "last_owner":
+		return ErrLastOwner
+	case "cannot_change_own_role":
+		return ErrSelfRoleChange
+	case "invalid_role":
+		return ErrInvalidRole
+	case "unauthenticated":
+		return ErrUnauthenticated
+	default:
+		return fmt.Errorf("tenancy: unexpected refusal %q", reason.String)
+	}
+}
+
+// ListMembers returns the memberships of the session's active tenant. Any member
+// may read this; the function derives the tenant from the token, so it cannot be
+// pointed at another tenant.
+func (s *Store) ListMembers(ctx context.Context, tokenHash string) ([]Member, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT user_id, email, name, role, joined_at
+		  FROM public.auth_list_members($1)`, tokenHash)
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Member
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.UserID, &m.Email, &m.Name, &m.Role, &m.JoinedAt); err != nil {
+			return nil, fmt.Errorf("scan member: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// UpdateTenant renames the active tenant. Empty values are left unchanged.
+func (s *Store) UpdateTenant(ctx context.Context, tokenHash, name, slug string) error {
+	var reason sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT public.auth_update_tenant($1, $2, $3)`,
+		tokenHash, name, slug).Scan(&reason); err != nil {
+		return fmt.Errorf("update tenant: %w", err)
+	}
+	return roleError(reason)
+}
+
+// SetMemberRole changes a member's role within the active tenant.
+func (s *Store) SetMemberRole(ctx context.Context, tokenHash, targetUserID string, role Role) error {
+	var reason sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT public.auth_set_member_role($1, $2, $3)`,
+		tokenHash, targetUserID, string(role)).Scan(&reason); err != nil {
+		return fmt.Errorf("set member role: %w", err)
+	}
+	return roleError(reason)
+}

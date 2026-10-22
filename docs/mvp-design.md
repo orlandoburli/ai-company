@@ -1414,6 +1414,13 @@ CREATE POLICY tenant_isolation ON items
   session rather than leaving a stale role alive until expiry.
 - **Switching tenant rotates the token** and revokes the previous one, so a
   copied cookie does not survive the switch.
+- **Tenant settings and member role changes** go through the same function
+  surface and are authorised twice: the route gate checks the role, then the
+  function re-derives it from the session's own membership. Removing the gate
+  does not open the function. Three lockout invariants are enforced in SQL:
+  nobody changes their own role, only an owner can grant `owner` (an admin
+  cannot manufacture peers of their own privilege), and the last owner cannot be
+  demoted.
 - **One pool, one role, no bypass.** The server connects as `aic_app` (or a
   login role granted it): non-owner, non-`BYPASSRLS`, with no table privileges on
   the identity plane. Identity resolution goes through the `auth_*` functions
