@@ -116,3 +116,23 @@ curl -b cookies.txt localhost:8080/api/auth/me
 | `POST /api/auth/logout` | revokes the session server-side |
 | `GET /api/auth/me` | current user, active tenant, available tenants |
 | `POST /api/auth/switch-tenant` | rotates the session into another membership |
+| `GET /api/auth/invite?token=` | public: tenant, email and role behind an invite link |
+| `POST /api/auth/accept-invite` | public: consumes the token, joins the tenant, starts a session |
+| `GET/POST /api/invites` | pending invitations (owner/admin creates) |
+| `DELETE /api/invites/{id}` | revoke a pending invitation |
+| `GET/POST /api/products`, `PATCH/DELETE /api/products/{id}` | product lines |
+| `GET/POST /api/projects`, `PATCH/DELETE /api/projects/{id}` | nested projects; deletes refuse non-empty rows |
+| `GET/POST /api/items`, `GET/PATCH/DELETE /api/items/{id}` | work items (`?project_id=&status=&label=&assignee_user_id=`) |
+| `POST /api/items/bulk-status` | one status across up to 100 items, logged per item |
+| `GET/POST /api/items/{id}/dependencies` | `blocked_by` edges; cycles answer `409 dependency_cycle` |
+| `DELETE /api/items/{id}/dependencies/{depID}` | remove an edge |
+| `GET /api/items/{id}/activity` | immutable, attributed history |
+| `POST /api/items/{id}/pause`, `/unpause`, `/pin`, `/unpin` | attributed queue overrides; pause outranks pin |
+| `GET /api/items/{id}/score` | reproducible base score with its factor breakdown |
+| `GET /api/queue` | dispatch order: pinned first, then base score |
+| `GET /api/tree` | nested projects/items with subtree progress rollup |
+| `GET /api/board` | items grouped into the seven status columns |
+
+Invitations have no mailer in the MVP: creating one returns the single-use token
+(and an `accept_url`) exactly once, to be passed to the invitee out of band. Only
+its SHA-256 digest is stored, and it expires after seven days.

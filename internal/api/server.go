@@ -18,6 +18,7 @@ import (
 
 	"github.com/orlandoburli/ai-company/internal/auth"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
+	"github.com/orlandoburli/ai-company/internal/work"
 )
 
 // SessionCookie carries the opaque session token. It is HttpOnly so script
@@ -28,6 +29,7 @@ const SessionCookie = "aic_session"
 type Server struct {
 	db           *sql.DB
 	tenancy      *tenancy.Store
+	work         *work.Store
 	log          *slog.Logger
 	secureCookie bool
 	sessionTTL   time.Duration
@@ -52,6 +54,7 @@ func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
 	s := &Server{
 		db:         db,
 		tenancy:    tenancy.NewStore(db),
+		work:       work.NewStore(db),
 		log:        log,
 		sessionTTL: 30 * 24 * time.Hour,
 	}
@@ -75,13 +78,68 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.Handle("GET /api/auth/me", s.authenticated(s.handleMe))
 	mux.Handle("POST /api/auth/switch-tenant", s.authenticated(s.handleSwitchTenant))
+	mux.HandleFunc("GET /api/auth/invite", s.handlePeekInvite)
+	mux.HandleFunc("POST /api/auth/accept-invite", s.handleAcceptInvite)
 
 	mux.Handle("GET /api/tenant", s.authenticated(s.handleGetTenant))
 	mux.Handle("PATCH /api/tenant",
 		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleUpdateTenant)))
 	mux.Handle("GET /api/tenant/members", s.authenticated(s.handleListMembers))
+	mux.Handle("GET /api/invites", s.authenticated(s.handleListInvites))
+	mux.Handle("POST /api/invites",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleCreateInvite)))
+	mux.Handle("DELETE /api/invites/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleRevokeInvite)))
 	mux.Handle("PATCH /api/tenant/members/{userID}",
 		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleSetMemberRole)))
+
+	// Work management. Reads are open to every member (guests included);
+	// writes are gated on CanWriteWork, which excludes guests.
+	mux.Handle("GET /api/products", s.authenticated(s.handleListProducts))
+	mux.Handle("POST /api/products",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleCreateProduct)))
+	mux.Handle("PATCH /api/products/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePatchProduct)))
+	mux.Handle("DELETE /api/products/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteProduct)))
+
+	mux.Handle("GET /api/projects", s.authenticated(s.handleListProjects))
+	mux.Handle("POST /api/projects",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleCreateProject)))
+	mux.Handle("PATCH /api/projects/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePatchProject)))
+	mux.Handle("DELETE /api/projects/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteProject)))
+	mux.Handle("GET /api/tree", s.authenticated(s.handleTree))
+	mux.Handle("POST /api/items/bulk-status",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleBulkStatus)))
+
+	mux.Handle("GET /api/items", s.authenticated(s.handleListItems))
+	mux.Handle("POST /api/items",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleCreateItem)))
+	mux.Handle("GET /api/items/{id}", s.authenticated(s.handleGetItem))
+	mux.Handle("PATCH /api/items/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePatchItem)))
+	mux.Handle("DELETE /api/items/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteItem)))
+	mux.Handle("GET /api/items/{id}/dependencies", s.authenticated(s.handleListDependencies))
+	mux.Handle("POST /api/items/{id}/dependencies",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleCreateDependency)))
+	mux.Handle("DELETE /api/items/{id}/dependencies/{depID}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteDependency)))
+	mux.Handle("GET /api/items/{id}/activity", s.authenticated(s.handleItemActivity))
+	mux.Handle("GET /api/items/{id}/score", s.authenticated(s.handleItemScore))
+	mux.Handle("POST /api/items/{id}/pause",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePauseItem)))
+	mux.Handle("POST /api/items/{id}/unpause",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleUnpauseItem)))
+	mux.Handle("POST /api/items/{id}/pin",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePinItem)))
+	mux.Handle("POST /api/items/{id}/unpin",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleUnpinItem)))
+	mux.Handle("GET /api/queue", s.authenticated(s.handleQueue))
+
+	mux.Handle("GET /api/board", s.authenticated(s.handleBoard))
 
 	return s.recoverer(s.accessLog(mux))
 }

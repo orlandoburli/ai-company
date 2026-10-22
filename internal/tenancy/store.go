@@ -218,6 +218,8 @@ var (
 	ErrSelfRoleChange  = errors.New("tenancy: cannot change your own role")
 	ErrInvalidRole     = errors.New("tenancy: unknown role")
 	ErrUnauthenticated = errors.New("tenancy: session not valid")
+	ErrAlreadyMember   = errors.New("tenancy: already a member")
+	ErrAlreadyInvited  = errors.New("tenancy: already invited")
 )
 
 // roleError maps a function's reason string to an error. NULL means success.
@@ -238,6 +240,10 @@ func roleError(reason sql.NullString) error {
 		return ErrInvalidRole
 	case "unauthenticated":
 		return ErrUnauthenticated
+	case "already_member":
+		return ErrAlreadyMember
+	case "already_invited":
+		return ErrAlreadyInvited
 	default:
 		return fmt.Errorf("tenancy: unexpected refusal %q", reason.String)
 	}

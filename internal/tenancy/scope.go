@@ -42,6 +42,10 @@ func (r Role) Valid() bool {
 // CanDecideCheckpoints reports whether the role may approve/reject a checkpoint.
 func (r Role) CanDecideCheckpoints() bool { return r == RoleOwner || r == RoleAdmin || r == RoleMember }
 
+// CanWriteWork reports whether the role may create or change products,
+// projects, items and dependency edges. Guests are read-only (FR-TN-8).
+func (r Role) CanWriteWork() bool { return r == RoleOwner || r == RoleAdmin || r == RoleMember }
+
 // CanManageSettings reports whether the role may change agents, integrations or templates.
 func (r Role) CanManageSettings() bool { return r == RoleOwner || r == RoleAdmin }
 
