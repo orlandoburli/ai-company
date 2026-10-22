@@ -27,3 +27,6 @@ job_logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Playwright MCP scratch artifacts
+.playwright-mcp/
