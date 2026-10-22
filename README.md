@@ -59,3 +59,28 @@ See `docs/mvp-design.md` §13 for the full concept mapping.
 
 - [docs/requirements.md](docs/requirements.md) — full product requirements
 - [docs/mvp-design.md](docs/mvp-design.md) — MVP architecture, data model, screens and milestones
+
+## Development
+
+### Schema
+
+Migrations are plain SQL files in `internal/store/migrations`, embedded into the
+binary and applied in version order. Each runs in its own transaction and is
+recorded in `schema_migrations`, so re-running is always safe.
+
+```sh
+DATABASE_URL=postgres://aic_owner@localhost/aic go run ./cmd/migrate
+```
+
+### Tests
+
+The isolation suite creates and drops its own databases, so it only runs against
+an explicitly disposable Postgres (never a shared one):
+
+```sh
+createdb aic_test
+AIC_TEST_DSN="postgres://aic_owner@/aic_test?host=/tmp&port=55432" go test ./...
+```
+
+`internal/spike` is a throwaway verification harness for the macOS sandbox; see
+its README. It is not production code and must not be promoted.
