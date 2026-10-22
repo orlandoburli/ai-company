@@ -63,6 +63,51 @@ See `docs/mvp-design.md` §13 for the full concept mapping.
 
 ## Development
 
+### Quick start
+
+`make` wraps the two roles and both processes. Postgres must be running and the
+`aic_owner` / `aic_app` roles must exist (see [Running](#running) and
+`docs/mvp-design.md` §10).
+
+```sh
+make web-install   # once
+make dev           # migrate + seed + API on :8080 + web on :3000
+```
+
+`make dev` is safe to re-run: migrations are recorded, and the seed exits
+cleanly when its tenant already exists. It creates a development tenant with the
+three example products, four projects and 23 work items — epics with children,
+mixed statuses, dependency edges, one paused item and one pinned item — so the
+board and the queue have something real to render.
+
+Default sign-in: `owner@acme.dev` / `correct-horse-battery-staple`.
+
+| Target | What it does |
+| --- | --- |
+| `make dev` | `migrate`, `seed`, then API and web together |
+| `make migrate` | apply schema as `MIGRATE_URL` (owner role) |
+| `make seed` | development tenant + backlog as `DATABASE_URL` |
+| `make api` | API only |
+| `make web-install` / `make web` | web dependencies / Next.js dev server |
+| `make test` | `go test -count=1 ./...` against `AIC_TEST_DSN` |
+| `make build`, `make fmt`, `make vet` | build, format, vet |
+
+| Variable | Default |
+| --- | --- |
+| `DATABASE_URL` | `postgres://aic@localhost/aic` — runtime role |
+| `MIGRATE_URL` | `postgres://aic_owner@localhost/aic` — schema owner |
+| `ADDR` | `:8080` |
+| `SEED_FLAGS` | extra flags for `cmd/seed` |
+
+To seed a different tenant without dropping the database:
+
+```sh
+make seed SEED_FLAGS="-slug studio-x -email me@studio-x.dev -tenant 'Studio X'"
+```
+
+`cmd/seed` flags: `-dsn`, `-email`, `-password`, `-name`, `-tenant`, `-slug`,
+`-timeout`. It refuses to reuse an email that belongs to another tenant.
+
 ### Schema
 
 Migrations are plain SQL files in `internal/store/migrations`, embedded into the
@@ -80,8 +125,11 @@ an explicitly disposable Postgres (never a shared one):
 
 ```sh
 createdb aic_test
-AIC_TEST_DSN="postgres://aic_owner@/aic_test?host=/tmp&port=55432" go test ./...
+AIC_TEST_DSN="postgres://aic_owner@/aic_test?host=/tmp&port=55432" go test -count=1 ./cmd/... ./internal/...
 ```
+
+Package patterns are explicit rather than `./...` because `web/node_modules`
+ships a vendored Go package that has no business in this suite.
 
 `internal/spike` is a throwaway verification harness for the macOS sandbox; see
 its README. It is not production code and must not be promoted.

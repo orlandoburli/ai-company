@@ -14,6 +14,21 @@ current edge of it so a later session does not have to rediscover it.
 | M3 — graph engine and checkpoints | not started | — |
 | M4 — GitHub, memory, LLM ranking, backoff | not started | — |
 
+## Dev harness
+
+`make dev` runs migrations (owner role), seeds, and starts the API and Next.js
+together. `cmd/seed` is a development tool, not a fixture loader: it uses the
+ordinary stores and the runtime connection, so what it writes has the same RLS
+behaviour, per-tenant numbering and activity entries as the API. Re-running is a
+no-op once the tenant slug exists; a second tenant needs a different `-slug` and
+`-email`.
+
+The dataset is three products (FazGiro, Vendamatica, ProntaLoja), four projects
+and 23 items across every status and kind, with four blocked-by edges, one
+paused item and one pinned item. That is what exercises the board grouping, the
+tree rollup and the queue's eligibility-before-order rule without hand-clicking
+fixtures.
+
 ## Schema
 
 Migrations are plain SQL, embedded and applied by `cmd/migrate`:
