@@ -1114,12 +1114,17 @@ cmd.WaitDelay = 10 * time.Second                     // then SIGKILL the whole g
   and the shim kills its own group. This survives `SIGKILL` of the server, which
   no `defer` can.
 - **Rlimits**, set by the shim before it forks (children inherit): `RLIMIT_CPU`
-  (2h), `RLIMIT_FSIZE` (2 GiB), `RLIMIT_NPROC` (512), `RLIMIT_CORE=0`, and
-  `umask 077`. **Do not set `RLIMIT_AS` on Darwin**: it collides with V8/Go
-  virtual reservations (JSC cage, Go arena) and kills healthy Node and Go
-  processes at a few hundred MB. Sample RSS instead (`ps`/`libproc`) and kill
-  the group on a sustained breach. `RLIMIT_NPROC` is per-UID on macOS, not
-  per-tree — treat it as a forkbomb backstop, never as a per-run quota.
+  (2h), `RLIMIT_FSIZE` (2 GiB), `RLIMIT_NPROC` (**2048**, not a small number —
+  see below), `RLIMIT_CORE=0`, and `umask 077`. **Do not set `RLIMIT_AS` on
+  Darwin**: it collides with V8/Go virtual reservations (JSC cage, Go arena) and
+  kills healthy Node and Go processes at a few hundred MB. Sample RSS instead
+  (`ps`/`libproc`) and kill the group on a sustained breach. `RLIMIT_NPROC` is
+  **per-UID on macOS, not per-tree**, and it counts every process the operator
+  already owns: 480 concurrent processes were measured on this machine (browser,
+  IDE, agent CLIs), so any cap near a few hundred is immediately fatal and would
+  present as a broken shim rather than a limit. Treat it as a forkbomb backstop
+  only, set it far above the machine's idle count, and never as a per-run quota
+  — per-run caps come from `max_concurrency` and the worker pool.
 - **Wall clock:** deadline → `SIGTERM` to the group → 10s grace → `SIGKILL`. The
   adapter reports `exit_reason=timeout`; the worktree is preserved for
   inspection.
@@ -1168,6 +1173,19 @@ grandchildren stay contained.
 - `(deny mach-lookup)` blocks the keychain: `security find-generic-password`
   reads the login keychain through a mach service, not a file. It also blocks
   `mDNSResponder`, which is why DNS dies along with the socket.
+- **A sandboxed process cannot install a second, weaker sandbox (verified).**
+  `sandbox_init`/`sandbox_apply` requires the hardened runtime, so an agent
+  that can execute a copy of `sandbox-exec` from inside its own sandbox gets
+  `sandbox_apply: Operation not permitted` rather than a fresh profile. This is
+  a kernel-enforced restriction, not a policy rule: there is **no** `(deny
+  sandbox)` operation in this SBPL dialect (`unbound variable: sandbox`), and
+  none is needed. It is the strongest single property of the profile — an agent
+  cannot talk its way out of the boundary, only within it.
+- Note the boundary is **the sandbox itself, not the CLI**: `claude` runs as a
+  214 MB native Mach-O binary under `$HOME` (nvm), not a Node script, so
+  denying `$HOME` reads also denies the CLI. Stage a version-pinned copy under
+  Application Support and allow that one literal path, so the exec surface is
+  one file rather than every package in `~/.nvm`.
 - Gotchas that decide whether this works at all: rules are last-match-wins, so
   put specific allows *after* the broad `$HOME` deny; use `localhost`, not
   `127.0.0.1`, inside `(remote ip ...)`; allow `/dev/null` literally or half the
