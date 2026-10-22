@@ -21,6 +21,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/agent/adapters"
 	"github.com/orlandoburli/ai-company/internal/api"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 )
@@ -82,9 +84,20 @@ func run() error {
 		}
 	}
 
+	agentStore := agent.NewStore(db)
+	agentHub := agent.NewHub()
+	worker := agent.NewWorker(agentStore, agentHub,
+		[]agent.Adapter{adapters.NewCLI(), adapters.NewAPI()},
+		agent.WithWorkerLogger(log))
+	worker.Start(ctx)
+
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           api.New(db, log, api.WithSecureCookies(*secureCookies)).Handler(),
+		Addr: *addr,
+		Handler: api.New(db, log,
+			api.WithSecureCookies(*secureCookies),
+			api.WithAgentRuntime(agentStore, agentHub),
+			api.WithAgentWorker(worker),
+		).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

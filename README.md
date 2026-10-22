@@ -59,6 +59,7 @@ See `docs/mvp-design.md` §13 for the full concept mapping.
 
 - [docs/requirements.md](docs/requirements.md) — full product requirements
 - [docs/mvp-design.md](docs/mvp-design.md) — MVP architecture, data model, screens and milestones
+- [docs/m2-contract.md](docs/m2-contract.md) — agreed M2 agent/chat endpoints and payloads
 - [docs/implementation-notes.md](docs/implementation-notes.md) — what is built, current deviations and known gaps
 
 ## Development
@@ -81,6 +82,28 @@ mixed statuses, dependency edges, one paused item and one pinned item — so the
 board and the queue have something real to render.
 
 Default sign-in: `owner@acme.dev` / `correct-horse-battery-staple`.
+
+### Agents and chat (M2)
+
+The seed also ensures two mentionable agents: `@dev` runs the local Claude CLI
+(`claude -p --output-format stream-json --verbose`) and `@pm` calls an
+OpenAI-compatible API (`gpt-4o-mini`). Seeding is idempotent and never overwrites
+an agent you edited. API agents name the server environment variable that holds
+the key (`key_env`, default `OPENAI_API_KEY`); the key itself is never stored,
+returned or sent to the browser. Export it before `make dev` if you want `@pm`
+to answer — without it the run fails cleanly and the thread gets a system
+message naming the missing variable.
+
+Every item has one chat thread. Mention an enabled agent (`@dev …`) to queue one
+run per mention, or use the manual "Run agent" action beside the thread. The API
+process owns the worker: it claims jobs from Postgres, enforces per-agent
+concurrency and streams output over Server-Sent Events
+(`GET /api/jobs/{id}/events`, replayable with `?after_seq=`), falling back to
+`GET /api/jobs/{id}/logs` when the stream drops. CLI adapters receive a narrowed
+environment (no `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`) and are killed as a
+process group on cancel. Limits: 100 queued jobs per tenant, two workers, two
+concurrent runs per agent by default, a two-minute lease and three attempts
+(10s·2^(n-1) backoff capped at 5m). See `docs/m2-contract.md` for the payloads.
 
 ### Smoke check
 
@@ -220,6 +243,13 @@ curl -b cookies.txt localhost:8080/api/auth/me
 | `GET /api/queue` | dispatch order: pinned first, then base score |
 | `GET /api/tree` | nested projects/items with subtree progress rollup |
 | `GET /api/board` | items grouped into the seven status columns |
+| `GET/POST /api/agents`, `GET/PATCH/DELETE /api/agents/{id}` | agent registry; writes are owner/admin only |
+| `POST /api/items/{id}/thread` | get-or-create the item's chat thread |
+| `GET /api/threads/{id}`, `/messages`, `/jobs` | thread, message history and run history |
+| `POST /api/threads/{id}/messages` | post a message; every enabled `@mention` queues a run |
+| `POST /api/threads/{id}/jobs` | manual run, with optional instructions recorded as a message |
+| `GET /api/jobs/{id}`, `/logs`, `/events` | job state, append-only logs and an SSE stream |
+| `POST /api/jobs/{id}/cancel` | cancel a queued or running job |
 
 Invitations have no mailer in the MVP: creating one returns the single-use token
 (and an `accept_url`) exactly once, to be passed to the invitee out of band. Only

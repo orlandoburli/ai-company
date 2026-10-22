@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/auth"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
@@ -30,6 +31,9 @@ type Server struct {
 	db           *sql.DB
 	tenancy      *tenancy.Store
 	work         *work.Store
+	agents       *agent.Store
+	agentHub     *agent.Hub
+	agentWorker  jobCanceller
 	log          *slog.Logger
 	limits       *rateLimiter
 	secureCookie bool
@@ -56,6 +60,8 @@ func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
 		db:         db,
 		tenancy:    tenancy.NewStore(db),
 		work:       work.NewStore(db),
+		agents:     agent.NewStore(db),
+		agentHub:   agent.NewHub(),
 		log:        log,
 		limits:     newRateLimiter(defaultRateLimits()),
 		sessionTTL: 30 * 24 * time.Hour,
@@ -142,6 +148,34 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/queue", s.authenticated(s.handleQueue))
 
 	mux.Handle("GET /api/board", s.authenticated(s.handleBoard))
+
+	// Agents, chat and jobs (M2). Reads are open to every member; posting,
+	// running and cancelling are work writes, so guests are excluded. The
+	// registry itself is a settings surface owner/admin only.
+	mux.Handle("GET /api/agents", s.authenticated(s.handleListAgents))
+	mux.Handle("POST /api/agents",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleCreateAgent)))
+	mux.Handle("GET /api/agents/{id}", s.authenticated(s.handleGetAgent))
+	mux.Handle("PATCH /api/agents/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handlePatchAgent)))
+	mux.Handle("DELETE /api/agents/{id}",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleDeleteAgent)))
+
+	mux.Handle("POST /api/items/{id}/thread",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleItemThread)))
+	mux.Handle("GET /api/threads/{id}", s.authenticated(s.handleGetThread))
+	mux.Handle("GET /api/threads/{id}/messages", s.authenticated(s.handleThreadMessages))
+	mux.Handle("POST /api/threads/{id}/messages",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePostThreadMessage)))
+	mux.Handle("GET /api/threads/{id}/jobs", s.authenticated(s.handleThreadJobs))
+	mux.Handle("POST /api/threads/{id}/jobs",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleRunThreadAgent)))
+
+	mux.Handle("GET /api/jobs/{id}", s.authenticated(s.handleGetJob))
+	mux.Handle("GET /api/jobs/{id}/logs", s.authenticated(s.handleJobLogs))
+	mux.Handle("GET /api/jobs/{id}/events", s.authenticated(s.handleJobEvents))
+	mux.Handle("POST /api/jobs/{id}/cancel",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleCancelJob)))
 
 	return s.recoverer(s.accessLog(mux))
 }
@@ -242,6 +276,17 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Flush forwards to the underlying writer so SSE works through the access-log
+// middleware's wrapper.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the real writer.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

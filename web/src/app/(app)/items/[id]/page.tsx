@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, type PatchItemBody } from "@/lib/api";
@@ -34,6 +34,7 @@ import {
   Toasts,
   apiErrorMessage,
 } from "@/components/primitives";
+import { ChatPanel } from "@/components/chat";
 import { FactorTable } from "@/components/factor-table";
 import { ItemIndicators } from "@/components/item-bits";
 import { IconPause, IconPin, IconTrash } from "@/components/icons";
@@ -64,7 +65,7 @@ function ItemDetail() {
     return m;
   }, [members.data]);
 
-  const [tab, setTab] = useState<"details" | "activity">("details");
+  const [tab, setTab] = useState<"details" | "activity" | "chat">("details");
 
   const item = detail.data?.item ?? null;
   const [draft, setDraft] = useState<EditableDraft | null>(null);
@@ -153,7 +154,7 @@ function ItemDetail() {
       />
 
       <div className="tabs" role="tablist" aria-label="Item tabs">
-        {(["details", "activity"] as const).map((t) => (
+        {(["details", "activity", "chat"] as const).map((t) => (
           <button
             key={t}
             role="tab"
@@ -163,7 +164,7 @@ function ItemDetail() {
             aria-controls={`panel-${t}`}
             onClick={() => setTab(t)}
           >
-            {t === "details" ? "Details" : "Activity"}
+            {t === "details" ? "Details" : t === "chat" ? "Chat" : "Activity"}
           </button>
         ))}
       </div>
@@ -210,7 +211,7 @@ function ItemDetail() {
           />
           <ScorePanel item={item} score={score.data} loading={score.loading} />
         </div>
-      ) : (
+      ) : tab === "activity" ? (
         <ActivityTimeline
           entries={activity.data?.activity ?? []}
           loading={activity.loading}
@@ -218,10 +219,53 @@ function ItemDetail() {
           memberName={memberName}
           onRetry={() => void activity.reload()}
         />
+      ) : (
+        <ChatPanelSlot itemId={item.id} canWrite={canWrite} />
       )}
 
       <Toasts toasts={toasts} />
     </div>
+  );
+}
+
+/* --- chat tab: get-or-create the item's thread --------------------------------- */
+
+function ChatPanelSlot(props: { itemId: string; canWrite: boolean }) {
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const open = useCallback(async () => {
+    setError(null);
+    try {
+      const r = await api.itemThread(props.itemId);
+      setThreadId(r.thread.id);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    }
+  }, [props.itemId]);
+
+  useEffect(() => {
+    void open();
+  }, [open]);
+
+  if (error) {
+    return (
+      <ErrorBlock
+        title="The chat thread could not be opened."
+        message={error}
+        retry={() => void open()}
+      />
+    );
+  }
+  if (!threadId) {
+    return <Skeleton h={220} />;
+  }
+  return (
+    <ChatPanel
+      threadId={threadId}
+      canWrite={props.canWrite}
+      fullHref={`/chat/${threadId}`}
+    />
   );
 }
 

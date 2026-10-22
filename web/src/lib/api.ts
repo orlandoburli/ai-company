@@ -222,6 +222,62 @@ export const api = {
 
   board: (filter?: ListItemsFilter) =>
     get<{ columns: BoardColumn[] }>("/api/board" + query({ ...filter })),
+
+  // --- agents, chat threads, jobs (M2 contract) -----------------------------
+
+  listAgents: () => get<{ agents: Agent[] }>("/api/agents"),
+
+  createAgent: (b: AgentInput) => post<{ agent: Agent }>("/api/agents", b),
+
+  getAgent: (id: string) => get<{ agent: Agent }>(`/api/agents/${id}`),
+
+  updateAgent: (id: string, b: AgentInput) =>
+    patch<{ agent: Agent }>(`/api/agents/${id}`, b),
+
+  deleteAgent: (id: string) => del(`/api/agents/${id}`),
+
+  /** Get-or-create the one thread attached to an item. */
+  itemThread: (itemId: string) =>
+    post<{ thread: Thread }>(`/api/items/${itemId}/thread`),
+
+  getThread: (id: string) => get<{ thread: Thread }>(`/api/threads/${id}`),
+
+  threadMessages: (threadId: string, afterSeq?: number, limit?: number) =>
+    get<{ messages: Message[] }>(
+      `/api/threads/${threadId}/messages` +
+        query({ after_seq: afterSeq?.toString(), limit: limit?.toString() }),
+    ),
+
+  postThreadMessage: (threadId: string, body_md: string) =>
+    post<{ message: Message; jobs: Job[] }>(
+      `/api/threads/${threadId}/messages`,
+      { body_md },
+    ),
+
+  threadJobs: (threadId: string, limit?: number) =>
+    get<{ jobs: Job[] }>(
+      `/api/threads/${threadId}/jobs` + query({ limit: limit?.toString() }),
+    ),
+
+  /** Manual "Run agent" — queues a job with the same context as a mention. */
+  createThreadJob: (
+    threadId: string,
+    b: { agent_id: string; instructions?: string },
+  ) =>
+    post<{ job: Job; message: Message | null }>(
+      `/api/threads/${threadId}/jobs`,
+      b,
+    ),
+
+  getJob: (id: string) => get<{ job: Job }>(`/api/jobs/${id}`),
+
+  jobLogs: (id: string, afterSeq?: number, limit?: number) =>
+    get<{ logs: LogEntry[]; job: Job }>(
+      `/api/jobs/${id}/logs` +
+        query({ after_seq: afterSeq?.toString(), limit: limit?.toString() }),
+    ),
+
+  cancelJob: (id: string) => post<{ job: Job }>(`/api/jobs/${id}/cancel`),
 };
 
 /** Filters accepted by /api/items and /api/board. */
@@ -250,3 +306,158 @@ type PatchItemBody = {
 };
 
 export type { PatchItemBody };
+
+// --- M2 types: agents, threads, messages, jobs ------------------------------
+
+export type AgentKind = "cli" | "api";
+
+/**
+ * Opaque config object; the server validates it per `kind`
+ * (cli: bin/args/output_format/timeout_sec, api: provider/model/base_url/
+ * key_env/max_tokens). Secrets never live here — `key_env` names an
+ * environment variable.
+ */
+export type AgentConfig = Record<string, unknown>;
+
+export interface Agent {
+  id: string;
+  name: string;
+  role: string;
+  kind: AgentKind;
+  config: AgentConfig;
+  capabilities: AgentConfig;
+  concurrency_limit: number;
+  enabled: boolean;
+  soul_md: string;
+  skills_policy: AgentConfig;
+  fallbacks: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Body for POST /api/agents and PATCH /api/agents/{id}. House convention:
+ * an absent field leaves it unchanged, "" clears a nullable string.
+ */
+export interface AgentInput {
+  name?: string;
+  role?: string;
+  kind?: AgentKind;
+  config?: AgentConfig;
+  capabilities?: AgentConfig;
+  concurrency_limit?: number;
+  enabled?: boolean;
+  soul_md?: string;
+  skills_policy?: AgentConfig;
+  fallbacks?: string[];
+}
+
+export interface Thread {
+  id: string;
+  /** Nullable: standalone threads may not point at an item (Go pointer). */
+  item_id?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
+export type MessageAuthorKind = "human" | "agent" | "system";
+
+export interface Message {
+  id: string;
+  thread_id: string;
+  seq: number;
+  author_kind: MessageAuthorKind;
+  author_user_id?: string;
+  author_agent_id?: string;
+  body_md: string;
+  created_at: string;
+}
+
+export type JobState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface Job {
+  id: string;
+  /** Go structs are pointers and can emit null. */
+  thread_id: string | null;
+  agent_id?: string | null;
+  state: JobState;
+  error?: string | null;
+  instructions?: string | null;
+  /** Set once the job's reply message exists; null until then. */
+  message_id?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface LogEntry {
+  seq: number;
+  job_id?: string;
+  stream?: string;
+  level?: string;
+  kind?: string;
+  message: string;
+  ts?: string;
+}
+
+/** True once a job is past its terminal transition. */
+export function isTerminalJobState(state: JobState): boolean {
+  return state === "succeeded" || state === "failed" || state === "cancelled";
+}
+
+/* --- job event stream (SSE) ------------------------------------------------- */
+
+export interface JobStreamHandlers {
+  onLog: (entry: LogEntry) => void;
+  onState: (job: Job) => void;
+  onDone: () => void;
+  /** EventSource failed; per the contract the caller falls back to polling. */
+  onError: () => void;
+}
+
+/**
+ * Opens the text/event-stream at /api/jobs/{id}/events?after_seq=N and parses
+ * the `log` / `state` / `done` frames. Same-origin, so the session cookie is
+ * sent implicitly. Returns a close function.
+ */
+export function openJobEvents(
+  jobId: string,
+  afterSeq: number,
+  h: JobStreamHandlers,
+): () => void {
+  const es = new EventSource(
+    `/api/jobs/${jobId}/events?after_seq=${encodeURIComponent(String(afterSeq))}`,
+  );
+
+  es.addEventListener("log", (e: MessageEvent<string>) => {
+    const entry = parseFrame<LogEntry>(e.data);
+    if (entry) h.onLog(entry);
+  });
+  es.addEventListener("state", (e: MessageEvent<string>) => {
+    const job = parseFrame<{ job: Job }>(e.data)?.job;
+    if (job) h.onState(job);
+  });
+  es.addEventListener("done", () => h.onDone());
+  es.addEventListener("error", () => {
+    // Stop the EventSource (it would otherwise auto-reconnect) and let the
+    // caller fall back to polling /logs + /jobs.
+    es.close();
+    h.onError();
+  });
+
+  return () => es.close();
+}
+
+function parseFrame<T>(data: string): T | null {
+  try {
+    return JSON.parse(data) as T;
+  } catch {
+    // A malformed frame is not an error envelope; skip it.
+    return null;
+  }
+}

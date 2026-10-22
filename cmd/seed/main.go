@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/auth"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
@@ -82,7 +84,13 @@ func run() error {
 			switch pgErr.ConstraintName {
 			case "tenants_slug_key":
 				slog.Info("tenant already seeded, nothing to do", "slug", *slug)
-				fmt.Printf("Already seeded: tenant %q exists. Nothing was created; use a different -slug and -email to add another tenant.\n", *slug)
+				// Still make sure the M2 agent registry exists: an existing dev
+				// tenant from before agents were introduced should gain them
+				// without duplicating anything else.
+				if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
+					return fmt.Errorf("ensure agents: %w", err)
+				}
+				fmt.Printf("Already seeded: tenant %q exists. Nothing new was created; the sample agents are ensured.\n", *slug)
 				return nil
 			case "users_email_key":
 				return fmt.Errorf("email %q already belongs to another tenant; pass -email with a different address", *email)
@@ -98,6 +106,9 @@ func run() error {
 	started := time.Now()
 	if err := seeder.seedAll(ctx); err != nil {
 		return err
+	}
+	if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
+		return fmt.Errorf("seed agents: %w", err)
 	}
 
 	fmt.Printf(`Seeded tenant %q (%s) in %s.
@@ -448,4 +459,85 @@ func products() []productSeed {
 			},
 		},
 	}
+}
+
+// ensureSeedAgents makes the two sample agents available on fresh and existing
+// dev tenants alike. It never overwrites an agent a human has edited: names are
+// the identity, and an existing row is left exactly as it is.
+func ensureSeedAgents(ctx context.Context, db *sql.DB, ts *tenancy.Store, email, slug string) error {
+	user, err := ts.FindUserByEmail(ctx, email)
+	if err != nil {
+		return fmt.Errorf("find seed user: %w", err)
+	}
+	memberships, err := ts.MembershipsForUser(ctx, user.ID)
+	if err != nil {
+		return fmt.Errorf("list memberships: %w", err)
+	}
+	var tenantID string
+	for _, m := range memberships {
+		if m.TenantSlug == slug {
+			tenantID = m.TenantID
+			break
+		}
+	}
+	if tenantID == "" {
+		return fmt.Errorf("user %s is not a member of tenant %q", email, slug)
+	}
+
+	sc := tenancy.Scope{TenantID: tenantID, UserID: user.ID, Role: tenancy.RoleOwner}
+	store := agent.NewStore(db)
+
+	devSoul := `You are **dev**, the implementation agent for this tenant.
+
+You write and explain code, read the repository when a worktree is provided,
+and keep changes small and reversible. You do not commit, push, open pull
+requests or start workflows yourself: the server handles those after a human
+checkpoint. When a request is ambiguous, ask one concrete question instead of
+guessing.`
+	pmSoul := `You are **pm**, the product agent for this tenant.
+
+You keep the backlog honest: turn vague requests into scoped items, surface
+dependencies and risks, and write crisp acceptance criteria. You do not invent
+status. You are a thinking partner for the owner, not an approval authority.`
+
+	agents := []agent.Agent{
+		{
+			Name:             "dev",
+			Role:             agent.RoleDev,
+			Kind:             agent.KindCLI,
+			Config:           json.RawMessage(`{"bin":"claude","args":["-p","--output-format","stream-json","--verbose"],"output_format":"stream-json","timeout_sec":300}`),
+			Capabilities:     json.RawMessage(`{"code":true,"shell":true,"streaming":true,"usage":true}`),
+			ConcurrencyLimit: 2,
+			Enabled:          true,
+			SoulMD:           devSoul,
+			SkillsPolicy:     json.RawMessage(`{"auto":true,"max_attach":3}`),
+			Fallbacks:        json.RawMessage(`[]`),
+			CreatedBy:        &user.ID,
+		},
+		{
+			Name:             "pm",
+			Role:             agent.RolePM,
+			Kind:             agent.KindAPI,
+			Config:           json.RawMessage(`{"provider":"openai","model":"gpt-4o-mini","key_env":"OPENAI_API_KEY","max_tokens":1024}`),
+			Capabilities:     json.RawMessage(`{"code":false,"shell":false,"streaming":false,"usage":true}`),
+			ConcurrencyLimit: 2,
+			Enabled:          true,
+			SoulMD:           pmSoul,
+			SkillsPolicy:     json.RawMessage(`{"auto":true,"max_attach":3}`),
+			Fallbacks:        json.RawMessage(`[]`),
+			CreatedBy:        &user.ID,
+		},
+	}
+
+	for _, a := range agents {
+		if _, err := store.GetAgentByName(ctx, sc, a.Name); err == nil {
+			continue
+		} else if !errors.Is(err, agent.ErrNotFound) {
+			return err
+		}
+		if _, err := store.CreateAgent(ctx, sc, a); err != nil {
+			return fmt.Errorf("create agent %s: %w", a.Name, err)
+		}
+	}
+	return nil
 }

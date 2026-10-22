@@ -8,9 +8,9 @@ current edge of it so a later session does not have to rediscover it.
 
 | Milestone | Backend | Interface |
 | --- | --- | --- |
-| M0 — scaffold, tenancy, auth, tenant admin | done | in progress (`web/`) |
-| M1 — work structure, queue overrides, base score, invitations | done | in progress (`web/`) |
-| M2 — first agent | not started | — |
+| M0 — scaffold, tenancy, auth, tenant admin | done | done |
+| M1 — work structure, queue overrides, base score, invitations | done | done |
+| M2 — first agent | done | done |
 | M3 — graph engine and checkpoints | not started | — |
 | M4 — GitHub, memory, LLM ranking, backoff | not started | — |
 
@@ -40,6 +40,10 @@ Migrations are plain SQL, embedded and applied by `cmd/migrate`:
 - `0004_content.sql` — products, projects, items, dependencies, activity log,
   per-tenant counters.
 - `0005_invites.sql` — single-use invitations.
+- `0006_tree_cycles.sql` — parent-cycle triggers for items and projects.
+- `0007_agents.sql` — agents, threads, messages, `agent_jobs`, append-only
+  `job_logs`, plus the narrowly scoped `worker_claim_job` / `worker_reap_jobs`
+  functions.
 
 Rules enforced by the database rather than by the application:
 
@@ -50,6 +54,11 @@ Rules enforced by the database rather than by the application:
   `AIC02`. The API maps these to `409 dependency_cycle` / `409 self_dependency`.
 - The activity log has no `UPDATE`/`DELETE` for the app role, and a trigger
   raises `AIC03` for anyone else.
+- `job_logs` is append-only in the same way (`AIC05`), and the app role has only
+  `SELECT`/`INSERT` on it — a job's output cannot be rewritten after the fact.
+- Agent tables use the same `(id, tenant_id)` composite foreign keys, so a job
+  cannot point at another tenant's agent, thread, message or item. A partial
+  unique index allows at most one item thread per item.
 - Deletes refuse non-empty products and projects instead of cascading a
   mis-click. Items delete normally; their edges cascade.
 
@@ -152,14 +161,111 @@ and projects. The trigger is not `SECURITY DEFINER` and walks only the row's
 tenant, so the check runs through row-level security like every other access.
 
 
+## Agent runtime (M2)
+
+The registry (`agents`) stores one row per mentionable worker: unique `name`,
+`role` (`pm|dev|reviewer|qa|researcher`), `kind` (`cli|api`), an opaque `config`
+validated per kind, `soul_md`, `capabilities`/`skills_policy`/`fallbacks`, a
+`concurrency_limit` (default 2) and `enabled`. Owner/admin manage it; every role
+can read it. `cmd/seed` ensures `dev` (Claude CLI) and `pm` (OpenAI API) without
+overwriting an edited row, and also runs on an already-seeded tenant.
+
+Chat is deliberately a thin M2 slice of the future context pipeline:
+
+- Each item has at most one thread (`context_kind = 'item'`); M2 exposes no
+  product or free threads yet.
+- Messages are ordered by a per-thread `seq`, with `human`, `agent` and `system`
+  authors. `@name` mentions are resolved at post time: every enabled mentioned
+  agent gets exactly one queued job, and an unknown or disabled mention is a
+  `422` that writes nothing.
+- The manual run action queues a job directly and records its optional
+  instructions as a human message.
+- The prompt is the agent's soul (never trimmed), trusted item context (title,
+  status, kind, priority, description), the last 20 messages bounded by
+  characters, and the instruction last. Skills, memory and task files are M3.
+
+The worker lives in the API process and claims from `agent_jobs` in Postgres:
+
+- `worker_claim_job` picks the oldest queued job whose agent is enabled and
+  whose per-agent running count is below `concurrency_limit`, under a row lock;
+  `worker_reap_jobs` returns jobs whose lease expired to the queue. Both are
+  `SECURITY DEFINER` functions owned by `aic_auth` because a claim necessarily
+  crosses tenants; there is still no privileged runtime connection.
+- A claimed job gets a two-minute lease that the worker heartbeats. Two workers
+  run globally, the queue is capped at 100 jobs per tenant, and the poll
+  interval is 500 ms.
+- Cancellation is terminal: the API marks the job cancelled, the worker cancels
+  the adapter context, and the terminal check after a run prevents a late
+  success from resurrecting it. Worker shutdown requeues without counting an
+  attempt.
+- Transient failures requeue with `10s · 2^(attempt-1)` (capped at 5m) up to
+  three attempts; permanent failures finish the job and post a system message to
+  the thread. Adapter errors are classified, never string-matched.
+
+Adapters:
+
+- CLI: the prompt is the final argv element, the child gets its own process
+  group (cancel kills the group), stdout is parsed as `stream-json` or shown as
+  a text tail, and the environment is an allowlist that drops `*KEY*`,
+  `*TOKEN*`, `*SECRET*` and `*PASSWORD*`. Without a job workdir it runs in a
+  throwaway temp directory and removes it afterwards.
+- API: OpenAI-compatible chat completions and Anthropic messages, one call per
+  job, key read from the environment variable named by `config.key_env`. It
+  does not stream tokens or call tools yet; the UI still gets progress from the
+  job state and log rows.
+
+The SSE hub is in-process: `GET /api/jobs/{id}/events?after_seq=` replays log
+rows and then streams `log`, `state` and a final `done`; the browser falls back
+to polling `/logs` if the stream drops. Because the hub is memory, replay after
+a restart still works from `job_logs`, but live frames are per-process — the
+same single-process constraint as the rate limiter.
+
+## Agent security notes
+
+- The runtime role is a member of `aic_app`, not the schema owner and not
+  `BYPASSRLS`. `worker_claim_job` / `worker_reap_jobs` are the only
+  cross-tenant door, they take no caller-supplied tenant id, and `EXECUTE` is
+  revoked from `PUBLIC` before being granted to `aic_app`.
+- API keys are never stored: `config.key_env` names an environment variable,
+  and the adapter reports only the variable name when it is missing.
+- `job_logs` is append-only (`AIC05`). It is **not partitioned in M2**: the
+  blanket `ALTER DEFAULT PRIVILEGES` in `0001` would give `aic_app` direct
+  access to child partitions, bypassing the parent's RLS. Partitioning waits
+  until per-partition RLS/revokes exist.
+- CLI isolation is the process boundary plus the narrowed environment and
+  process group. The macOS sandbox profile and worktree provisioning arrive
+  with the workflow engine; chat runs in a temp directory and cannot touch the
+  operator's checkout through a `..` cwd.
+
+## M2 interface
+
+`web/` adds the item **Chat** tab, a full-page `/chat/[threadId]`, and
+`/settings/agents`. The chat timeline merges human/agent/system messages with
+job chips and live logs; the composer has an `@` mention menu and a manual run
+dialog. The registry editor manages role/kind/config/soul/concurrency without
+ever accepting a secret. Streaming uses one `EventSource` per non-terminal job
+with polling fallback, and guests get a read-only chat.
+
 ## Known gaps
 
-- `item_failures`, backoff and `exhausted` (M3/M4). No failure counter exists
-  yet.
+- `item_failures`, backoff and `exhausted` at item level (M3/M4). Agent jobs have
+  their own attempt counter, but items have none yet.
 - `priority_rankings` / ranking runs, LLM ranking, stale-run fallback (M4).
-- Start-now (M4) and agent assignees (`agents` arrives in M2).
+- Start-now (M4) and agent assignees (M3).
+- Graph workflows, checkpoints and the merge node (M3) — chat jobs are the only
+  runs that exist.
+- Skills, memory (`memory_entries`) and task files (M3/M4) are designed but not
+  built; the agent prompt in M2 is soul + item context + thread history.
+- Worktrees, the macOS sandbox profile and the per-branch workspace isolation
+  arrive with the workflow engine. M2 CLI runs use a temp directory.
+- The API adapter does not stream tokens and cannot call tools yet; the CLI
+  adapter has no tool-permission gate.
+- `job_logs` is append-only but not partitioned (see above).
+- Cost is recorded per job (`cost_usd`) but nothing budgets or caps it.
 - No email delivery; no password reset.
 - Rate limiting charges the login bucket after Argon2 verification, so it stops
   credential stuffing but does not shield CPU from a flood of login attempts.
 - Project nesting has no depth limit (items are capped at 6); cycles are
   rejected by `0006_tree_cycles.sql`.
+- The SSE hub and the rate limiter are per-process, so running more than one
+  API process would split live job frames and counters.

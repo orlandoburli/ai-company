@@ -16,6 +16,7 @@ import {
   apiErrorMessage,
 } from "@/components/primitives";
 import { IconBuilding } from "@/components/icons";
+import { SettingsNav } from "@/components/settings-nav";
 
 const ROLES: Role[] = ["owner", "admin", "member", "guest"];
 
@@ -28,6 +29,7 @@ export default function SettingsPage() {
           Company, products, members and invitations. Some actions need owner or admin.
         </span>
       </div>
+      <SettingsNav />
       <TenantForm />
       <ProductsSection />
       <MembersSection />
