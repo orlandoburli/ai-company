@@ -44,18 +44,15 @@ func run(t *testing.T, prof string, argv ...string) Result {
 // TestControlProfileApplies guards every other test: if deny-default is not
 // actually being enforced, containment results are meaningless.
 func TestControlProfileApplies(t *testing.T) {
-	p, prof := fixture(t)
+	_, prof := fixture(t)
 
-	// must succeed
+	// must succeed: a profile that denies the most basic exec would make
+	// every containment result below meaningless.
 	r := run(t, prof, "/bin/echo", "CONTROL_OK")
 	if r.ExitCode != 0 || !strings.Contains(r.Stdout, "CONTROL_OK") {
 		t.Fatalf("profile does not permit basic exec: %+v", r)
 	}
 	t.Logf("control ok: %s", r.String())
-
-	// must fail: no process-exec for /usr/bin/sort without file-read
-	_ = p
-	t.Log("baseline control recorded")
 }
 
 // TestPathFilteredFileReadAborts records the measured constraint that shapes
@@ -99,21 +96,25 @@ func TestBareFileReadContains(t *testing.T) {
 	cases := []struct {
 		name    string
 		script  string
-		wantErr bool
+		wantOut string // substring expected on stdout
 	}{
-		{"write into worktree", "touch " + p.Worktree + "/.ok", false},
-		{"write into run root", "touch " + p.RunRoot + "/.ok", false},
-		{"write outside (home)", "touch $HOME/.aic_probe && echo WROTE", true},
-		{"read arity outside", "cat " + canary + " >/dev/null && echo READ", false}, // broad read: expected
+		{"write into worktree", "touch " + p.Worktree + "/.ok && echo WROTE", "WROTE"},
+		{"write into run root", "touch " + p.RunRoot + "/.ok && echo WROTE", "WROTE"},
+		{"write outside HOME", "touch $HOME/.aic_probe && echo WROTE", ""},
+		{"read outside (broad)", "cat " + canary + " && echo READ", "secretREAD"},
 	}
 	for _, tc := range cases {
 		r := run(t, prof, "/bin/sh", "-c", tc.script)
-		gotErr := r.ExitCode != 0 || !strings.Contains(r.Stdout, "OK") && strings.Contains(r.Stdout, "WROTE")
-		t.Logf("%-24s exit=%-4d stdout=%q stderr=%q", tc.name, r.ExitCode, r.Stdout, r.Stderr)
-		if tc.wantErr && strings.Contains(r.Stdout, "WROTE") {
-			t.Errorf("%s: agent wrote outside its sandbox", tc.name)
+		t.Logf("%-22s exit=%-4d stdout=%q stderr=%q", tc.name, r.ExitCode, r.Stdout, r.Stderr)
+		if tc.wantOut == "" {
+			if strings.Contains(r.Stdout, "WROTE") {
+				t.Errorf("%s: agent wrote outside its sandbox", tc.name)
+			}
+			continue
 		}
-		_ = gotErr
+		if !strings.Contains(r.Stdout, tc.wantOut) {
+			t.Errorf("%s: expected %q in stdout", tc.name, tc.wantOut)
+		}
 	}
 	// hard assertion on the single most important property
 	r := run(t, prof, "/bin/sh", "-c", "touch $HOME/.aic_probe2 && echo WROTE_OUTSIDE")
