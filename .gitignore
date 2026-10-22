@@ -1,0 +1,29 @@
+# Go
+/bin/
+*.test
+*.out
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Local env & secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local data / runtime artifacts
+/data/
+/tmp/
+.aic/
+*.log
+job_logs/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
