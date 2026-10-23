@@ -21,6 +21,7 @@ const NAV = [
   { href: "/queue", label: "Queue" },
   { href: "/runs", label: "Runs" },
   { href: "/checkpoints", label: "Checkpoints" },
+  { href: "/usage", label: "Usage" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -315,6 +316,8 @@ function UserMenu() {
         <div className="tiny muted">{me.user.email}</div>
       </div>
       <div className="menu__sep" />
+      <DesktopNotifications />
+      <div className="menu__sep" />
       <MenuItem
         onSelect={() => {
           router.push("/settings");
@@ -333,4 +336,127 @@ function UserMenu() {
       </MenuItem>
     </Menu>
   );
+}
+
+type DesktopState = "checking" | "off" | "on" | "unavailable";
+
+/** Push setup lives in the account menu; it never displays subscription keys. */
+function DesktopNotifications() {
+  const { canWrite } = useSession();
+  const [state, setState] = useState<DesktopState>("checking");
+  const [reason, setReason] = useState("");
+  const [permission, setPermission] = useState("checking");
+  const [serverStatus, setServerStatus] = useState("not checked");
+  const [subscriptionId, setSubscriptionId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    async function inspect() {
+      if (!("Notification" in window)) {
+        if (alive) { setState("unavailable"); setReason("This browser does not support notifications."); setPermission("unsupported"); setServerStatus("not reached"); }
+        return;
+      }
+      setPermission(Notification.permission);
+      if (!("serviceWorker" in navigator)) {
+        if (alive) { setState("unavailable"); setReason("This browser does not support service workers, which push needs."); setServerStatus("not reached"); }
+        return;
+      }
+      try {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (!registration?.pushManager) {
+          if (alive) { setState("unavailable"); setReason("No service worker is installed yet. Push needs one to receive notifications."); setServerStatus("not reached"); }
+          return;
+        }
+        const local = await registration.pushManager.getSubscription();
+        if (!local) {
+          if (alive) { setState("off"); setReason(""); setServerStatus("not subscribed"); }
+          return;
+        }
+        const result = await api.listPushSubscriptions();
+        const saved = result.subscriptions.find((entry) => entry.endpoint === local.endpoint);
+        if (alive) {
+          setState(saved ? "on" : "off");
+          setSubscriptionId(saved?.id ?? null);
+          setReason(saved ? "" : "A browser subscription exists but is not registered with this server.");
+          setServerStatus(saved ? "subscription saved" : "not subscribed");
+        }
+      } catch (error) {
+        if (alive) { setState("unavailable"); setReason(""); setServerStatus(pushIssue(error)); }
+      }
+    }
+    void inspect();
+    return () => { alive = false; };
+  }, []);
+
+  async function toggle() {
+    if (state === "checking" || state === "unavailable" || busy) return;
+    setBusy(true);
+    setReason("");
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration?.pushManager) throw new Error("No service worker is installed yet. Push needs one to receive notifications.");
+      const local = await registration.pushManager.getSubscription();
+      if (state === "on") {
+        if (!local || !subscriptionId) throw new Error("The browser subscription could not be matched to the server.");
+        await api.deletePushSubscription(subscriptionId);
+        await local.unsubscribe();
+        setSubscriptionId(null);
+        setState("off");
+        setReason("");
+        setServerStatus("subscription removed");
+      } else {
+        let currentPermission = Notification.permission;
+        if (currentPermission === "default") currentPermission = await Notification.requestPermission();
+        setPermission(currentPermission);
+        if (currentPermission !== "granted") throw new Error(currentPermission === "denied" ? "Browser permission is denied. Allow notifications in browser settings to continue." : "Browser permission was not granted.");
+        const pushSub = local ?? await registration.pushManager.subscribe({ userVisibleOnly: true });
+        const serialized = pushSub.toJSON();
+        if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys.auth) throw new Error("The browser did not provide a complete push subscription.");
+        try {
+          const result = await api.createPushSubscription({ endpoint: serialized.endpoint, keys: { p256dh: serialized.keys.p256dh, auth: serialized.keys.auth }, expirationTime: serialized.expirationTime });
+          setSubscriptionId(result.subscription.id);
+          setState("on");
+          setReason("");
+          setServerStatus("subscription saved");
+        } catch (error) {
+          if (error instanceof Error && "code" in error) setServerStatus(pushIssue(error));
+          if (!local) await pushSub.unsubscribe().catch(() => false);
+          throw error;
+        }
+      }
+    } catch (error) {
+      setState("unavailable");
+      const message = pushIssue(error);
+      setReason(error instanceof Error && "code" in error ? "" : message);
+      if (error instanceof Error && "code" in error) setServerStatus(message);
+      else if (serverStatus === "not checked") setServerStatus("not reached");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const status = state === "on" ? "On · this browser" : state === "off" ? "Off" : state === "checking" ? "Checking…" : "Unavailable";
+  const permissionCopy = permission === "checking" ? "checking" : permission;
+  const browserSupported = typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+  return <div className="desktop-push">
+    <MenuItem onSelect={() => void toggle()} disabled={state === "checking" || state === "unavailable" || busy || !canWrite} trailing={<span className={`push-state push-state--${state}`}>{busy ? "Working…" : status}</span>}>
+      Desktop notifications
+    </MenuItem>
+    <div className="desktop-push__details">
+      <span>Browser: {browserSupported ? "supported" : "unsupported"}</span>
+      <span>Permission: {permissionCopy}</span>
+      <span>Server: {serverStatus}</span>
+      {state === "unavailable" && reason ? <span className="desktop-push__reason">Setup: {reason}</span> : null}
+      {!canWrite ? <span className="desktop-push__reason">Guests can’t subscribe to push notifications.</span> : null}
+    </div>
+  </div>;
+}
+
+function pushIssue(error: unknown): string {
+  if (error instanceof Error && "code" in error) {
+    const coded = error as Error & { code: string };
+    return `${coded.code}: ${coded.message}`;
+  }
+  return error instanceof Error ? error.message : "Something went wrong.";
 }

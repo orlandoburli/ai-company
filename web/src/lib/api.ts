@@ -21,6 +21,66 @@ import type {
   Status,
 } from "./types";
 
+export type UsageBucket = {
+  product_id: string;
+  product_name: string;
+  jobs: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  /** Go time.Duration encoded as nanoseconds. */
+  wall_time: number;
+  failures: number;
+};
+
+export type JobUsage = {
+  id: string;
+  agent_id: string;
+  agent: string;
+  step: string;
+  state: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  /** Go time.Duration encoded as nanoseconds. */
+  wall_time: number;
+  failure: boolean;
+};
+
+export type PushSubscription = {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: string;
+};
+
+export type PushSubscriptionInput = {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  expirationTime?: number | null;
+};
+
+export type NotificationEvent = "checkpoint_pending" | "run_failed" | "run_completed";
+
+export type NotificationChannel = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  command_template: string;
+  events: NotificationEvent[];
+  enabled: boolean;
+};
+
+export type NotificationChannelInput = {
+  name: string;
+  command_template: string;
+  events: NotificationEvent[];
+  enabled: boolean;
+};
+
 /**
  * Thin typed client for the Go REST API. All requests go to the same origin
  * (the Next dev server proxies /api/* to the backend), so the session cookie
@@ -356,6 +416,26 @@ export const api = {
   listNotifications: (unread = true, limit = 50) =>
     get<{ notifications: Notification[] }>("/api/notifications" + query({ unread: unread ? "true" : undefined, limit: String(limit) })),
   markNotificationRead: (id: string) => post<{ notification: Notification }>(`/api/notifications/${encodeURIComponent(id)}/read`),
+
+  // --- usage, push subscriptions and command notification channels (M5) ----
+  usage: (params?: { since?: string; until?: string; product_id?: string; item_id?: string }) =>
+    get<{ usage: UsageBucket[]; jobs: JobUsage[] }>("/api/usage" + query(params ?? {})),
+
+  listPushSubscriptions: () =>
+    get<{ subscriptions: PushSubscription[] }>("/api/push/subscriptions"),
+  createPushSubscription: (body: PushSubscriptionInput) =>
+    post<{ subscription: PushSubscription }>("/api/push/subscriptions", body),
+  deletePushSubscription: (id: string) =>
+    del(`/api/push/subscriptions/${encodeURIComponent(id)}`),
+
+  listNotificationChannels: () =>
+    get<{ channels: NotificationChannel[] }>("/api/notification-channels"),
+  createNotificationChannel: (body: NotificationChannelInput) =>
+    post<{ channel: NotificationChannel }>("/api/notification-channels", body),
+  updateNotificationChannel: (id: string, body: Partial<NotificationChannelInput>) =>
+    patch<{ channel: NotificationChannel }>(`/api/notification-channels/${encodeURIComponent(id)}`, body),
+  deleteNotificationChannel: (id: string) =>
+    del(`/api/notification-channels/${encodeURIComponent(id)}`),
 };
 
 /** Filters accepted by /api/items and /api/board. */

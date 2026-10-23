@@ -18,6 +18,7 @@ export function SettingsNav() {
   const links = [
     { href: "/settings", label: "Company" },
     ...(isManager ? [{ href: "/settings/agents", label: "Agents" }] : []),
+    { href: "/settings/notifications", label: "Notifications" },
     { href: "/settings/skills", label: "Skills" },
   ];
 

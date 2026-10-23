@@ -10,22 +10,40 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const DefaultGitHubURL = "https://api.github.com"
 
 type PullRequest struct {
-	Number         int    `json:"number"`
-	State          string `json:"state"`
-	Title          string `json:"title"`
-	Body           string `json:"body"`
-	Head           string `json:"head"`
-	Base           string `json:"base"`
-	Mergeable      *bool  `json:"mergeable,omitempty"`
-	MergeableState string `json:"mergeable_state,omitempty"`
-	URL            string `json:"url"`
-	HTMLURL        string `json:"html_url"`
-	HeadSHA        string `json:"head_sha"`
+	Number         int        `json:"number"`
+	State          string     `json:"state"`
+	Title          string     `json:"title"`
+	Body           string     `json:"body"`
+	Head           string     `json:"head"`
+	Base           string     `json:"base"`
+	Mergeable      *bool      `json:"mergeable,omitempty"`
+	MergeableState string     `json:"mergeable_state,omitempty"`
+	URL            string     `json:"url"`
+	HTMLURL        string     `json:"html_url"`
+	HeadSHA        string     `json:"head_sha"`
+	Merged         bool       `json:"merged"`
+	MergedAt       *time.Time `json:"merged_at,omitempty"`
+}
+
+// Issue is a GitHub issue. Pull requests are returned by GitHub's issues API
+// too; IsPullRequest identifies those rows so issue importers can exclude them.
+type Issue struct {
+	Number        int       `json:"number"`
+	Title         string    `json:"title"`
+	Body          string    `json:"body"`
+	State         string    `json:"state"`
+	HTMLURL       string    `json:"html_url"`
+	Author        string    `json:"author"`
+	Labels        []string  `json:"labels"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	IsPullRequest bool      `json:"is_pull_request"`
 }
 
 type Check struct {
@@ -98,13 +116,179 @@ func (g *GitHub) GetPullRequest(ctx context.Context, number int) (PullRequest, e
 		Base struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
-		Mergeable      *bool  `json:"mergeable"`
-		MergeableState string `json:"mergeable_state"`
-		URL            string `json:"url"`
-		HTMLURL        string `json:"html_url"`
+		Mergeable      *bool      `json:"mergeable"`
+		MergeableState string     `json:"mergeable_state"`
+		Merged         bool       `json:"merged"`
+		MergedAt       *time.Time `json:"merged_at"`
+		URL            string     `json:"url"`
+		HTMLURL        string     `json:"html_url"`
 	}
 	err := g.request(ctx, http.MethodGet, g.repoPath(fmt.Sprintf("/pulls/%d", number)), nil, &wire)
-	return PullRequest{Number: wire.Number, State: wire.State, Title: wire.Title, Body: wire.Body, Head: wire.Head.Ref, Base: wire.Base.Ref, Mergeable: wire.Mergeable, MergeableState: wire.MergeableState, URL: wire.HTMLURL, HTMLURL: wire.HTMLURL, HeadSHA: wire.Head.SHA}, err
+	return PullRequest{Number: wire.Number, State: wire.State, Title: wire.Title, Body: wire.Body, Head: wire.Head.Ref, Base: wire.Base.Ref, Mergeable: wire.Mergeable, MergeableState: wire.MergeableState, URL: wire.HTMLURL, HTMLURL: wire.HTMLURL, HeadSHA: wire.Head.SHA, Merged: wire.Merged, MergedAt: wire.MergedAt}, err
+}
+
+// ListIssues returns a bounded page of issues. GitHub also includes pull
+// requests in this endpoint, which callers can identify with IsPullRequest.
+func (g *GitHub) ListIssues(ctx context.Context, state string, limit int) ([]Issue, error) {
+	if state == "" {
+		state = "open"
+	}
+	if state != "open" && state != "closed" && state != "all" {
+		return nil, fmt.Errorf("invalid GitHub issue state %q", state)
+	}
+	limit = githubLimit(limit)
+	query := url.Values{"state": {state}, "per_page": {fmt.Sprint(limit)}}
+	var rows []struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		State   string `json:"state"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		CreatedAt   time.Time       `json:"created_at"`
+		UpdatedAt   time.Time       `json:"updated_at"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	}
+	if err := g.request(ctx, http.MethodGet, g.repoPath("/issues")+"?"+query.Encode(), nil, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]Issue, 0, len(rows))
+	for _, row := range rows {
+		issue := Issue{Number: row.Number, Title: row.Title, Body: row.Body, State: row.State,
+			HTMLURL: row.HTMLURL, Author: row.User.Login, CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt, IsPullRequest: len(row.PullRequest) > 0 && string(row.PullRequest) != "null",
+			Labels: make([]string, 0, len(row.Labels))}
+		for _, label := range row.Labels {
+			issue.Labels = append(issue.Labels, label.Name)
+		}
+		out = append(out, issue)
+	}
+	return out, nil
+}
+
+// GetIssue fetches one issue. IsPullRequest is set for pull requests as well.
+func (g *GitHub) GetIssue(ctx context.Context, number int) (Issue, error) {
+	var row struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		State   string `json:"state"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		CreatedAt   time.Time       `json:"created_at"`
+		UpdatedAt   time.Time       `json:"updated_at"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	}
+	if err := g.request(ctx, http.MethodGet, g.repoPath(fmt.Sprintf("/issues/%d", number)), nil, &row); err != nil {
+		return Issue{}, err
+	}
+	issue := Issue{Number: row.Number, Title: row.Title, Body: row.Body, State: row.State,
+		HTMLURL: row.HTMLURL, Author: row.User.Login, CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt, IsPullRequest: len(row.PullRequest) > 0 && string(row.PullRequest) != "null",
+		Labels: make([]string, 0, len(row.Labels))}
+	for _, label := range row.Labels {
+		issue.Labels = append(issue.Labels, label.Name)
+	}
+	return issue, nil
+}
+
+// UpdateIssueTitle pushes an item's title to its linked GitHub issue.
+func (g *GitHub) UpdateIssueTitle(ctx context.Context, number int, title string) (Issue, error) {
+	var row struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		State   string `json:"state"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		CreatedAt   time.Time       `json:"created_at"`
+		UpdatedAt   time.Time       `json:"updated_at"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	}
+	if err := g.request(ctx, http.MethodPatch, g.repoPath(fmt.Sprintf("/issues/%d", number)), map[string]string{"title": title}, &row); err != nil {
+		return Issue{}, err
+	}
+	out := Issue{Number: row.Number, Title: row.Title, Body: row.Body, State: row.State,
+		HTMLURL: row.HTMLURL, Author: row.User.Login, CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt, IsPullRequest: len(row.PullRequest) > 0 && string(row.PullRequest) != "null",
+		Labels: make([]string, 0, len(row.Labels))}
+	for _, label := range row.Labels {
+		out.Labels = append(out.Labels, label.Name)
+	}
+	return out, nil
+}
+
+// ListPullRequests returns PRs in the requested state. GitHub's list API has
+// no "merged" state, so that filter is applied to closed PRs locally.
+func (g *GitHub) ListPullRequests(ctx context.Context, state string, limit int) ([]PullRequest, error) {
+	if state == "" {
+		state = "open"
+	}
+	if state != "open" && state != "closed" && state != "merged" && state != "all" {
+		return nil, fmt.Errorf("invalid GitHub pull request state %q", state)
+	}
+	queryState := state
+	if state == "merged" {
+		queryState = "closed"
+	}
+	limit = githubLimit(limit)
+	query := url.Values{"state": {queryState}, "per_page": {fmt.Sprint(limit)}}
+	var rows []struct {
+		Number int    `json:"number"`
+		State  string `json:"state"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+		Head   struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Mergeable      *bool      `json:"mergeable"`
+		MergeableState string     `json:"mergeable_state"`
+		URL            string     `json:"url"`
+		HTMLURL        string     `json:"html_url"`
+		Merged         bool       `json:"merged"`
+		MergedAt       *time.Time `json:"merged_at"`
+	}
+	if err := g.request(ctx, http.MethodGet, g.repoPath("/pulls")+"?"+query.Encode(), nil, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]PullRequest, 0, len(rows))
+	for _, row := range rows {
+		pr := PullRequest{Number: row.Number, State: row.State, Title: row.Title, Body: row.Body,
+			Head: row.Head.Ref, Base: row.Base.Ref, Mergeable: row.Mergeable,
+			MergeableState: row.MergeableState, URL: row.HTMLURL, HTMLURL: row.HTMLURL,
+			HeadSHA: row.Head.SHA, Merged: row.Merged, MergedAt: row.MergedAt}
+		if state == "merged" && !pr.Merged {
+			continue
+		}
+		out = append(out, pr)
+	}
+	return out, nil
+}
+
+func githubLimit(limit int) int {
+	if limit <= 0 || limit > 100 {
+		return 100
+	}
+	return limit
 }
 
 func (g *GitHub) ListChecks(ctx context.Context, number int) ([]Check, error) {
