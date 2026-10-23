@@ -117,6 +117,9 @@ func (s *Service) ImportIssues(ctx context.Context, sc tenancy.Scope, productID,
 		if err != nil {
 			return out, err
 		}
+		if found && link.ProductID != productID {
+			return out, ErrLinkConflict
+		}
 		created := false
 		var item work.Item
 		if found && link.ItemID != nil {
@@ -159,6 +162,9 @@ func (s *Service) ImportIssues(ctx context.Context, sc tenancy.Scope, productID,
 		_ = link
 		if created {
 			out.ImportedItems = append(out.ImportedItems, item)
+			if issue.State == "closed" {
+				out.CompletedItems = append(out.CompletedItems, item)
+			}
 		}
 		if changedTitle {
 			out.UpdatedTitles = append(out.UpdatedTitles, item)
@@ -268,6 +274,9 @@ func (s *Service) LinkIssue(ctx context.Context, sc tenancy.Scope, itemID, produ
 	link, found, err := s.getLink(ctx, sc, repo, issueNumber)
 	if err != nil {
 		return Link{}, err
+	}
+	if found && link.ProductID != productID {
+		return Link{}, ErrLinkConflict
 	}
 	if found && link.ItemID != nil && *link.ItemID != itemID {
 		return Link{}, ErrLinkConflict
@@ -482,12 +491,16 @@ func (s *Service) syncIssueItem(ctx context.Context, sc tenancy.Scope, item work
 	if titleChanged {
 		patch.Title = &title
 	}
+	issueURL := safeURL(issue.HTMLURL)
+	if issueURL != "" && issueURL != item.GithubIssueURL {
+		patch.GithubIssueURL = &issueURL
+	}
 	if issue.State == "closed" && item.Status != "done" && item.Status != "cancelled" {
 		status := "done"
 		patch.Status = &status
 		completed = true
 	}
-	if patch.Title == nil && patch.Status == nil {
+	if patch.Title == nil && patch.Status == nil && patch.GithubIssueURL == nil {
 		return item, false, false, nil
 	}
 	updated, err := s.work.UpdateItem(ctx, sc, item.ID, patch, "")

@@ -31,21 +31,6 @@ type PullRequest struct {
 	MergedAt       *time.Time `json:"merged_at,omitempty"`
 }
 
-// Issue is a GitHub issue. Pull requests are returned by GitHub's issues API
-// too; IsPullRequest identifies those rows so issue importers can exclude them.
-type Issue struct {
-	Number        int       `json:"number"`
-	Title         string    `json:"title"`
-	Body          string    `json:"body"`
-	State         string    `json:"state"`
-	HTMLURL       string    `json:"html_url"`
-	Author        string    `json:"author"`
-	Labels        []string  `json:"labels"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	IsPullRequest bool      `json:"is_pull_request"`
-}
-
 type Check struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
@@ -150,8 +135,8 @@ func (g *GitHub) ListIssues(ctx context.Context, state string, limit int) ([]Iss
 		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
-		CreatedAt   time.Time       `json:"created_at"`
-		UpdatedAt   time.Time       `json:"updated_at"`
+		CreatedAt   string          `json:"created_at"`
+		UpdatedAt   string          `json:"updated_at"`
 		PullRequest json.RawMessage `json:"pull_request"`
 	}
 	if err := g.request(ctx, http.MethodGet, g.repoPath("/issues")+"?"+query.Encode(), nil, &rows); err != nil {
@@ -171,37 +156,6 @@ func (g *GitHub) ListIssues(ctx context.Context, state string, limit int) ([]Iss
 	return out, nil
 }
 
-// GetIssue fetches one issue. IsPullRequest is set for pull requests as well.
-func (g *GitHub) GetIssue(ctx context.Context, number int) (Issue, error) {
-	var row struct {
-		Number  int    `json:"number"`
-		Title   string `json:"title"`
-		Body    string `json:"body"`
-		State   string `json:"state"`
-		HTMLURL string `json:"html_url"`
-		User    struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Labels []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		CreatedAt   time.Time       `json:"created_at"`
-		UpdatedAt   time.Time       `json:"updated_at"`
-		PullRequest json.RawMessage `json:"pull_request"`
-	}
-	if err := g.request(ctx, http.MethodGet, g.repoPath(fmt.Sprintf("/issues/%d", number)), nil, &row); err != nil {
-		return Issue{}, err
-	}
-	issue := Issue{Number: row.Number, Title: row.Title, Body: row.Body, State: row.State,
-		HTMLURL: row.HTMLURL, Author: row.User.Login, CreatedAt: row.CreatedAt,
-		UpdatedAt: row.UpdatedAt, IsPullRequest: len(row.PullRequest) > 0 && string(row.PullRequest) != "null",
-		Labels: make([]string, 0, len(row.Labels))}
-	for _, label := range row.Labels {
-		issue.Labels = append(issue.Labels, label.Name)
-	}
-	return issue, nil
-}
-
 // UpdateIssueTitle pushes an item's title to its linked GitHub issue.
 func (g *GitHub) UpdateIssueTitle(ctx context.Context, number int, title string) (Issue, error) {
 	var row struct {
@@ -216,8 +170,8 @@ func (g *GitHub) UpdateIssueTitle(ctx context.Context, number int, title string)
 		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
-		CreatedAt   time.Time       `json:"created_at"`
-		UpdatedAt   time.Time       `json:"updated_at"`
+		CreatedAt   string          `json:"created_at"`
+		UpdatedAt   string          `json:"updated_at"`
 		PullRequest json.RawMessage `json:"pull_request"`
 	}
 	if err := g.request(ctx, http.MethodPatch, g.repoPath(fmt.Sprintf("/issues/%d", number)), map[string]string{"title": title}, &row); err != nil {

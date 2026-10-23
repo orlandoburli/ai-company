@@ -292,6 +292,16 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		s.writeWorkError(w, err)
 		return
 	}
+	// A linked GitHub issue keeps the same title as its item (the design's
+	// "title/state sync on item save"). A failure here is not the item update's
+	// failure: the item is saved either way, and the next poll re-syncs.
+	if req.Title != nil && *req.Title != "" {
+		if svc, svcErr := s.githubSyncService(r.Context(), sc); svcErr == nil {
+			if _, syncErr := svc.SyncItemTitle(r.Context(), sc, it.ID); syncErr != nil {
+				s.log.Warn("sync the GitHub issue title", "item", it.ID, "error", syncErr)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": it})
 }
 

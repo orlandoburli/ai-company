@@ -28,6 +28,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/command"
 	"github.com/orlandoburli/ai-company/internal/dispatch"
 	"github.com/orlandoburli/ai-company/internal/failure"
+	"github.com/orlandoburli/ai-company/internal/ghsync"
 	"github.com/orlandoburli/ai-company/internal/integration"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
@@ -36,6 +37,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 	"github.com/orlandoburli/ai-company/internal/store/retention"
+	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workflow"
 	"github.com/orlandoburli/ai-company/internal/workspace"
@@ -192,6 +194,69 @@ func run() error {
 		Tenants: tenantSource,
 		Logger:  log,
 	}).Run(ctx)
+
+	// The GitHub sync: every two minutes, the design's number. It imports the
+	// repositories' issues as items, keeps the linked items' titles and states
+	// in step, and completes the item and the run whose pull request was
+	// merged.
+	go func() {
+		syncGitHub := func() {
+			tenants, err := tenantSource.DispatchTenants(ctx)
+			if err != nil {
+				log.Warn("enumerate tenants for the GitHub sync", "error", err)
+				return
+			}
+			for _, tenant := range tenants {
+				sc := tenant.Scope
+				ref, err := ghsync.CredentialRef(ctx, db, sc)
+				if err != nil {
+					continue // this tenant has no GitHub credential
+				}
+				token, err := (integration.Credentials{}).Resolve(ctx, ref)
+				if err != nil {
+					continue
+				}
+				svc := ghsync.New(ghsync.Deps{
+					DB: db, GitHub: ghsync.TokenClient{Token: token}, Work: workStore,
+					Workflows: workflowStore, Logger: log,
+				})
+				products, err := workStore.ListProducts(ctx, sc)
+				if err != nil {
+					continue
+				}
+				for _, product := range products {
+					if strings.TrimSpace(product.RepoURL) == "" {
+						continue
+					}
+					for _, op := range []func(context.Context, tenancy.Scope, string, string) (ghsync.Result, error){
+						svc.ImportIssues, svc.SyncIssues, svc.SyncMergedPullRequests,
+					} {
+						result, err := op(ctx, sc, product.ID, product.RepoURL)
+						if err != nil {
+							log.Warn("GitHub sync", "product", product.Name, "error", err)
+							continue
+						}
+						if len(result.ImportedItems)+len(result.UpdatedTitles)+len(result.CompletedItems)+len(result.CompletedRuns) > 0 {
+							log.Info("GitHub sync", "product", product.Name,
+								"imported", len(result.ImportedItems), "retitled", len(result.UpdatedTitles),
+								"completed_items", len(result.CompletedItems), "completed_runs", len(result.CompletedRuns))
+						}
+					}
+				}
+			}
+		}
+		syncGitHub()
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				syncGitHub()
+			}
+		}
+	}()
 
 	// The log partitions are pruned once a day: a partition whose range ended
 	// before the retention window is detached and dropped, and nothing else is

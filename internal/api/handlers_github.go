@@ -47,10 +47,9 @@ func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "product_id is required.")
 		return
 	}
-	svc, err := s.githubSyncService(r.Context(), sc)
-	if err != nil {
-		s.writeGitHubError(w, err)
-		return
+	svc := ghsync.New(ghsync.Deps{DB: s.db, Work: s.work, Workflows: workflow.NewStore(s.db), Logger: s.log})
+	if injected, exists := githubServices.Load(s); exists {
+		svc = injected.(*ghsync.Service)
 	}
 	links, err := svc.ListLinks(r.Context(), sc, productID)
 	if err != nil {
@@ -133,15 +132,11 @@ func (s *Server) githubSyncService(ctx context.Context, sc tenancy.Scope) (*ghsy
 	if injected, ok := githubServices.Load(s); ok {
 		return injected.(*ghsync.Service), nil
 	}
-	var secretRef string
-	err := s.integrationTx(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT secret_ref FROM integration_credentials WHERE kind='github'`).Scan(&secretRef)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ghsync.ErrGitHubNotConfigured
-		}
-		return err
-	})
+	secretRef, err := ghsync.CredentialRef(ctx, s.db, sc)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ghsync.ErrGitHubNotConfigured
+		}
 		return nil, err
 	}
 	token, err := (integration.Credentials{}).Resolve(ctx, secretRef)
@@ -149,48 +144,9 @@ func (s *Server) githubSyncService(ctx context.Context, sc tenancy.Scope) (*ghsy
 		return nil, ghsync.ErrGitHubNotConfigured
 	}
 	return ghsync.New(ghsync.Deps{
-		DB: s.db, GitHub: githubTokenClient{token: token}, Work: s.work,
+		DB: s.db, GitHub: ghsync.TokenClient{Token: token}, Work: s.work,
 		Workflows: workflow.NewStore(s.db), Logger: s.log,
 	}), nil
-}
-
-type githubTokenClient struct{ token string }
-
-func (c githubTokenClient) client(repo string) (*integration.GitHub, error) {
-	owner, name, ok := strings.Cut(repo, "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return nil, ghsync.ErrInvalidRepository
-	}
-	return integration.NewGitHub(nil, integration.DefaultGitHubURL, c.token, owner, name), nil
-}
-
-func (c githubTokenClient) ListIssues(ctx context.Context, repo, state string, limit int) ([]integration.Issue, error) {
-	client, err := c.client(repo)
-	if err != nil {
-		return nil, err
-	}
-	return client.ListIssues(ctx, state, limit)
-}
-func (c githubTokenClient) GetIssue(ctx context.Context, repo string, number int) (integration.Issue, error) {
-	client, err := c.client(repo)
-	if err != nil {
-		return integration.Issue{}, err
-	}
-	return client.GetIssue(ctx, number)
-}
-func (c githubTokenClient) ListPullRequests(ctx context.Context, repo, state string, limit int) ([]integration.PullRequest, error) {
-	client, err := c.client(repo)
-	if err != nil {
-		return nil, err
-	}
-	return client.ListPullRequests(ctx, state, limit)
-}
-func (c githubTokenClient) UpdateIssueTitle(ctx context.Context, repo string, number int, title string) (integration.Issue, error) {
-	client, err := c.client(repo)
-	if err != nil {
-		return integration.Issue{}, err
-	}
-	return client.UpdateIssueTitle(ctx, number, title)
 }
 
 func (s *Server) writeGitHubError(w http.ResponseWriter, err error) {

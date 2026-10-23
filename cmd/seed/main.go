@@ -418,10 +418,10 @@ func products() []productSeed {
 			},
 		},
 		{
-			name: "ProntaLoja", slug: "prQIUAT",
+			name: "ProntaLoja", slug: "prontaloja",
 			// The real repository of this product: the dogfood runs against
 			// the actual project, not a demo copy.
-			repo: "git@github.com:orlandoburli/prQIUAT.git", jira: "PL",
+			repo: "git@github.com:orlandoburli/prontaloja.git", jira: "PL",
 			projects: []projectSeed{
 				{
 					name: "Storefront", key: "PL",
