@@ -29,6 +29,12 @@ paused item and one pinned item. That is what exercises the board grouping, the
 tree rollup and the queue's eligibility-before-order rule without hand-clicking
 fixtures.
 
+`cmd/seed -items=false` creates the tenant without the demonstration backlog:
+the products, the projects, the agents and the templates are there, and the
+tasks are yours. The development database has been cleaned this way — the work
+data (items, runs, steps, jobs, logs, memory, notifications, artifacts and
+activity) is gone, the setup is untouched.
+
 ## Schema
 
 Migrations are plain SQL, embedded and applied by `cmd/migrate`:

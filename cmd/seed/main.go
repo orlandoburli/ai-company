@@ -47,6 +47,7 @@ func run() error {
 	tenantName := flag.String("tenant", "Acme Studio", "tenant display name")
 	slug := flag.String("slug", "acme", "tenant slug (unique; used to detect an existing seed)")
 	timeout := flag.Duration("timeout", 60*time.Second, "overall timeout")
+	withItems := flag.Bool("items", true, "seed the demonstration backlog (the items, their dependencies and their labels)")
 	flag.Parse()
 
 	if strings.TrimSpace(*dsn) == "" {
@@ -105,7 +106,7 @@ func run() error {
 	sc := tenancy.Scope{TenantID: identity.TenantID, UserID: identity.UserID, Role: identity.Role}
 	store := work.NewStore(db)
 
-	seeder := &seeder{store: store, sc: sc, ownerID: identity.UserID}
+	seeder := &seeder{store: store, sc: sc, ownerID: identity.UserID, withItems: *withItems}
 	started := time.Now()
 	if err := seeder.seedAll(ctx); err != nil {
 		return err
@@ -134,13 +135,17 @@ The tenant is the only one this command creates; re-running is a no-op.
 // --- seed data -------------------------------------------------------------
 
 type seeder struct {
-	store    *work.Store
-	sc       tenancy.Scope
-	ownerID  string
-	products int
-	projects int
-	items    int
-	deps     int
+	store   *work.Store
+	sc      tenancy.Scope
+	ownerID string
+	// withItems seeds the demonstration backlog. With it off, the tenant gets
+	// its products, its projects, its agents and its templates — and an empty
+	// backlog, for the people who want to write their own tasks.
+	withItems bool
+	products  int
+	projects  int
+	items     int
+	deps      int
 }
 
 type itemSeed struct {
@@ -203,6 +208,12 @@ func (s *seeder) seedProduct(ctx context.Context, p productSeed) error {
 			return fmt.Errorf("create project %q: %w", proj.name, err)
 		}
 		s.projects++
+
+		if !s.withItems {
+			// The structure without the demonstration backlog: the products,
+			// the projects and the agents are there, the tasks are yours.
+			continue
+		}
 
 		var create func(parentID *string, seeds []itemSeed) error
 		create = func(parentID *string, seeds []itemSeed) error {
