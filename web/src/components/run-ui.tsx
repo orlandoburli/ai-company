@@ -202,7 +202,7 @@ function CheckpointCard({ checkpoint, step, itemTitle, itemId, itemNumber, decid
       <div className="checkpoint-section-label"><span>Review brief</span><span className="tiny muted">Work so far · agent assessment · proposed change</span></div>
       {brief ? <div className="checkpoint-summary msg__body">{renderMarkdown(brief)}</div> : <p className="checkpoint-unavailable">The brief is not available yet.</p>}
     </section>
-    {artifacts.length ? <Artifacts artifacts={artifacts} /> : null}
+    <Artifacts artifacts={artifacts} />
     {checkpoint.state === "pending" ? <CheckpointActions checkpoint={checkpoint} onDecided={onDecided} compact={compact} /> : <>
       {checkpoint.fields_spec?.length ? <div className="checkpoint-field-values"><h4>Submitted fields</h4><dl>{checkpoint.fields_spec.map((spec) => <div key={spec.key}><dt>{spec.label}</dt><dd>{formatFieldValue(checkpoint.fields?.[spec.key])}</dd></div>)}</dl></div> : null}
       <div className="checkpoint-decision-audit"><strong>{checkpoint.state.replaceAll("_", " ")}</strong><span>{checkpoint.decided_by_kind === "human" ? `Decided by ${decidedByName ?? "human"}` : checkpoint.decided_by_kind ? `Decided by ${checkpoint.decided_by_kind}` : "Decision recorded"}{checkpoint.decided_by && !decidedByName ? ` · ${checkpoint.decided_by.slice(0, 12)}` : ""}</span><time>{checkpoint.decided_at ? new Date(checkpoint.decided_at).toLocaleString() : "Time unavailable"}</time>{checkpoint.decision_md ? <p>{checkpoint.decision_md}</p> : null}</div>
@@ -217,30 +217,129 @@ function formatFieldValue(value: unknown): string {
 }
 
 function Artifacts({ artifacts }: { artifacts: unknown[] }) {
-  const rows = artifacts.map((artifact, index) => normalizeArtifact(artifact, index)).filter((row): row is NormalizedArtifact => Boolean(row));
-  if (!rows.length) return null;
-  return <section className="checkpoint-artifacts" aria-label="Checkpoint artifacts"><div className="checkpoint-section-label"><span>Artifacts</span><span className="tiny muted">Evidence to review</span></div><ul>{rows.map((artifact) => <li key={artifact.key}>
-    <span className="artifact-kind">{artifact.kind.replaceAll("_", " ")}</span>
-    <div className="artifact-detail">{artifact.uri ? <a href={artifact.uri} target="_blank" rel="noreferrer noopener">{artifact.linkLabel || artifact.uri}<span aria-hidden> ↗</span></a> : artifact.headline ? <strong>{artifact.headline}</strong> : null}{artifact.details.map(([label, value]) => <span key={label}><b>{label}</b> {value}</span>)}</div>
-  </li>)}</ul></section>;
+  const rows = groupArtifacts(artifacts.map((artifact, index) => normalizeArtifact(artifact, index)).filter((row): row is NormalizedArtifact => Boolean(row)));
+  return <section className="checkpoint-artifacts" aria-label="Checkpoint artifacts"><div className="checkpoint-section-label"><span>Artifacts</span><span className="tiny muted">Evidence to review</span></div>
+    {rows.length ? <ul>{rows.map((artifact) => <li key={artifact.key}>
+      <span className="artifact-kind">{artifact.label}</span>
+      <div className="artifact-detail">
+        {artifact.kind === "file" ? <>
+          <strong>Files changed — {artifact.files?.length ?? 0}</strong>
+          <div className="artifact-files">{artifact.files?.map((file) => <span className="artifact-file" key={file.key}>
+            {file.link ? <a className="artifact-path" href={file.link} target="_blank" rel="noreferrer noopener">{file.path}<span aria-hidden> ↗</span></a> : <code className="artifact-path">{file.path}</code>}
+            {file.status ? <span className={`artifact-file-status artifact-file-status--${file.status.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`}>{file.status}</span> : null}
+          </span>)}</div>
+        </> : <>
+          {artifact.kind === "commit" && artifact.sha ? <code className="artifact-sha">{artifact.sha}</code> : null}
+          {artifact.kind === "diff_summary" && artifact.headline ? <div className="artifact-diff-summary"><strong>{artifact.headline}</strong>{artifact.baseBranch ? <span>against <code>{artifact.baseBranch}</code></span> : null}</div> : artifact.headline ? <strong>{artifact.headline}</strong> : null}
+          {artifact.uri ? isHttpUrl(artifact.uri)
+            ? <a href={artifact.uri} target="_blank" rel="noreferrer noopener">{artifact.linkLabel ?? artifact.uri}<span aria-hidden> ↗</span></a>
+            : <span className={artifact.kind === "branch" ? "artifact-branch" : undefined}>{artifact.uri}</span>
+            : null}
+          {artifact.details.map(([label, value]) => <span key={label}><b>{label}</b> {value}</span>)}
+        </>}
+        {artifact.stepName ? <span className="artifact-producer">Produced by <strong>{artifact.stepName}</strong></span> : null}
+      </div>
+    </li>)}</ul> : <p className="checkpoint-unavailable">No artifacts were produced yet</p>}
+  </section>;
 }
 
-interface NormalizedArtifact { key: string; kind: string; uri?: string; linkLabel?: string; headline?: string; details: [string, string][]; }
+const ARTIFACT_KIND_LABELS: Record<string, string> = {
+  pr: "Pull request", issue: "Issue", issue_body: "Issue body", document: "Document",
+  wiki_page: "Wiki page", file: "File", report: "Report", branch: "Branch",
+  commit: "Commit", diff_summary: "Change summary", link: "Link", item: "Work item",
+};
+
+// Plumbing that is never worth a reader's attention: the idempotency key, the
+// "was it reused" flag, the URL the row already links to.
+const ARTIFACT_INTERNAL_KEYS = new Set([
+  "idempotency_key", "reused", "url", "uri", "created_at", "id", "secret_ref",
+]);
+
+// The extra detail a kind shows beyond what the row already renders. An
+// empty set means the row says it all.
+const ARTIFACT_DETAIL_KEYS: Record<string, Set<string>> = {
+  pr: new Set(["head", "base", "state"]),
+  issue: new Set(["number", "title", "state", "repository", "labels"]),
+  issue_body: new Set(["number", "title", "repository"]),
+  document: new Set(["path", "lines", "title"]),
+  wiki_page: new Set(["space", "page", "title"]),
+  report: new Set(["summary", "title", "count"]),
+  link: new Set(["description", "title"]),
+  item: new Set(["status"]),
+  branch: new Set(),
+  commit: new Set(),
+  diff_summary: new Set(),
+};
+
+interface ArtifactFile { key: string; path: string; status?: string; link?: string; }
+interface NormalizedArtifact {
+  key: string; kind: string; label: string; uri?: string; linkLabel?: string; headline?: string;
+  sha?: string; baseBranch?: string; details: [string, string][]; stepName?: string; files?: ArtifactFile[]; order: number;
+}
+
 function normalizeArtifact(value: unknown, index: number): NormalizedArtifact | null {
-  if (typeof value === "string") return { key: `legacy-${index}`, kind: "artifact", headline: value, details: [] };
+  if (typeof value === "string") return { key: `legacy-${index}`, kind: "artifact", label: "Artifact", headline: value, details: [], order: index };
   if (!value || typeof value !== "object") return null;
   const artifact = value as Partial<CheckpointArtifact> & Record<string, unknown>;
   const kind = typeof artifact.kind === "string" ? artifact.kind : "artifact";
   const meta = artifact.meta;
-  const entries = typeof meta === "string" ? [["detail", meta] as [string, string]] : meta && typeof meta === "object" ? Object.entries(meta).flatMap(([key, entry]) => {
+  const metadata = typeof meta === "string" ? { detail: meta } : meta && typeof meta === "object" ? meta as Record<string, unknown> : {};
+  const allowed = ARTIFACT_DETAIL_KEYS[kind];
+  const entries = Object.entries(metadata).flatMap(([key, entry]) => {
     if (entry == null || entry === "") return [];
-    const text = typeof entry === "string" ? entry : typeof entry === "number" || typeof entry === "boolean" ? String(entry) : JSON.stringify(entry);
+    if (ARTIFACT_INTERNAL_KEYS.has(key)) return [];
+    if (allowed && !allowed.has(key)) return [];
+    const text = typeof entry === "string" ? entry : typeof entry === "number" || typeof entry === "boolean" ? String(entry) : JSON.stringify(entry) ?? String(entry);
     return [[key.replaceAll("_", " "), text] as [string, string]];
-  }) : [];
-  const headlineEntry = entries.find(([key]) => ["subject", "title", "name", "branch", "sha"].includes(key.toLowerCase()));
+  });
   const uri = typeof artifact.uri === "string" && artifact.uri.trim() ? artifact.uri : undefined;
-  const details = entries.filter(([key]) => key !== headlineEntry?.[0]);
-  return { key: `${kind}-${index}`, kind, ...(uri ? { uri } : {}), ...(kind === "pr" && uri ? { linkLabel: headlineEntry?.[1] || "Open pull request" } : {}), ...(headlineEntry ? { headline: headlineEntry[1] } : {}), details };
+  const get = (key: string) => typeof metadata[key] === "string" || typeof metadata[key] === "number" ? String(metadata[key]) : undefined;
+  const stepName = typeof artifact.step_name === "string" && artifact.step_name.trim() ? artifact.step_name : undefined;
+  const label = ARTIFACT_KIND_LABELS[kind] ?? kind.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  if (kind === "file") {
+    const rawPath = get("path") ?? uri ?? "File path unavailable";
+    const path = relativeArtifactPath(rawPath);
+    const status = get("status");
+    const file: ArtifactFile = { key: `file-${index}`, path, ...(status ? { status } : {}), ...(uri && isHttpUrl(uri) ? { link: uri } : {}) };
+    return { key: `file-${index}`, kind, label, stepName, details: [], files: [file], order: index };
+  }
+  const headline = kind === "pr"
+    ? get("title") ?? (get("number") ? `#${get("number")}` : undefined)
+    : kind === "commit" ? get("subject") : kind === "diff_summary" ? get("stat")
+    : kind === "branch" ? undefined
+    : get("title") ?? get("subject") ?? get("name") ?? get("branch");
+  const sha = kind === "commit" ? get("sha") : undefined;
+  const omitted = kind === "pr" ? ["title", "number"] : kind === "commit" ? ["sha", "subject"] : kind === "diff_summary" ? ["stat", "base branch"] : headline ? ["title", "subject", "name", "branch"] : [];
+  const details = entries.filter(([key]) => !omitted.includes(key.toLowerCase()));
+  const linkLabel = kind === "pr" ? "Open pull request" : kind === "commit" ? "Open commit" : undefined;
+  const baseBranch = kind === "diff_summary" ? get("base_branch") : undefined;
+  // The stat, the branch name and the sha are the headline of their rows;
+  // showing the uri beside them would say the same thing twice.
+  const showUri = kind !== "diff_summary" && kind !== "commit";
+  return { key: `${kind}-${index}`, kind, label, ...(uri && showUri ? { uri } : {}), ...(linkLabel ? { linkLabel } : {}), ...(headline ? { headline } : {}), ...(sha ? { sha } : {}), ...(baseBranch ? { baseBranch } : {}), details, ...(stepName ? { stepName } : {}), order: index };
+}
+
+function groupArtifacts(rows: NormalizedArtifact[]): NormalizedArtifact[] {
+  const grouped = new Map<string, NormalizedArtifact>();
+  const result: NormalizedArtifact[] = [];
+  rows.forEach((row) => {
+    if (row.kind !== "file") { result.push(row); return; }
+    const groupKey = row.stepName ?? "";
+    const existing = grouped.get(groupKey);
+    if (existing) existing.files?.push(...(row.files ?? []));
+    else {
+      const group = { ...row, key: `files-${groupKey || "unattributed"}-${row.order}`, files: [...(row.files ?? [])] };
+      grouped.set(groupKey, group);
+      result.push(group);
+    }
+  });
+  return result.sort((a, b) => a.order - b.order);
+}
+
+function isHttpUrl(value: string): boolean { return /^https?:\/\//i.test(value); }
+
+function relativeArtifactPath(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^file:\/\//i, "").replace(/^(?:\.\/|\/)+/, "");
 }
 
 export function CheckpointInbox() {

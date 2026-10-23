@@ -116,6 +116,162 @@ func TestBuildCheckpointBriefCarriesTheDecision(t *testing.T) {
 	}
 }
 
+func TestBriefAttributesProducedArtifactsToSteps(t *testing.T) {
+	brief, artifacts, err := BuildCheckpointBrief(BriefInput{
+		ItemTitle: "Health check", Question: "Ship it?",
+		Steps: []BriefStep{{Name: "implement", Kind: "agent", State: "succeeded", Summary: "Added the /healthz endpoint"}},
+		Artifacts: []ArtifactSummary{
+			{Kind: "pr", URI: "https://github.com/acme/app/pull/12", Meta: json.RawMessage(`{"number":12}`), StepName: "open PR"},
+			{Kind: "file", URI: "internal/http/health.go", StepName: "implement"},
+			{Kind: "file", URI: "internal/http/server.go", StepName: "implement"},
+			{Kind: "file", URI: "internal/http/health_test.go", StepName: "implement"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief, "implement — succeeded — Added the /healthz endpoint → produced: 3 files (internal/http/health.go, internal/http/server.go, internal/http/health_test.go)") {
+		t.Fatalf("brief does not attribute the files to their step:\n%s", brief)
+	}
+	if got, ok := briefArtifact(artifacts, "file"); !ok || got.StepName != "implement" {
+		t.Fatalf("file summary lost its producer: %+v", got)
+	}
+	if got, ok := briefArtifact(artifacts, "pr"); !ok || got.StepName != "open PR" {
+		t.Fatalf("PR summary lost its producer: %+v", got)
+	}
+}
+
+func TestBriefProductionAndArtifactSummariesStayBounded(t *testing.T) {
+	artifacts := make([]ArtifactSummary, 0, 120)
+	for i := 0; i < 120; i++ {
+		artifacts = append(artifacts, ArtifactSummary{Kind: "document", URI: fmt.Sprintf("docs/%03d-%s.md", i, strings.Repeat("detail", 20)), StepName: "write docs"})
+	}
+	brief, summaries, err := BuildCheckpointBrief(BriefInput{
+		ItemTitle: "Bounded", Question: "Approve?",
+		Steps: []BriefStep{{Name: "write docs", Kind: "agent", State: "succeeded"}}, Artifacts: artifacts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(brief) > briefMaxBytes || !strings.Contains(brief, "+112 more") {
+		t.Fatalf("production list was not capped/bounded (%d bytes): %s", len(brief), brief)
+	}
+	if len(summaries) != len(artifacts) {
+		t.Fatalf("brief discarded artifact evidence: got %d of %d", len(summaries), len(artifacts))
+	}
+	for i := range artifacts {
+		artifacts[i].URI = fmt.Sprintf("docs/%03d-%s.md", i, strings.Repeat("detail", 500))
+	}
+	longBrief, _, err := BuildCheckpointBrief(BriefInput{
+		ItemTitle: "Long evidence", Question: "Approve?",
+		Steps: []BriefStep{{Name: "write docs", Kind: "agent", State: "succeeded"}}, Artifacts: artifacts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(longBrief) > briefMaxBytes || !strings.Contains(longBrief, truncationMarker) {
+		t.Fatalf("long artifact evidence was not bounded and marked (%d bytes)", len(longBrief))
+	}
+}
+
+func TestArtifactSummariesIncludeProducingStepName(t *testing.T) {
+	summaries := ArtifactSummaries([]Artifact{{Kind: "pr", URI: "https://example/pr/12", StepRunID: "step-1"}}, []StepRun{{ID: "step-1", Name: "open PR"}})
+	if len(summaries) != 1 || summaries[0].StepName != "open PR" {
+		t.Fatalf("artifact summary=%+v", summaries)
+	}
+}
+
+func TestAgentWorktreeArtifactsUseDeclaredFilesAndEnforceCap(t *testing.T) {
+	f := newEngineFixture(t)
+	ctx := context.Background()
+	graph := Template{SchemaVersion: 1, Nodes: []Node{{
+		ID: "work", Kind: NodeAgent, Name: "implement", Type: "agent.worker", TypeVersion: 1,
+		Config:  json.RawMessage(`{"agent_id":"agent","outputs":{"changed_files":"array"}}`),
+		OnError: OnErrorStop, Workspace: WorkspaceWorktree,
+	}}}
+	run := f.createRun(t, graph)
+	e := NewEngine(EngineDeps{Store: f.store})
+	node, _ := graph.Node("work")
+
+	declaredWorktree := briefRepo(t)
+	for _, name := range []string{"docs/guide.md", "src/main.go"} {
+		full := filepath.Join(declaredWorktree, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("line one\nline two\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step, err := f.store.CreateStepRun(ctx, f.sc, NewStepRun{RunID: run.ID, NodeID: "work", Kind: "agent", Name: "implement", WorkspaceKind: "worktree"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step.Workdir = declaredWorktree
+	e.recordAgentFileArtifacts(ctx, f.sc, run, step, node, map[string]any{"changed_files": []any{"src/main.go", "docs/guide.md"}})
+	artifacts, err := f.store.ListArtifacts(ctx, f.sc, run.ID)
+	if err != nil || len(artifacts) != 2 {
+		t.Fatalf("declared changed_files artifacts=%+v err=%v", artifacts, err)
+	}
+	for _, artifact := range artifacts {
+		var meta map[string]any
+		_ = json.Unmarshal(artifact.Meta, &meta)
+		if artifact.Kind != "file" || artifact.StepRunID != step.ID || meta["status"] != "added" || meta["lines"] != float64(2) {
+			t.Fatalf("file artifact=%+v meta=%v", artifact, meta)
+		}
+	}
+
+	// A clean worktree produces no evidence rows.
+	cleanStep, err := f.store.CreateStepRun(ctx, f.sc, NewStepRun{RunID: run.ID, NodeID: "work", Kind: "agent", Name: "implement", RunIndex: 1, WorkspaceKind: "worktree"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanStep.Workdir = briefRepo(t)
+	e.recordAgentFileArtifacts(ctx, f.sc, run, cleanStep, node, nil)
+	cleanArtifacts, err := f.store.ListArtifacts(ctx, f.sc, run.ID)
+	if err != nil || len(cleanArtifacts) != 2 {
+		t.Fatalf("clean step artifacts=%+v err=%v", cleanArtifacts, err)
+	}
+
+	// More than 50 changes produce exactly 50 file artifacts and one report.
+	capStep, err := f.store.CreateStepRun(ctx, f.sc, NewStepRun{RunID: run.ID, NodeID: "work", Kind: "agent", Name: "implement", RunIndex: 2, WorkspaceKind: "worktree"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capStep.Workdir = briefRepo(t)
+	for i := 0; i < 57; i++ {
+		name := filepath.Join(capStep.Workdir, fmt.Sprintf("file-%02d.txt", i))
+		if err := os.WriteFile(name, []byte("produced\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.recordAgentFileArtifacts(ctx, f.sc, run, capStep, node, nil)
+	capArtifacts, err := f.store.ListArtifacts(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, reports := 0, 0
+	for _, artifact := range capArtifacts {
+		if artifact.StepRunID != capStep.ID {
+			continue
+		}
+		if artifact.Kind == "file" {
+			files++
+		}
+		if artifact.Kind == "report" {
+			reports++
+			var meta map[string]any
+			_ = json.Unmarshal(artifact.Meta, &meta)
+			if meta["message"] != "57 files changed; showing the first 50" {
+				t.Fatalf("cap report meta=%v", meta)
+			}
+		}
+	}
+	if files != 50 || reports != 1 {
+		t.Fatalf("cap artifacts: files=%d reports=%d", files, reports)
+	}
+}
+
 func TestBuildCheckpointBriefMarksTruncations(t *testing.T) {
 	long := strings.Repeat("the agent keeps talking and the card cannot hold it all. ", 200)
 	brief, _, err := BuildCheckpointBrief(BriefInput{

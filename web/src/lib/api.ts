@@ -677,8 +677,15 @@ export interface StepRun {
 }
 export interface CheckpointFieldSpec { key: string; type: "string" | "text" | "number" | "boolean" | "enum"; label: string; required?: boolean; options?: string[]; }
 export type CheckpointDecision = "approve" | "approve_with_edits" | "reject" | "abort";
-export type CheckpointArtifactKind = "branch" | "commit" | "pr" | "diff_summary" | "file" | "report";
-export interface CheckpointArtifact { kind: CheckpointArtifactKind; uri?: string | null; meta?: Record<string, unknown> | string | null; }
+export type CheckpointArtifactKind =
+  | "branch" | "commit" | "pr" | "diff_summary" | "file" | "report"
+  | "issue" | "issue_body" | "document" | "wiki_page" | "link" | "item";
+export interface CheckpointArtifact {
+  kind: CheckpointArtifactKind | (string & {});
+  uri?: string | null;
+  meta?: Record<string, unknown> | string | null;
+  step_name?: string;
+}
 export interface CheckpointItemRef { id: string; number: number; title: string; }
 export interface Checkpoint {
   id: string; run_id: string; step_run_id: string; node_id: string; lap: number; state: string;

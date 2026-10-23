@@ -283,6 +283,22 @@ func TestCheckpointDecisionInterventionsAndArtifacts(t *testing.T) {
 	}
 }
 
+func TestArtifactKindVocabularyAcceptsEngineAndTenantEvidence(t *testing.T) {
+	f := wfSetup(t)
+	ctx := context.Background()
+	run := f.run(t, f.t1, f.template(t, f.t1))
+	kinds := []string{"branch", "commit", "pr", "diff_summary", "file", "report", "issue_body", "item", "issue", "document", "wiki_page", "link"}
+	for _, kind := range kinds {
+		if _, err := f.st.CreateArtifact(ctx, f.t1, workflow.NewArtifact{RunID: run.ID, Kind: kind, URI: "evidence:" + kind}); err != nil {
+			t.Errorf("artifact kind %q was rejected: %v", kind, err)
+		}
+	}
+	artifacts, err := f.st.ListArtifacts(ctx, f.t1, run.ID)
+	if err != nil || len(artifacts) != len(kinds) {
+		t.Fatalf("accepted %d of %d artifact kinds, err=%v", len(artifacts), len(kinds), err)
+	}
+}
+
 func TestAgentJobIdempotencyKey(t *testing.T) {
 	f := wfSetup(t)
 	ctx := context.Background()

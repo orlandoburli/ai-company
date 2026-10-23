@@ -178,9 +178,45 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 		}
 		if terminalErr == nil && status == StepSucceeded && job.State == agent.JobSucceeded {
 			e.writeAgentMarkers(ctx, sc, run, step, node, parsedMarkers)
+			if node.Workspace == WorkspaceWorktree {
+				e.recordAgentFileArtifacts(ctx, sc, run, step, node, parsedMarkers.Output)
+			}
 		}
 	}
 	return nil
+}
+
+// recordAgentFileArtifacts records the files a successful worktree agent
+// execution produced. Validated changed_files output is preferred when
+// declared; otherwise the worktree's scrubbed git status/diff is authoritative.
+func (e *Engine) recordAgentFileArtifacts(ctx context.Context, sc tenancy.Scope, run Run, step StepRun, node Node, outputs map[string]any) {
+	files := changedFilesForAgent(ctx, step.Workdir, node, outputs)
+	const maxFiles = 50
+	shown := files
+	if len(shown) > maxFiles {
+		shown = shown[:maxFiles]
+	}
+	for _, file := range shown {
+		meta := map[string]any{"path": file.Path, "status": file.Status}
+		if file.HasLines {
+			meta["lines"] = file.Lines
+		}
+		if _, err := e.store.CreateArtifact(ctx, sc, NewArtifact{
+			RunID: run.ID, StepRunID: step.ID, ItemID: run.ItemID,
+			Kind: "file", URI: file.Path, Meta: rawJSON(meta),
+		}); err != nil {
+			e.logger.Warn("persist agent file artifact", "run", run.ID, "step", step.ID, "path", file.Path, "error", err)
+		}
+	}
+	if len(files) > maxFiles {
+		message := fmt.Sprintf("%d files changed; showing the first %d", len(files), maxFiles)
+		if _, err := e.store.CreateArtifact(ctx, sc, NewArtifact{
+			RunID: run.ID, StepRunID: step.ID, ItemID: run.ItemID,
+			Kind: "report", URI: "changed files", Meta: rawJSON(map[string]any{"message": message, "total": len(files), "shown": maxFiles}),
+		}); err != nil {
+			e.logger.Warn("persist agent file summary", "run", run.ID, "step", step.ID, "error", err)
+		}
+	}
 }
 
 func (e *Engine) terminalWithReceipts(ctx context.Context, sc tenancy.Scope, run Run, t *Template, step StepRun, state StepState, result json.RawMessage, ports map[string]json.RawMessage, failure string) error {
@@ -1148,7 +1184,7 @@ func (e *Engine) checkpointBrief(ctx context.Context, sc tenancy.Scope, run Run,
 		ItemTitle:  item.Title,
 		Question:   question,
 		Steps:      briefSteps(t, rows, node.ID),
-		Artifacts:  ArtifactSummaries(artifacts),
+		Artifacts:  ArtifactSummaries(artifacts, rows),
 		Workdir:    workdir,
 		Branch:     branch,
 		BaseBranch: defaultBaseBranch,

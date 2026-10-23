@@ -122,7 +122,11 @@ func (s *Server) checkpointRunEvidenceOfRun(ctx context.Context, sc tenancy.Scop
 	if err != nil {
 		s.log.Warn("read checkpoint artifacts", "run", run.ID, "error", err)
 	} else {
-		evidence.Artifacts = workflow.ArtifactSummaries(artifacts)
+		steps, stepErr := s.workflows.ListStepRuns(ctx, sc, run.ID)
+		if stepErr != nil {
+			s.log.Warn("read checkpoint artifact steps", "run", run.ID, "error", stepErr)
+		}
+		evidence.Artifacts = workflow.ArtifactSummaries(artifacts, steps)
 	}
 	if run.ItemID != "" && s.work != nil {
 		item, err := s.work.GetItem(ctx, sc, run.ItemID)

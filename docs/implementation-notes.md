@@ -511,6 +511,41 @@ agents' old `kind`/`config_json`/`fallbacks_json` columns stay for this
 release; nothing reads them, and a later migration drops them.
 
 
+## The checkpoint carries the evidence (M5)
+
+**The problem.** A checkpoint's summary was the node's name ("accept
+findings"), so the decision card showed a human a title and nothing else.
+There was nothing to decide *about*.
+
+**The brief.** When the checkpoint is created, the engine assembles a brief in
+Markdown: the item's title and number, the question, every step that already
+ran with its own one-line summary, the last agent's actual words, and — when
+the run has a worktree — the branch, the commit and the diff stat. The diff
+is read with git against the base branch, with the same discipline as every
+other git call (an argument list, a scrubbed environment, a timeout); a
+failure omits the line rather than failing the checkpoint. The brief is
+bounded (8 KB) and every cut is marked.
+
+**The question.** The checkpoint node's `config.question` when it has one;
+otherwise a default built from the node's name ("Approve spec?" — a name that
+already begins with a verb is not prefixed twice). The seeded templates carry
+their own questions.
+
+**The artifacts.** The facts the brief collects are also recorded as the
+run's artifacts — `branch`, `commit`, `diff_summary`, once per run, not once
+per step — and the API returns the run's artifacts with the checkpoint, each
+carrying the step that produced it. An agent step records the files it wrote
+(`file`, one per path); an integration step records what it produced (`pr`,
+`issue`).
+
+**The card.** The headline is the item's number and title (a link to the
+work), the question is the subtitle, the brief is rendered as Markdown, the
+artifacts are listed in words ("Pull request", "Document", "Wiki page",
+"File") grouped so a step that wrote ten files is one row, and each row says
+which step produced it. The buttons say *why* they are disabled instead of
+just being grey.
+
+
 ## M5 decisions (Jira deferred, agent policy, usage, notifications)
 
 **Jira is deferred, not dropped.** The connector needs a Jira Cloud site (an

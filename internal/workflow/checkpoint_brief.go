@@ -1,12 +1,17 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -41,16 +46,24 @@ const defaultBaseBranch = "main"
 // ArtifactSummary is the structured evidence a checkpoint card shows next to
 // the brief: what kind of thing it is, where it points and its metadata.
 type ArtifactSummary struct {
-	Kind string          `json:"kind"`
-	URI  string          `json:"uri"`
-	Meta json.RawMessage `json:"meta"`
+	Kind     string          `json:"kind"`
+	URI      string          `json:"uri"`
+	Meta     json.RawMessage `json:"meta"`
+	StepName string          `json:"step_name,omitempty"`
 }
 
-// ArtifactSummaries converts stored artifacts into the summaries a card shows.
-func ArtifactSummaries(artifacts []Artifact) []ArtifactSummary {
+// ArtifactSummaries converts stored artifacts into card summaries and
+// attributes step-owned artifacts to the display name of their producing step.
+func ArtifactSummaries(artifacts []Artifact, stepRuns ...[]StepRun) []ArtifactSummary {
+	names := map[string]string{}
+	if len(stepRuns) > 0 {
+		for _, step := range stepRuns[0] {
+			names[step.ID] = step.Name
+		}
+	}
 	out := make([]ArtifactSummary, 0, len(artifacts))
 	for _, artifact := range artifacts {
-		out = append(out, ArtifactSummary{Kind: artifact.Kind, URI: artifact.URI, Meta: artifact.Meta})
+		out = append(out, ArtifactSummary{Kind: artifact.Kind, URI: artifact.URI, Meta: artifact.Meta, StepName: names[artifact.StepRunID]})
 	}
 	return out
 }
@@ -210,7 +223,7 @@ func BuildCheckpointBrief(input BriefInput) (string, []ArtifactSummary, error) {
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s %s\n\n", questionPrefix, truncateText(question, briefQuestionLimit))
 
-	if steps := briefStepLines(input.Steps); steps != "" {
+	if steps := briefStepLines(input.Steps, input.Artifacts); steps != "" {
 		b.WriteString("**What happened so far**\n")
 		b.WriteString(steps)
 		b.WriteString("\n")
@@ -244,7 +257,7 @@ func BuildCheckpointBrief(input BriefInput) (string, []ArtifactSummary, error) {
 //
 // A checkpoint without a summary is a question, not work: it is left out, so
 // the card does not report the question it asks as something that happened.
-func briefStepLines(steps []BriefStep) string {
+func briefStepLines(steps []BriefStep, artifacts []ArtifactSummary) string {
 	var b strings.Builder
 	for _, step := range steps {
 		if step.Kind == string(NodeCheckpoint) && strings.TrimSpace(step.Summary) == "" {
@@ -261,9 +274,86 @@ func briefStepLines(steps []BriefStep) string {
 		if excerpt := oneLine(step.Summary); excerpt != "" {
 			b.WriteString(" — " + truncateText(excerpt, briefStepSummaryLimit))
 		}
+		if produced := stepProduction(step.Name, artifacts); produced != "" {
+			b.WriteString(" → produced: " + produced)
+		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// stepProduction renders no more than eight evidence entries for one step.
+// Files are grouped into one compact item so a code-writing step remains
+// readable even when it touched many paths.
+func stepProduction(stepName string, artifacts []ArtifactSummary) string {
+	var files []string
+	var entries []string
+	fileCount := 0
+	for _, artifact := range artifacts {
+		if artifact.StepName != stepName || artifact.Kind == "" {
+			continue
+		}
+		if artifact.Kind == "file" {
+			fileCount++
+			files = append(files, artifact.URI)
+			continue
+		}
+		entries = append(entries, artifactProductionLabel(artifact))
+	}
+	if fileCount > 0 {
+		shown := files
+		if len(shown) > 3 {
+			shown = shown[:3]
+		}
+		label := fmt.Sprintf("%d files (%s)", fileCount, strings.Join(shown, ", "))
+		if fileCount > len(shown) {
+			label += fmt.Sprintf(", +%d more", fileCount-len(shown))
+		}
+		entries = append(entries, label)
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	if len(entries) > 8 {
+		more := len(entries) - 8
+		entries = append(entries[:8], fmt.Sprintf("+%d more", more))
+	}
+	return strings.Join(entries, ", ")
+}
+
+func artifactProductionLabel(artifact ArtifactSummary) string {
+	switch artifact.Kind {
+	case "pr":
+		var meta struct {
+			Number int `json:"number"`
+		}
+		_ = json.Unmarshal(artifact.Meta, &meta)
+		if meta.Number == 0 {
+			for _, part := range strings.Split(strings.TrimRight(artifact.URI, "/"), "/") {
+				if n, err := strconv.Atoi(part); err == nil {
+					meta.Number = n
+				}
+			}
+		}
+		if meta.Number > 0 {
+			return fmt.Sprintf("pull request #%d", meta.Number)
+		}
+		return "pull request " + artifact.URI
+	case "file":
+		return "file " + filepath.ToSlash(artifact.URI)
+	case "report":
+		var meta struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(artifact.Meta, &meta)
+		if meta.Message != "" {
+			return meta.Message
+		}
+	}
+	if artifact.Kind == "document" || artifact.Kind == "wiki_page" || artifact.Kind == "issue" || artifact.Kind == "link" {
+		return strings.ReplaceAll(artifact.Kind, "_", " ") + " " + artifact.URI
+	}
+	return strings.ReplaceAll(artifact.Kind, "_", " ") + " " + artifact.URI
 }
 
 // briefAgentWords renders the last thing the agent said.
@@ -306,7 +396,18 @@ func reverseSteps(steps []BriefStep) []BriefStep {
 func mergeArtifacts(existing, derived []ArtifactSummary) []ArtifactSummary {
 	out := make([]ArtifactSummary, 0, len(existing)+len(derived))
 	index := map[string]int{}
-	for _, artifact := range append(append([]ArtifactSummary{}, existing...), derived...) {
+	for _, artifact := range existing {
+		if artifact.Kind == "" {
+			continue
+		}
+		if artifact.StepName == "" {
+			if _, exists := index[artifact.Kind]; !exists {
+				index[artifact.Kind] = len(out)
+			}
+		}
+		out = append(out, artifact)
+	}
+	for _, artifact := range derived {
 		if artifact.Kind == "" {
 			continue
 		}
@@ -325,11 +426,12 @@ func boundBrief(brief string) string {
 	if len(brief) <= briefMaxBytes {
 		return brief
 	}
-	cut := brief[:briefMaxBytes]
+	suffix := "\n\n" + truncationMarker + "\n"
+	cut := brief[:briefMaxBytes-len(suffix)]
 	for len(cut) > 0 && !utf8.ValidString(cut) {
 		cut = cut[:len(cut)-1]
 	}
-	return strings.TrimRight(cut, "\n") + "\n\n" + truncationMarker + "\n"
+	return strings.TrimRight(cut, "\n") + suffix
 }
 
 // truncateText cuts a text to a limit and marks the cut.
@@ -485,4 +587,165 @@ func briefGitEnvironment(home string) []string {
 		}
 	}
 	return env
+}
+
+type producedFile struct {
+	Path     string
+	Status   string
+	Lines    int
+	HasLines bool
+}
+
+// changedFilesForAgent uses the validated changed_files output when the node
+// declares it; otherwise it discovers changed paths with the same scrubbed,
+// bounded git reader used by the checkpoint brief.
+func changedFilesForAgent(ctx context.Context, workdir string, node Node, outputs map[string]any) []producedFile {
+	if strings.TrimSpace(workdir) == "" {
+		return nil
+	}
+	var config struct {
+		Outputs map[string]json.RawMessage `json:"outputs"`
+	}
+	_ = json.Unmarshal(node.Config, &config)
+	var candidates []string
+	usedStructuredOutput := false
+	if _, declared := config.Outputs["changed_files"]; declared {
+		if value, exists := outputs["changed_files"]; exists {
+			switch values := value.(type) {
+			case []any:
+				usedStructuredOutput = true
+				for _, value := range values {
+					if file, ok := value.(string); ok {
+						candidates = append(candidates, file)
+					}
+				}
+			case []string:
+				usedStructuredOutput = true
+				candidates = append(candidates, values...)
+			}
+		}
+	}
+	if usedStructuredOutput && len(candidates) == 0 {
+		return nil
+	}
+
+	home, err := os.MkdirTemp("", "aic-artifacts-home-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(home) //nolint:errcheck
+	statuses := worktreeFileStatuses(ctx, workdir, home)
+	if len(candidates) == 0 {
+		for file := range statuses {
+			candidates = append(candidates, file)
+		}
+	}
+	unique := map[string]bool{}
+	files := make([]producedFile, 0, len(candidates))
+	for _, candidate := range candidates {
+		file := cleanRepoPath(candidate)
+		if file == "" || unique[file] {
+			continue
+		}
+		unique[file] = true
+		status := statuses[file]
+		if status == "" {
+			status = "modified"
+		}
+		entry := producedFile{Path: file, Status: status}
+		if status != "deleted" {
+			if lines, ok := countWorktreeLines(workdir, file); ok {
+				entry.Lines, entry.HasLines = lines, true
+			}
+		}
+		files = append(files, entry)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files
+}
+
+func cleanRepoPath(candidate string) string {
+	candidate = strings.TrimSpace(strings.ReplaceAll(candidate, "\\", "/"))
+	if candidate == "" || strings.HasPrefix(candidate, "/") {
+		return ""
+	}
+	clean := path.Clean(candidate)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return clean
+}
+
+func worktreeFileStatuses(ctx context.Context, workdir, home string) map[string]string {
+	statuses := map[string]string{}
+	if out, err := briefGit(ctx, workdir, home, "status", "--porcelain=v1", "-z", "--untracked-files=all"); err == nil {
+		for _, record := range strings.Split(out, "\x00") {
+			if len(record) < 4 {
+				continue
+			}
+			file := cleanRepoPath(record[3:])
+			if file == "" {
+				continue
+			}
+			code := record[:2]
+			statuses[file] = gitStatusName(code)
+		}
+	}
+	base := resolveBaseBranch(ctx, workdir, home, defaultBaseBranch)
+	if base != "" {
+		if out, err := briefGit(ctx, workdir, home, "diff", "--name-status", "--no-renames", "-z", base); err == nil {
+			parts := strings.Split(out, "\x00")
+			for i := 0; i+1 < len(parts); i += 2 {
+				file := cleanRepoPath(parts[i+1])
+				if file == "" {
+					continue
+				}
+				statuses[file] = gitStatusName(parts[i])
+			}
+		}
+	}
+	return statuses
+}
+
+func gitStatusName(code string) string {
+	if strings.Contains(code, "D") {
+		return "deleted"
+	}
+	if strings.Contains(code, "A") || code == "??" || strings.Contains(code, "?") {
+		return "added"
+	}
+	return "modified"
+}
+
+func countWorktreeLines(workdir, file string) (int, bool) {
+	full := filepath.Join(workdir, filepath.FromSlash(file))
+	info, err := os.Lstat(full)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return 0, false
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	buf := make([]byte, 32*1024)
+	lines, bytesRead, lastNewline := 0, int64(0), true
+	for {
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			bytesRead += int64(n)
+			lines += bytes.Count(buf[:n], []byte{'\n'})
+			lastNewline = buf[n-1] == '\n'
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return 0, false
+		}
+	}
+	if bytesRead > 0 && !lastNewline {
+		lines++
+	}
+	return lines, true
 }
