@@ -202,8 +202,17 @@ func TestBugfixGitHubTemplateShape(t *testing.T) {
 			merges++
 		}
 	}
-	if integrations != 2 || checkpoints != 2 || merges != 1 {
-		t.Fatalf("integrations=%d checkpoints=%d merges=%d, want 2/2/1", integrations, checkpoints, merges)
+	// Three integration nodes: open the pull request, watch the checks, and
+	// close the item.
+	if integrations != 3 || checkpoints != 2 || merges != 1 {
+		t.Fatalf("integrations=%d checkpoints=%d merges=%d, want 3/2/1", integrations, checkpoints, merges)
+	}
+	done, ok := tpl.Graph.Node("n_done")
+	if !ok {
+		t.Fatal("n_done missing")
+	}
+	if done.Kind != workflow.NodeIntegration || done.Type != "item.mark_done" {
+		t.Fatalf("n_done = %s/%s, want an item.mark_done integration", done.Kind, done.Type)
 	}
 	impl, ok := tpl.Graph.Node("n_code")
 	if !ok {

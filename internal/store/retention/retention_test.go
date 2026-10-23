@@ -37,8 +37,8 @@ func TestMigrationAndPartitionSecurity(t *testing.T) {
 	// A row written into a previously discovered old month routes to that month.
 	appendLog(t, app, scopes[0].TenantID, jobs[0], "past-month-append", past.Add(12*time.Hour))
 	partitionName := "job_logs_" + past.Format("2006_01")
-	var inPartition int
-	if err := db.QueryRow(`SELECT count(*) FROM public.`+partitionName+` WHERE message = 'past-month-append'`).Scan(&inPartition); err != nil {
+	inPartition, err := countDirectPartition(t, db.DB, scopes[0].TenantID, partitionName, "past-month-append")
+	if err != nil {
 		t.Fatalf("read past partition as owner: %v", err)
 	}
 	if inPartition != 1 {
@@ -50,7 +50,8 @@ func TestMigrationAndPartitionSecurity(t *testing.T) {
 		t.Fatalf("parent-table row count=%d, want 1", got)
 	}
 	currentPartition := "job_logs_" + now.Format("2006_01")
-	if err := db.QueryRow(`SELECT count(*) FROM public.`+currentPartition+` WHERE seq = $1`, currentLog).Scan(&inPartition); err != nil {
+	inPartition, err = countDirectPartition(t, db.DB, scopes[0].TenantID, currentPartition, "current-month")
+	if err != nil {
 		t.Fatalf("read current partition as owner: %v", err)
 	}
 	if inPartition != 1 {
@@ -85,7 +86,6 @@ func TestPruneDropsOnlyExpiredPartitions(t *testing.T) {
 	appendLog(t, app, scopes[0].TenantID, jobs[0], "recent", recent)
 	rebuildLegacyLogsAndReapply(t, db, scopes[0].TenantID)
 
-	oldName := "job_logs_" + old.Format("2006_01")
 	recentName := "job_logs_" + recent.Format("2006_01")
 	result, err := retention.Prune(context.Background(), db.DB, retention.Config{
 		KeepDays: 90,
@@ -94,13 +94,20 @@ func TestPruneDropsOnlyExpiredPartitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	if len(result.Dropped) != 1 || result.Dropped[0] != oldName {
-		t.Fatalf("dropped partitions=%v, want [%s]", result.Dropped, oldName)
+	cutoff := now.AddDate(0, 0, -90)
+	var expectedDropped []string
+	for month := old; month.AddDate(0, 1, 0).Before(cutoff) || month.AddDate(0, 1, 0).Equal(cutoff); month = month.AddDate(0, 1, 0) {
+		expectedDropped = append(expectedDropped, "job_logs_"+month.Format("2006_01"))
+	}
+	if strings.Join(result.Dropped, ",") != strings.Join(expectedDropped, ",") {
+		t.Fatalf("dropped partitions=%v, want %v", result.Dropped, expectedDropped)
 	}
 	if result.Kept == 0 {
 		t.Fatal("Prune kept no range partitions; expected recent partitions")
 	}
-	assertPartitionExists(t, db.DB, oldName, false)
+	for _, name := range expectedDropped {
+		assertPartitionExists(t, db.DB, name, false)
+	}
 	assertPartitionExists(t, db.DB, recentName, true)
 
 	// The default retention behavior is safe on an empty fresh database.
@@ -116,17 +123,19 @@ func TestPruneDropsOnlyExpiredPartitions(t *testing.T) {
 
 func seedJobs(t *testing.T, db *pgtest.DB, prefix string) (*sql.DB, []tenancy.Scope, []string) {
 	t.Helper()
-	for i, tenantID := range []string{prefix + "-a", prefix + "-b"} {
+	for _, tenantID := range []string{prefix + "-a", prefix + "-b"} {
 		if _, err := db.Exec(`SELECT auth_register_tenant($1, $2, $3, $4, $5, $6, $7, $8)`,
 			tenantID, "Tenant "+tenantID, tenantID, "user-"+tenantID,
 			"user-"+tenantID+"@example.com", "x", "User", "member-"+tenantID); err != nil {
 			t.Fatalf("register tenant %s: %v", tenantID, err)
 		}
-		_ = i
 	}
 	app := db.AsRole(t, "aic_app")
 	store := agent.NewStore(app)
-	scopes := []tenancy.Scope{{TenantID: prefix + "-a"}, {TenantID: prefix + "-b"}}
+	scopes := []tenancy.Scope{
+		{TenantID: prefix + "-a", Role: tenancy.RoleOwner},
+		{TenantID: prefix + "-b", Role: tenancy.RoleOwner},
+	}
 	jobs := make([]string, 0, 2)
 	for i, scope := range scopes {
 		agentRow, err := store.CreateAgent(context.Background(), scope, agent.Agent{
@@ -241,7 +250,7 @@ func assertPartitioned(t *testing.T, db *sql.DB) {
 func assertNoDirectPartitionPrivileges(t *testing.T, db *pgtest.DB, part string) {
 	t.Helper()
 	var hasPrivilege bool
-	if err := db.QueryRow(`SELECT has_table_privilege('aic_app', 'public."`+part+`"', 'SELECT')`).Scan(&hasPrivilege); err != nil {
+	if err := db.QueryRow(`SELECT has_table_privilege('aic_app', 'public."` + part + `"', 'SELECT')`).Scan(&hasPrivilege); err != nil {
 		t.Fatalf("check partition SELECT privilege: %v", err)
 	}
 	if hasPrivilege {
@@ -255,15 +264,46 @@ func assertNoDirectPartitionPrivileges(t *testing.T, db *pgtest.DB, part string)
 
 func assertAppendOnly(t *testing.T, db *pgtest.DB, seq int64) {
 	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin append-only checks: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(`SELECT set_config('app.tenant_id', $1, true)`, "migration-a"); err != nil {
+		t.Fatalf("set append-only tenant: %v", err)
+	}
 	for _, statement := range []string{
 		`UPDATE public.job_logs SET message = 'changed' WHERE seq = $1`,
 		`DELETE FROM public.job_logs WHERE seq = $1`,
 	} {
-		_, err := db.Exec(statement, seq)
+		if _, err := tx.Exec(`SAVEPOINT append_only_test`); err != nil {
+			t.Fatalf("create statement savepoint: %v", err)
+		}
+		_, err := tx.Exec(statement, seq)
 		if err == nil || !strings.Contains(err.Error(), "AIC05") {
 			t.Fatalf("append-only statement %q error=%v, want AIC05", statement, err)
 		}
+		if _, err := tx.Exec(`ROLLBACK TO SAVEPOINT append_only_test`); err != nil {
+			t.Fatalf("recover after expected append-only failure: %v", err)
+		}
 	}
+}
+
+func countDirectPartition(t *testing.T, db *sql.DB, tenantID, partition, message string) (int, error) {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.Exec(`SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
+		return 0, err
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT count(*) FROM public."`+partition+`" WHERE message = $1`, message).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func assertPartitionExists(t *testing.T, db *sql.DB, name string, want bool) {

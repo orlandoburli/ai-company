@@ -35,6 +35,11 @@ CREATE TABLE public.job_logs_new (
     -- globally unique by a database constraint; the composite key is the
     -- closest legal primary key and rows remain individually addressable.
     CONSTRAINT job_logs_new_pkey PRIMARY KEY (seq, created_at),
+    -- (job_id, seq) cannot remain globally unique because it omits the range
+    -- key. This legal shape enforces uniqueness within each partition key; the
+    -- identity-generated seq itself remains practically monotonic but is not a
+    -- global uniqueness constraint across partitions.
+    CONSTRAINT job_logs_new_job_seq_key UNIQUE (job_id, seq, created_at),
     CONSTRAINT job_logs_job_fk FOREIGN KEY (job_id, tenant_id)
         REFERENCES agent_jobs (id, tenant_id) ON DELETE CASCADE,
     CONSTRAINT job_logs_run_fk FOREIGN KEY (run_id, tenant_id)
@@ -49,10 +54,10 @@ DO $$
 DECLARE
     oldest       TIMESTAMPTZ;
     newest       TIMESTAMPTZ;
-    first_month  TIMESTAMPTZ;
-    last_month   TIMESTAMPTZ;
-    month_start  TIMESTAMPTZ;
-    month_end    TIMESTAMPTZ;
+    first_month  TIMESTAMP;
+    last_month   TIMESTAMP;
+    month_start  TIMESTAMP;
+    month_end    TIMESTAMP;
     part_name    TEXT;
     lower_bound  TEXT;
     upper_bound  TEXT;
@@ -61,21 +66,26 @@ BEGIN
       INTO oldest, newest
       FROM public.job_logs_before_partitioning;
 
-    first_month := date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
+    -- Keep the loop bounds as UTC wall-clock timestamps. Month arithmetic on
+    -- timestamptz otherwise follows the server session timezone and can repeat
+    -- a month at UTC offset boundaries.
+    first_month := date_trunc('month', now() AT TIME ZONE 'UTC');
     last_month := first_month + interval '1 month';
     IF oldest IS NOT NULL THEN
         first_month := LEAST(first_month,
-            date_trunc('month', oldest AT TIME ZONE 'UTC') AT TIME ZONE 'UTC');
+            date_trunc('month', oldest AT TIME ZONE 'UTC'));
         last_month := GREATEST(last_month,
-            date_trunc('month', newest AT TIME ZONE 'UTC') AT TIME ZONE 'UTC');
+            date_trunc('month', newest AT TIME ZONE 'UTC'));
     END IF;
 
     month_start := first_month;
     WHILE month_start <= last_month LOOP
         month_end := month_start + interval '1 month';
-        part_name := 'job_logs_' || to_char(month_start AT TIME ZONE 'UTC', 'YYYY_MM');
-        lower_bound := to_char(month_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00';
-        upper_bound := to_char(month_end AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || '+00';
+        -- Use temporary child names because the old heap's partitions still
+        -- occupy the final names until it is dropped below.
+        part_name := 'job_logs_new_' || to_char(month_start, 'YYYY_MM');
+        lower_bound := to_char(month_start, 'YYYY-MM-DD HH24:MI:SS') || '+00';
+        upper_bound := to_char(month_end, 'YYYY-MM-DD HH24:MI:SS') || '+00';
         EXECUTE format(
             'CREATE TABLE public.%I PARTITION OF public.job_logs_new '
             'FOR VALUES FROM (%L::timestamptz) TO (%L::timestamptz)',
@@ -83,7 +93,7 @@ BEGIN
         month_start := month_end;
     END LOOP;
 
-    CREATE TABLE public.job_logs_default PARTITION OF public.job_logs_new DEFAULT;
+    CREATE TABLE public.job_logs_new_default PARTITION OF public.job_logs_new DEFAULT;
 END
 $$;
 
@@ -129,6 +139,27 @@ $$;
 DROP TABLE public.job_logs_before_partitioning;
 ALTER TABLE public.job_logs_new RENAME TO job_logs;
 
+DO $$
+DECLARE
+    part RECORD;
+    final_name TEXT;
+BEGIN
+    FOR part IN
+        SELECT child.oid::regclass AS relation, child.relname
+          FROM pg_inherits i
+          JOIN pg_class child ON child.oid = i.inhrelid
+         WHERE i.inhparent = 'public.job_logs'::regclass
+    LOOP
+        IF part.relname = 'job_logs_new_default' THEN
+            final_name := 'job_logs_default';
+        ELSE
+            final_name := replace(part.relname, 'job_logs_new_', 'job_logs_');
+        END IF;
+        EXECUTE format('ALTER TABLE %s RENAME TO %I', part.relation, final_name);
+    END LOOP;
+END
+$$;
+
 -- Reattach after the parent has its permanent name. DETACH/ATTACH is done in
 -- this same transaction, so no other session can observe the intermediate gap.
 DO $$
@@ -155,6 +186,7 @@ END
 $$;
 
 ALTER INDEX public.job_logs_new_pkey RENAME TO job_logs_pkey;
+ALTER TABLE public.job_logs RENAME CONSTRAINT job_logs_new_job_seq_key TO job_logs_job_seq_key;
 CREATE INDEX job_logs_job_idx ON public.job_logs (job_id, seq);
 CREATE INDEX job_logs_tenant_idx ON public.job_logs (tenant_id, created_at);
 CREATE INDEX job_logs_run_idx ON public.job_logs (run_id, seq);

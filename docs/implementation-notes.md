@@ -306,6 +306,21 @@ Security notes that are specific to M3:
   cannot change what an already-ready node sees.
 - `checkpoints.fields_spec_json` holds the typed fields a checkpoint asks for;
   the values the human submits live in `fields_json`.
+- **`job_logs` is partitioned by month** (`0015_job_log_partitions.sql`): the
+  table was rebuilt as a range-partitioned parent, the existing rows were
+  copied, and the append-only trigger, the RLS and the grants were restored.
+  The deferral existed because the blanket `ALTER DEFAULT PRIVILEGES` in `0001`
+  would have handed the application role direct privileges on the child
+  partitions — and a direct read of a partition is not filtered by the
+  parent's policy. The migration closes that: the existing partitions have
+  their privileges revoked and the tenant policy forced, and the owner's
+  blanket default grant in `public` is revoked so a *future* partition is not
+  reachable directly either. The price is a unique key that must contain the
+  partition key: `(job_id, seq)` alone can no longer be unique, so the closest
+  legal shape is `(job_id, seq, created_at)`.
+- **The retention job** prunes once a day: a partition whose range ended
+  before the window (90 days by default) is detached and dropped, without a
+  cascade, and the default partition is never touched.
 
 ### What M3 does not do
 

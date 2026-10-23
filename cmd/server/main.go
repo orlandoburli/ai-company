@@ -30,6 +30,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
+	"github.com/orlandoburli/ai-company/internal/store/retention"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workflow"
 	"github.com/orlandoburli/ai-company/internal/workspace"
@@ -136,6 +137,33 @@ func run() error {
 		Logger:        log,
 	})
 	engine.Start(ctx)
+
+	// The log partitions are pruned once a day: a partition whose range ended
+	// before the retention window is detached and dropped, and nothing else is
+	// touched.
+	go func() {
+		prune := func() {
+			result, err := retention.Prune(ctx, db, retention.Config{KeepDays: 90, Logger: log})
+			if err != nil {
+				log.Warn("prune job log partitions", "error", err)
+				return
+			}
+			if len(result.Dropped) > 0 {
+				log.Info("dropped job log partitions", "count", len(result.Dropped))
+			}
+		}
+		prune()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				prune()
+			}
+		}
+	}()
 
 	srv := &http.Server{
 		Addr: *addr,

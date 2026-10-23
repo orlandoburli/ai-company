@@ -26,6 +26,12 @@ type GitHubService interface {
 	FindComment(context.Context, int, string) (integration.Comment, bool, error)
 }
 
+// GitHubIssueService is optional so existing connectors need not expose issue
+// retrieval unless the workflow uses github.fetch_issue.
+type GitHubIssueService interface {
+	GetIssue(context.Context, int) (integration.Issue, error)
+}
+
 type GitService interface {
 	PushBranch(context.Context, string, string, string) (integration.Commit, error)
 	HeadCommit(context.Context, string) (integration.Commit, error)
@@ -106,6 +112,7 @@ type integrationConfig struct {
 	Body          string `json:"body"`
 	Draft         bool   `json:"draft"`
 	PR            int    `json:"pr"`
+	Issue         int    `json:"issue"`
 	TimeoutS      int    `json:"timeout_s"`
 	PollIntervalS int    `json:"poll_interval_s"`
 }
@@ -121,7 +128,7 @@ func RunIntegration(ctx context.Context, svc Services, in IntegrationRequest) (I
 	if in.IdempotencyKey == "" {
 		in.IdempotencyKey = fmt.Sprintf("run:%s:node:%s:%s:%d", in.RunID, in.NodeID, in.IterationPath, in.RunIndex)
 	}
-	if in.Type != "github.open_pr" && in.Type != "github.wait_ci" && in.Type != "github.comment" {
+	if in.Type != "github.open_pr" && in.Type != "github.wait_ci" && in.Type != "github.comment" && in.Type != "github.fetch_issue" {
 		return IntegrationResult{}, integrationFailure(FailureCapability, fmt.Sprintf("unknown integration type %q", in.Type))
 	}
 	client, err := integrationClient(ctx, svc, cfg)
@@ -135,9 +142,44 @@ func RunIntegration(ctx context.Context, svc Services, in IntegrationRequest) (I
 		return integrationWaitCI(ctx, client, cfg, in)
 	case "github.comment":
 		return integrationComment(ctx, client, cfg, in)
+	case "github.fetch_issue":
+		return integrationFetchIssue(ctx, client, cfg)
 	default:
 		return IntegrationResult{}, integrationFailure(FailureCapability, "unsupported integration type")
 	}
+}
+
+func integrationFetchIssue(ctx context.Context, gh GitHubService, cfg integrationConfig) (IntegrationResult, error) {
+	if cfg.Issue <= 0 {
+		return IntegrationResult{}, integrationFailure(FailureCapability, "github.fetch_issue requires a positive issue number")
+	}
+	issueClient, ok := gh.(GitHubIssueService)
+	if !ok {
+		return IntegrationResult{}, integrationFailure(FailureCapability, "GitHub service does not support issue retrieval")
+	}
+	issue, err := issueClient.GetIssue(ctx, cfg.Issue)
+	if err != nil {
+		kind := FailureTransient
+		var apiErr *integration.APIError
+		if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
+			kind = FailureDependency
+		}
+		return IntegrationResult{}, integrationFailure(kind, "could not fetch GitHub issue: "+excerpt(err))
+	}
+	if issue.Number == 0 {
+		issue.Number = cfg.Issue
+	}
+	repository := cfg.Repo
+	uri := fmt.Sprintf("https://github.com/%s/issues/%d", repository, issue.Number)
+	meta, _ := json.Marshal(map[string]any{
+		"repository": repository, "issue_number": issue.Number, "author": issue.Author,
+		"timestamp": issue.CreatedAt, "title": issue.Title, "body": issue.Body,
+	})
+	return successIntegration(
+		map[string]any{"title": issue.Title, "body": issue.Body, "issue_number": issue.Number},
+		map[string]any{"title": issue.Title, "body": issue.Body, "issue_number": issue.Number},
+		[]IntegrationArtifact{{Kind: "issue_body", URI: uri, Meta: meta}},
+	)
 }
 
 func integrationClient(ctx context.Context, svc Services, cfg integrationConfig) (GitHubService, error) {

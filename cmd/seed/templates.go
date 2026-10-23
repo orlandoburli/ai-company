@@ -199,6 +199,12 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 	if err != nil {
 		return seedTemplate{}, err
 	}
+	// The designed flow ends with the item closed: the work is done, the
+	// checks passed and a human approved the result.
+	closeItem, err := integrationNode("n_done", "close the item", "item.mark_done", 1, map[string]any{})
+	if err != nil {
+		return seedTemplate{}, err
+	}
 
 	return seedTemplate{
 		Name:           "Bugfix (GitHub)",
@@ -207,7 +213,7 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		Graph: workflow.Template{
 			SchemaVersion: 1,
 			Nodes: []workflow.Node{
-				spec, gate, impl, pr, ci, review, join, gate2, closeNode,
+				spec, gate, impl, pr, ci, review, join, gate2, closeNode, closeItem,
 			},
 			Edges: []workflow.Edge{
 				edge("e1", "n_pm", "main", "n_gate", "in"),
@@ -219,6 +225,7 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 				edge("e7", "n_review", "main", "n_join", "in"),
 				edge("e8", "n_join", "main", "n_gate2", "in"),
 				edge("e9", "n_gate2", "approved", "n_close", "in"),
+				edge("e10", "n_close", "main", "n_done", "in"),
 			},
 		},
 	}, nil

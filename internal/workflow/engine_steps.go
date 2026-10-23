@@ -73,6 +73,8 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 		failure := ""
 		ports := map[string]json.RawMessage{}
 		result := map[string]any{"status": "succeeded", "exit_reason": "ok"}
+		var parsedMarkers agentMarkerResult
+		var output string
 		if job.State == agent.JobFailed {
 			status = StepFailed
 			failure = "capability"
@@ -92,7 +94,6 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			if len(job.Result) > 0 {
 				_ = json.Unmarshal(job.Result, &decoded)
 			}
-			var output string
 			if len(decoded) > 0 {
 				_ = json.Unmarshal(decoded["output"], &output)
 			}
@@ -112,23 +113,42 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			if _, ok := ports["main"]; !ok {
 				ports["main"] = rawJSON(map[string]string{"text": output})
 			}
-			// The downstream integration needs to know which branch the work
-			// landed on and where it lives: the receipt carries both.
-			ports["main"] = withWorkLocation(ports["main"], step.ContextManifest)
-			result["summary"] = output
-			result["output"] = output
+			parsedMarkers = e.inspectAgentMarkers(ctx, sc, run, node, output)
+			if parsedMarkers.Failure != "" {
+				status, failure = StepFailed, parsedMarkers.Failure
+				result = map[string]any{"status": "failed", "exit_reason": parsedMarkers.FailureText, "failure_kind": failure, "summary": output, "output": output}
+			} else {
+				if parsedMarkers.HasOutput {
+					ports["main"] = rawJSON(parsedMarkers.Output)
+				}
+				// The downstream integration needs the server-created branch and workdir.
+				ports["main"] = withWorkLocation(ports["main"], step.ContextManifest)
+				result["summary"] = output
+				result["output"] = output
+				if parsedMarkers.HasOutput {
+					result["outputs"] = parsedMarkers.Output
+				}
+			}
 		}
 		result["tokens_in"], result["tokens_out"], result["cost_usd"] = job.TokensIn, job.TokensOut, job.CostUSD
 		var contextInfo struct {
-			WorkspaceNote string `json:"workspace_note"`
+			WorkspaceNote string   `json:"workspace_note"`
+			Dropped       []string `json:"dropped_markers"`
 		}
 		_ = json.Unmarshal(step.ContextManifest, &contextInfo)
+		parsedMarkers.Dropped = append(parsedMarkers.Dropped, contextInfo.Dropped...)
+		if len(parsedMarkers.Dropped) > 0 {
+			result["dropped_markers"] = parsedMarkers.Dropped
+		}
 		if contextInfo.WorkspaceNote != "" {
 			result["workspace_note"] = contextInfo.WorkspaceNote
 		}
-		_ = node
-		if err := e.terminalWithReceipts(ctx, sc, run, t, step, status, rawJSON(result), ports, failure); err != nil && !errors.Is(err, ErrClaimLost) {
-			return err
+		terminalErr := e.terminalWithReceipts(ctx, sc, run, t, step, status, rawJSON(result), ports, failure)
+		if terminalErr != nil && !errors.Is(terminalErr, ErrClaimLost) {
+			return terminalErr
+		}
+		if terminalErr == nil && status == StepSucceeded && job.State == agent.JobSucceeded {
+			e.writeAgentMarkers(ctx, sc, run, step, node, parsedMarkers)
 		}
 	}
 	return nil
@@ -161,48 +181,7 @@ func (e *Engine) terminalWithReceipts(ctx context.Context, sc tenancy.Scope, run
 	if err != nil {
 		return err
 	}
-	// The run tier is the run's memory document: what a node produced and
-	// what a human decided. It is written after the step is terminal, so a
-	// later node that reads the run scope sees it. A memory failure never
-	// fails the step — the result is already recorded.
-	e.writeRunMemory(ctx, sc, run, step, state, ports, result)
 	return nil
-}
-
-// writeRunMemory records what a terminal node produced in the run's memory
-// scope. The key is the node id, so a redo of the same node writes the next
-// revision of the same key and the history stays auditable.
-func (e *Engine) writeRunMemory(ctx context.Context, sc tenancy.Scope, run Run, step StepRun, state StepState, ports map[string]json.RawMessage, result json.RawMessage) {
-	if e.memory == nil || run.ID == "" {
-		return
-	}
-	key := "node:" + step.NodeID
-	content := ""
-	if len(ports) > 0 {
-		if raw, ok := ports["main"]; ok {
-			content = string(raw)
-		}
-	}
-	if content == "" {
-		content = string(result)
-	}
-	if content == "" {
-		return
-	}
-	source := memory.SourceStepOutput
-	if state != StepSucceeded {
-		source = memory.SourceIntegration
-	}
-	if _, err := e.memory.Write(ctx, sc, memory.Write{
-		Scope:           memory.Scope{Kind: memory.ScopeRun, Ref: run.ID},
-		Key:             key,
-		ContentMD:       content,
-		Source:          source,
-		SourceRunID:     run.ID,
-		SourceStepRunID: step.ID,
-	}); err != nil {
-		e.logger.Warn("write run memory", "run", run.ID, "node", step.NodeID, "error", err)
-	}
 }
 
 func latestStepForRun(ctx context.Context, st *Store, sc tenancy.Scope, runID, nodeID string) (StepRun, bool) {
@@ -403,6 +382,12 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		fmt.Fprintf(&task, "\n\nWork item: %s\nStatus: %s\n\n%s", item.Title, item.Status, item.DescriptionMD)
 	}
 	var sections []ctxbundle.Section
+	// External issue text is context only: it is never a skill selector and is
+	// never consulted for memory keys, scope references, or capabilities.
+	issueSection, issueMarkers := e.issueBodySection(ctx, sc, run, item)
+	if issueSection != nil {
+		sections = append(sections, *issueSection)
+	}
 	if len(ready.Inputs) > 0 {
 		keys := make([]string, 0, len(ready.Inputs))
 		for edge := range ready.Inputs {
@@ -440,7 +425,8 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
-	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "task_file_sha": bundle.TaskFileSHA, "inputs": ready.Inputs})
+	bundle.DroppedMarkers = append(bundle.DroppedMarkers, issueMarkers...)
+	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs})
 	key := fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex)
 	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, Workdir: workdir, CreatedBy: run.StartedBy})
 	if err != nil {
@@ -455,7 +441,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		// integration has something stable to talk about.
 		branch = fmt.Sprintf("aic/%s-%s-%d", item.ID, step.ID, maxInt(1, ready.Attempt))
 	}
-	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "workspace_note": scratchReason, "branch": branch, "workdir": workdir})
+	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
 	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk})
 	if err != nil {
 		return err
@@ -471,6 +457,58 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		return e.finalizeJobs(ctx, sc, run, t, []StepRun{fresh})
 	}
 	return nil
+}
+
+// issueBodySection returns the most recently fetched issue_body artifact for
+// this run and item. The body remains untrusted through ctxbundle; marker names
+// are neutralized as text and recorded as dropped, so external text cannot
+// cause skill loads, memory writes, marker actions, or scope expansion.
+func (e *Engine) issueBodySection(ctx context.Context, sc tenancy.Scope, run Run, item work.Item) (*ctxbundle.Section, []string) {
+	if e.store == nil || run.ID == "" || item.ID == "" {
+		return nil, nil
+	}
+	artifacts, err := e.store.ListArtifacts(ctx, sc, run.ID)
+	if err != nil {
+		e.logger.Warn("read issue body artifact", "run", run.ID, "error", err)
+		return nil, nil
+	}
+	for i := len(artifacts) - 1; i >= 0; i-- {
+		artifact := artifacts[i]
+		if artifact.Kind != "issue_body" || artifact.ItemID != item.ID {
+			continue
+		}
+		var meta struct {
+			Repository  string `json:"repository"`
+			IssueNumber int    `json:"issue_number"`
+			Author      string `json:"author"`
+			Timestamp   string `json:"timestamp"`
+			Title       string `json:"title"`
+			Body        string `json:"body"`
+		}
+		if err := json.Unmarshal(artifact.Meta, &meta); err != nil {
+			e.logger.Warn("decode issue body artifact", "artifact", artifact.ID, "error", err)
+			return nil, nil
+		}
+		content := "Title: " + meta.Title + "\n\n" + meta.Body
+		content, dropped := neutralizeExternalMarkers(content, "issue-body")
+		section := &ctxbundle.Section{
+			Name: "issue-body", Trust: ctxbundle.TrustUntrusted, Ref: artifact.URI, Content: content,
+			Provenance: ctxbundle.Provenance{System: "GitHub issue", Ref: fmt.Sprintf("%s#%d", meta.Repository, meta.IssueNumber), Author: meta.Author, At: meta.Timestamp},
+		}
+		return section, dropped
+	}
+	return nil, nil
+}
+
+func neutralizeExternalMarkers(text, section string) (string, []string) {
+	var dropped []string
+	for _, marker := range []string{"AIC_PUBLISH", "AIC_MEMORIZE", "AIC_OUTPUT", "AIC_SPAWN"} {
+		if strings.Contains(text, marker) {
+			dropped = append(dropped, section+":"+marker)
+			text = strings.ReplaceAll(text, marker, "[ignored untrusted marker]")
+		}
+	}
+	return text, dropped
 }
 
 func ptrRaw(v json.RawMessage) *json.RawMessage { return &v }
@@ -527,6 +565,9 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 		if loaded, err := e.work.GetItem(ctx, sc, run.ItemID); err == nil {
 			item = loaded
 		}
+	}
+	if node.Type == "item.mark_done" {
+		return e.markItemDone(ctx, sc, run, t, claimed, item)
 	}
 	productID, repoURL := e.productForItem(ctx, sc, item)
 	mirrorPath := ""
@@ -589,6 +630,41 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 		})
 	}
 	return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, result.Result, result.OutputPorts, "")
+}
+
+// markItemDone closes the item the run worked on.
+//
+// It is the last step of the designed Bugfix flow: the work is done, the
+// checks passed, a human approved the result — so the item goes to "done".
+// The change is attributed to the run's starter, and the previous status is
+// kept in the activity log like every other item change.
+func (e *Engine) markItemDone(ctx context.Context, sc tenancy.Scope, run Run, t *Template, claimed StepRun, item work.Item) error {
+	if item.ID == "" {
+		return e.failClaim(ctx, sc, run, t, claimed, "dependency", "the run has no item to close")
+	}
+	if e.work == nil {
+		return e.failClaim(ctx, sc, run, t, claimed, "capability", "the work store is not configured")
+	}
+	if item.Status == "done" {
+		// Already closed: the step is idempotent, not a failure.
+		return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded,
+			rawJSON(map[string]any{"status": "succeeded", "exit_reason": "ok", "summary": "the item was already done"}),
+			map[string]json.RawMessage{"main": rawJSON(map[string]any{"item_id": item.ID, "status": "done"})}, "")
+	}
+	status := "done"
+	updated, err := e.work.UpdateItem(ctx, sc, item.ID, work.ItemPatch{Status: &status}, run.StartedBy)
+	if err != nil {
+		return e.failClaim(ctx, sc, run, t, claimed, "dependency", err.Error())
+	}
+	if _, err := e.store.CreateArtifact(ctx, sc, NewArtifact{
+		RunID: run.ID, StepRunID: claimed.ID, ItemID: item.ID,
+		Kind: "item", URI: item.ID, Meta: rawJSON(map[string]any{"status": updated.Status}),
+	}); err != nil {
+		e.logger.Warn("record item artifact", "run", run.ID, "item", item.ID, "error", err)
+	}
+	return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded,
+		rawJSON(map[string]any{"status": "succeeded", "exit_reason": "ok", "summary": "the item is done"}),
+		map[string]json.RawMessage{"main": rawJSON(map[string]any{"item_id": item.ID, "status": updated.Status})}, "")
 }
 
 // tenantSecretRef returns the secret reference the tenant registered for a

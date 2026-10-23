@@ -25,9 +25,8 @@ type Result struct {
 }
 
 type partition struct {
-	name      string
-	upperExpr string
-	upper     time.Time
+	name  string
+	upper time.Time
 }
 
 var upperBoundPattern = regexp.MustCompile(`(?i)\bTO\s*\(\s*'((?:[^']|'')*)'`)
@@ -59,7 +58,7 @@ func Prune(ctx context.Context, db *sql.DB, cfg Config) (Result, error) {
 		    JOIN pg_class c ON c.oid = p.partrelid
 	    	JOIN pg_namespace n ON n.oid = c.relnamespace
 		    WHERE n.nspname = 'public' AND c.relname = 'job_logs'
-		)` ).Scan(&partitioned)
+		)`).Scan(&partitioned)
 	if err != nil {
 		return result, fmt.Errorf("retention: inspect job_logs partitioning: %w", err)
 	}
@@ -97,7 +96,6 @@ func Prune(ctx context.Context, db *sql.DB, cfg Config) (Result, error) {
 			rows.Close()
 			return result, fmt.Errorf("retention: parse upper bound for %s (%q): %w", p.name, bound, err)
 		}
-		p.upperExpr = bound
 		partitions = append(partitions, p)
 	}
 	if err := rows.Err(); err != nil {
