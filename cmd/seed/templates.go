@@ -76,6 +76,9 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 	if err != nil {
 		return seedTemplate{}, err
 	}
+	// The node that touches code gets its own worktree, cut from the app-owned
+	// mirror — never from the operator's checkout.
+	impl.Workspace = workflow.WorkspaceWorktree
 	review, err := agentNode("n_review", "review", "agent.reviewer", 1, agents["reviewer"],
 		"Review the implementation for correctness and scope. List findings; do not change code.",
 		map[string]string{"findings_md": "string"})
@@ -199,6 +202,7 @@ func repairTemplate(agents map[string]string) (seedTemplate, error) {
 	if err != nil {
 		return seedTemplate{}, err
 	}
+	fix.Workspace = workflow.WorkspaceWorktree
 	check, err := agentNode("n_check", "check", "agent.qa", 1, agents["qa"],
 		"Run the checks and report whether they pass.",
 		map[string]string{"report_md": "string", "passed": "boolean"})

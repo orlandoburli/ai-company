@@ -359,11 +359,11 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		} else {
 			ws, prepErr := e.workspaces.Prepare(ctx, workspace.Request{ProductID: productID, SourceURL: repoURL, RunID: run.ID, StepRunID: step.ID, ItemID: item.ID, Attempt: maxInt(1, ready.Attempt)})
 			if prepErr != nil {
-				if errors.Is(prepErr, workspace.ErrNoMirror) {
-					scratchReason = "No repository mirror is available; this execution uses a scratch workspace."
-				} else {
-					return e.failClaim(ctx, sc, run, t, step, "capability", prepErr.Error())
-				}
+				// A repository that cannot be mirrored (missing, unreachable,
+				// private) must not fail the run: the execution falls back to a
+				// scratch directory and says so in its result. Failing the node
+				// would turn an environment problem into a broken workflow.
+				scratchReason = "No repository mirror could be prepared (" + prepErr.Error() + "); this execution uses a scratch workspace."
 			} else {
 				workdir = ws.Dir
 			}
@@ -422,7 +422,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	}
 	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "task_file_sha": bundle.TaskFileSHA, "inputs": ready.Inputs})
 	key := fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex)
-	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, CreatedBy: run.StartedBy})
+	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, Workdir: workdir, CreatedBy: run.StartedBy})
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}

@@ -898,7 +898,11 @@ type NewJob struct {
 	IdempotencyKey string
 	Prompt         string
 	Context        json.RawMessage
-	CreatedBy      string
+	// Workdir is the directory the adapter runs in — the node's worktree
+	// when the node has one. Empty means the adapter picks a throwaway
+	// directory of its own.
+	Workdir   string
+	CreatedBy string
 }
 
 // CreateJob queues one adapter execution.
@@ -960,13 +964,13 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 
 		created, err := scanJob(tx.QueryRowContext(ctx, `
 			INSERT INTO agent_jobs AS j (id, tenant_id, agent_id, thread_id, message_id,
-			                    item_id, step_run_id, idempotency_key, prompt, context_json, created_by)
+			                    item_id, step_run_id, idempotency_key, prompt, context_json, workdir, created_by)
 			VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''),
-			        $9, $10::jsonb, nullif($11, ''))
+			        $9, $10::jsonb, nullif($11, ''), nullif($12, ''))
 			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			RETURNING`+jobColumns,
 			newID(), sc.TenantID, in.AgentID, in.ThreadID, in.MessageID, in.ItemID, in.StepRunID, in.IdempotencyKey,
-			in.Prompt, orJSON(in.Context, "{}"), in.CreatedBy))
+			in.Prompt, orJSON(in.Context, "{}"), in.Workdir, in.CreatedBy))
 		if errors.Is(err, sql.ErrNoRows) && in.IdempotencyKey != "" {
 			created, err = scanJob(tx.QueryRowContext(ctx, `SELECT`+jobColumns+` FROM agent_jobs j WHERE j.idempotency_key=$1`, in.IdempotencyKey))
 		}

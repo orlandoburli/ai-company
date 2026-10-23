@@ -11,7 +11,7 @@ current edge of it so a later session does not have to rediscover it.
 | M0 — scaffold, tenancy, auth, tenant admin | done | done |
 | M1 — work structure, queue overrides, base score, invitations | done | done |
 | M2 — first agent | done | done |
-| M3 — graph engine and checkpoints | in progress | in progress |
+| M3 — graph engine and checkpoints | done | done |
 | M4 — GitHub, memory, LLM ranking, backoff | not started | — |
 
 ## Dev harness
@@ -290,8 +290,12 @@ Security notes that are specific to M3:
 - A run's workspaces come from an app-owned bare mirror, never from the
   operator's checkout: `git worktree add` under the app's support directory,
   with a branch name that embeds the step run and the attempt so a retry never
-  collides with an earlier one. When no mirror or repo URL is configured the
-  execution falls back to a scratch directory and says so in its result.
+  collides with an earlier one. The agent runs *in* that worktree — the job
+  carries the path, and the CLI adapter uses it instead of its own throwaway
+  directory. When no mirror can be prepared (no repo URL, or a repository that
+  cannot be cloned) the execution falls back to a scratch directory and says
+  so in its result: a missing repository is an environment problem, not a
+  reason to fail a run.
 - Memory is append-only with revisions: an update supersedes the prior row
   rather than overwriting it, and the read watermark means a concurrent writer
   cannot change what an already-ready node sees.
@@ -320,6 +324,31 @@ inbox. The graph is drawn from the run snapshot: node positions when the
 template has them, otherwise a layered layout by topological depth. The run
 event stream is a polling SSE (`step`, `log`, `checkpoint`, `run`, `done`) and
 the client falls back to polling when the stream drops.
+
+## What M3 was checked against
+
+`make smoke-workflow` starts a real run of a published template, decides the
+checkpoints it parks on and waits for the end (`AIC_TEMPLATE` picks the
+template, `AIC_EXPECT_STATE` and `AIC_EXPECT_CHECKPOINTS` say what it must do).
+Against the seeded templates:
+
+- **Bugfix (local)** — eight steps: the specification, the checkpoint, the
+  implementation, the two branches (review ∥ check) run concurrently, the
+  merge reconciles them, the second checkpoint, the summary. It ends
+  `completed` with two human decisions.
+- **Repair** — the bounded cycle: three iterations and then
+  `cycle_budget_exhausted`, which is the budget doing its job.
+- **Review** — one agent, one checkpoint, one decision.
+
+Checked by hand as well: the `already_decided` race (the second decision is
+`409` with the winning decision attached), a redo (the node and every
+descendant superseded by graph reachability, the siblings outside the
+descendant set untouched, the run resuming), a cancel, the notification
+centre, the worktree (an agent that ran inside
+`~/Library/Application Support/AICompany/runs/<run>/<step>` on branch
+`aic/<item>-<step>-<attempt>`, cut from a bare mirror), and the memory tiers
+(the run scope holds a node's output and every checkpoint decision, and a later
+node reads them back).
 
 ## Agent security notes
 
