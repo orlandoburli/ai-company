@@ -972,6 +972,24 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 			newID(), sc.TenantID, in.AgentID, in.ThreadID, in.MessageID, in.ItemID, in.StepRunID, in.IdempotencyKey,
 			in.Prompt, orJSON(in.Context, "{}"), in.Workdir, in.CreatedBy))
 		if errors.Is(err, sql.ErrNoRows) && in.IdempotencyKey != "" {
+			// A replay attaches to the same job row instead of enqueuing a
+			// second one. When that job is still queued it has not run yet,
+			// so the fresh prompt and context replace the old ones — that is
+			// how a steered execution carries its instruction.
+			if _, updErr := tx.ExecContext(ctx, `
+				UPDATE agent_jobs
+				   SET prompt = $2,
+				       context_json = $3::jsonb,
+				       state = CASE WHEN state = 'cancelled' THEN 'queued' ELSE state END,
+				       next_attempt_at = CASE WHEN state = 'cancelled' THEN now() ELSE next_attempt_at END,
+				       started_at = CASE WHEN state = 'cancelled' THEN NULL ELSE started_at END,
+				       finished_at = CASE WHEN state = 'cancelled' THEN NULL ELSE finished_at END,
+				       error_text = CASE WHEN state = 'cancelled' THEN NULL ELSE error_text END,
+				       failure_kind = CASE WHEN state = 'cancelled' THEN NULL ELSE failure_kind END
+				 WHERE idempotency_key = $1 AND state IN ('queued', 'cancelled')`,
+				in.IdempotencyKey, in.Prompt, orJSON(in.Context, "{}")); updErr != nil {
+				return updErr
+			}
 			created, err = scanJob(tx.QueryRowContext(ctx, `SELECT`+jobColumns+` FROM agent_jobs j WHERE j.idempotency_key=$1`, in.IdempotencyKey))
 		}
 		if err != nil {
@@ -1226,6 +1244,39 @@ func (s *Store) FinishJobWithMessage(ctx context.Context, sc tenancy.Scope, jobI
 		}
 		return nil
 	})
+}
+
+// RestartCancelledJob puts a cancelled job back in the queue so it runs
+// again. It is the stop-and-resume half of steering a running execution: the
+// adapter has no live input, so the run is stopped and the job is re-queued
+// with the same idempotency key. The attempt counter is kept — the history of
+// what happened stays visible.
+func (s *Store) RestartCancelledJob(ctx context.Context, sc tenancy.Scope, jobID string) (Job, error) {
+	var out Job
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var e error
+		out, e = scanJob(tx.QueryRowContext(ctx, `
+			UPDATE agent_jobs AS j
+			   SET state = 'queued',
+			       next_attempt_at = now(),
+			       started_at = NULL,
+			       finished_at = NULL,
+			       error_text = NULL,
+			       failure_kind = NULL,
+			       claim_lock = NULL,
+			       claim_expires_at = NULL,
+			       heartbeat_at = NULL
+			 WHERE id = $1 AND state = 'cancelled'
+			RETURNING `+jobColumns, jobID))
+		if errors.Is(e, sql.ErrNoRows) {
+			return ErrNotRunning
+		}
+		return e
+	})
+	if err != nil {
+		return Job{}, mapPGError(err)
+	}
+	return out, nil
 }
 
 // RequeueJob returns a claimed job to the queue after a future delay. If the

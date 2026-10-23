@@ -265,6 +265,11 @@ How the pieces fit:
   and the loser gets `already_decided` with the winning decision attached.
   Re-entry opens the next lap; the earlier laps stay in the audit trail. A
   rejection follows the node's policy (`retry_step`, `goto_step`, `abort`).
+- **Steering is stop-and-resume.** The CLI adapter has no live input, so an
+  injected instruction stops the running job, resets the step and re-queues
+  the job under the same idempotency key: the next dispatch rebuilds the
+  prompt with the instruction in it and marks the intervention delivered. The
+  job's prompt is replaced while it is still queued, never after it ran.
 - **A run's memory is written by the engine.** A terminal node's output lands
   in the run scope under `node:<node_id>`, a checkpoint decision under
   `checkpoint.<node_id>.lap.<n>`; both are append-only revisions, so a redo

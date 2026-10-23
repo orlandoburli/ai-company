@@ -191,14 +191,21 @@ func (e *Engine) Intervene(ctx context.Context, sc tenancy.Scope, in NewInterven
 			return created, stepErr
 		}
 		if step.State == StepRunning && step.AgentJobID != "" && e.agents != nil {
+			// Stop-and-resume: the CLI adapter has no live input, so the run is
+			// stopped, the job is put back in the queue and the step is reset.
+			// The next dispatch appends the instruction to the context and
+			// marks the intervention delivered.
 			_, cancelErr := e.agents.CancelJob(ctx, sc, step.AgentJobID)
 			if cancelErr != nil && !errors.Is(cancelErr, agent.ErrNotRunning) {
 				return created, cancelErr
 			}
+			// The job is re-queued by the next dispatch (the store restarts a
+			// cancelled job under the same idempotency key), so the instruction
+			// is in the prompt before the adapter starts.
+			if _, resetErr := e.store.ResetStep(ctx, sc, step.ID); resetErr != nil && !errors.Is(resetErr, ErrNotFound) {
+				return created, resetErr
+			}
 		}
-		// CLI stop-and-resume cannot restart an existing idempotency-keyed job
-		// through the M2 store. The event remains undelivered until an execution
-		// consumes it; the scheduler will not resurrect terminal executions.
 	default:
 		return created, ErrInvalidTransition
 	}

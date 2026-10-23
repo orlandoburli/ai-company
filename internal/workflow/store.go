@@ -794,6 +794,34 @@ func (s *Store) MergeStepReceipts(ctx context.Context, sc tenancy.Scope, stepRun
 	}
 	return out, nil
 }
+
+// ResetStep puts a running step back to pending and clears its claim, so the
+// scheduler dispatches it again. It is how a steered execution is resumed:
+// the adapter was stopped, and the next dispatch carries the instruction.
+func (s *Store) ResetStep(ctx context.Context, sc tenancy.Scope, id string) (StepRun, error) {
+	var out StepRun
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var e error
+		out, e = scanStep(tx.QueryRowContext(ctx, `
+			UPDATE step_runs
+			   SET state = 'pending',
+			       claim_lock = NULL,
+			       claim_expires_at = NULL,
+			       heartbeat_at = NULL,
+			       started_at = NULL
+			 WHERE id = $1 AND state IN ('running', 'waiting')
+			RETURNING `+stepCols, id))
+		if errors.Is(e, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return e
+	})
+	if err != nil {
+		return StepRun{}, mapError(err)
+	}
+	return out, nil
+}
+
 func (s *Store) SupersedeSteps(ctx context.Context, sc tenancy.Scope, runID string, nodeIDs []string) error {
 	return s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		var snap []byte

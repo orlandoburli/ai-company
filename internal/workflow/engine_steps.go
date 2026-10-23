@@ -59,12 +59,18 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 		if !job.State.Terminal() {
 			continue
 		}
+		if job.State == agent.JobCancelled {
+			// The job was stopped on purpose — a steered execution that is
+			// about to be resumed, or a cancelled run. The step is left alone:
+			// the intervention resets it, the run cancel marks it cancelled.
+			continue
+		}
 		node, _ := t.Node(step.NodeID)
 		status := StepSucceeded
 		failure := ""
 		ports := map[string]json.RawMessage{}
 		result := map[string]any{"status": "succeeded", "exit_reason": "ok"}
-		if job.State == agent.JobFailed || job.State == agent.JobCancelled {
+		if job.State == agent.JobFailed {
 			status = StepFailed
 			failure = "capability"
 			if job.FailureKind != nil && FailureKind(*job.FailureKind) == FailureTransient {
