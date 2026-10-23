@@ -27,18 +27,27 @@ func createAgent(t *testing.T, o ownerHarness, body map[string]any) map[string]a
 	return res.json(t)["agent"].(map[string]any)
 }
 
-func cliAgentBody(name string) map[string]any {
+// agentBody is an agent without a transport: the transport lives on the
+// runner, and the agent names a chain of runners.
+func agentBody(name string) map[string]any {
 	return map[string]any{
-		"name": name,
-		"role": "dev",
-		"kind": "cli",
-		"config": map[string]any{
-			"bin":           "echo",
-			"args":          []string{"hello"},
-			"output_format": "text",
-		},
+		"name":    name,
+		"role":    "dev",
 		"soul_md": "You are a test agent.",
 	}
+}
+
+// cliAgentBody is the legacy shape: the transport fields are accepted and
+// ignored, so an old client keeps working.
+func cliAgentBody(name string) map[string]any {
+	body := agentBody(name)
+	body["kind"] = "cli"
+	body["config"] = map[string]any{
+		"bin":           "echo",
+		"args":          []string{"hello"},
+		"output_format": "text",
+	}
+	return body
 }
 
 func TestAgentRegistryValidationAndRoles(t *testing.T) {
@@ -46,31 +55,49 @@ func TestAgentRegistryValidationAndRoles(t *testing.T) {
 	tenantID := o.tenantID(o.ownerCookie)
 
 	// Omitted concurrency defaults to 2 rather than failing validation.
-	agent := createAgent(t, o, cliAgentBody("dev"))
+	agent := createAgent(t, o, agentBody("dev"))
 	if got := agent["concurrency_limit"].(float64); got != 2 {
 		t.Fatalf("default concurrency = %v, want 2", got)
 	}
-	if agent["name"] != "dev" || agent["kind"] != "cli" || agent["enabled"] != true {
+	if agent["name"] != "dev" || agent["enabled"] != true {
 		t.Fatalf("unexpected agent: %v", agent)
 	}
 	agentID := agent["id"].(string)
 
+	// The transport moved to the runner registry: the agent carries a chain
+	// of runners, not a kind and a config.
+	if _, ok := agent["kind"]; ok {
+		t.Errorf("the agent still carries a kind: %v", agent["kind"])
+	}
+	if _, ok := agent["config"]; ok {
+		t.Errorf("the agent still carries a config: %v", agent["config"])
+	}
+	chain, ok := agent["runners"].([]any)
+	if !ok || len(chain) != 0 {
+		t.Fatalf("runners = %v, want an empty chain", agent["runners"])
+	}
+
 	// Duplicate names are a name conflict, not an in-use conflict.
-	res := o.do("POST", "/api/agents", cliAgentBody("dev"), o.ownerCookie)
+	res := o.do("POST", "/api/agents", agentBody("dev"), o.ownerCookie)
 	if res.status != http.StatusConflict || errCode(t, res) != "agent_name_taken" {
 		t.Fatalf("duplicate agent: %d %s", res.status, res.body)
 	}
 
-	// Kind and config must agree.
-	bad := cliAgentBody("nope")
-	bad["config"] = map[string]any{"provider": "openai", "model": "x", "key_env": "OPENAI_API_KEY"}
-	res = o.do("POST", "/api/agents", bad, o.ownerCookie)
-	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_config" {
-		t.Fatalf("mismatched config: %d %s", res.status, res.body)
+	// The legacy transport fields are accepted and ignored, not rejected.
+	res = o.do("POST", "/api/agents", cliAgentBody("legacy"), o.ownerCookie)
+	if res.status != http.StatusCreated {
+		t.Fatalf("legacy agent: %d %s", res.status, res.body)
+	}
+	legacy := res.json(t)["agent"].(map[string]any)
+	if _, ok := legacy["kind"]; ok {
+		t.Errorf("the legacy kind came back: %v", legacy["kind"])
+	}
+	if len(legacy["runners"].([]any)) != 0 {
+		t.Errorf("the legacy agent has a chain: %v", legacy["runners"])
 	}
 
 	// Name must be mentionable.
-	badName := cliAgentBody("Not Valid")
+	badName := agentBody("Not Valid")
 	res = o.do("POST", "/api/agents", badName, o.ownerCookie)
 	if res.status != http.StatusUnprocessableEntity {
 		t.Fatalf("bad name: %d %s", res.status, res.body)
@@ -93,7 +120,7 @@ func TestAgentRegistryValidationAndRoles(t *testing.T) {
 	if res.status != http.StatusOK {
 		t.Fatalf("member list agents: %d %s", res.status, res.body)
 	}
-	res = o.do("POST", "/api/agents", cliAgentBody("member-agent"), memberCookie)
+	res = o.do("POST", "/api/agents", agentBody("member-agent"), memberCookie)
 	if res.status != http.StatusForbidden {
 		t.Fatalf("member create agent: %d %s, want 403", res.status, res.body)
 	}
@@ -105,9 +132,98 @@ func TestAgentRegistryValidationAndRoles(t *testing.T) {
 	if res.status != http.StatusOK {
 		t.Fatalf("guest list agents: %d %s", res.status, res.body)
 	}
-	res = o.do("POST", "/api/agents", cliAgentBody("guest-agent"), guestCookie)
+	res = o.do("POST", "/api/agents", agentBody("guest-agent"), guestCookie)
 	if res.status != http.StatusForbidden {
 		t.Fatalf("guest create agent: %d %s, want 403", res.status, res.body)
+	}
+}
+
+// TestAgentRunnerChain checks that the agent CRUD carries the chain: the
+// runner ids and names, in order.
+func TestAgentRunnerChain(t *testing.T) {
+	o := newOwnerHarness(t)
+
+	first := createRunner(t, o, cliRunnerBody("dev-cli"))
+	second := createRunner(t, o, cliRunnerBody("dev-fallback"))
+	firstID := first["id"].(string)
+	secondID := second["id"].(string)
+
+	// The chain is given in order and comes back in order.
+	agent := createAgent(t, o, map[string]any{
+		"name":    "dev",
+		"role":    "dev",
+		"runners": []string{firstID, secondID},
+	})
+	chain, ok := agent["runners"].([]any)
+	if !ok || len(chain) != 2 {
+		t.Fatalf("runners = %v, want two", agent["runners"])
+	}
+	if chain[0].(map[string]any)["id"] != firstID || chain[1].(map[string]any)["id"] != secondID {
+		t.Fatalf("the chain is out of order: %v", chain)
+	}
+	if chain[0].(map[string]any)["name"] != "dev-cli" {
+		t.Fatalf("the chain does not carry the runner names: %v", chain)
+	}
+
+	agentID := agent["id"].(string)
+
+	// The list carries the chain too.
+	res := o.do("GET", "/api/agents", nil, o.ownerCookie)
+	if res.status != http.StatusOK {
+		t.Fatalf("list agents: %d %s", res.status, res.body)
+	}
+	agents := res.json(t)["agents"].([]any)
+	if len(agents) != 1 {
+		t.Fatalf("agents = %d, want 1", len(agents))
+	}
+	if len(agents[0].(map[string]any)["runners"].([]any)) != 2 {
+		t.Fatalf("the list does not carry the chain: %v", agents[0])
+	}
+
+	// A patch replaces the chain.
+	res = o.do("PATCH", "/api/agents/"+agentID, map[string]any{"runners": []string{secondID}}, o.ownerCookie)
+	if res.status != http.StatusOK {
+		t.Fatalf("patch chain: %d %s", res.status, res.body)
+	}
+	chain = res.json(t)["agent"].(map[string]any)["runners"].([]any)
+	if len(chain) != 1 || chain[0].(map[string]any)["id"] != secondID {
+		t.Fatalf("the chain was not replaced: %v", chain)
+	}
+
+	// An empty chain clears it.
+	res = o.do("PATCH", "/api/agents/"+agentID, map[string]any{"runners": []string{}}, o.ownerCookie)
+	if res.status != http.StatusOK {
+		t.Fatalf("clear chain: %d %s", res.status, res.body)
+	}
+	chain = res.json(t)["agent"].(map[string]any)["runners"].([]any)
+	if len(chain) != 0 {
+		t.Fatalf("the chain was not cleared: %v", chain)
+	}
+
+	// A runner that does not exist is refused, and nothing is written.
+	res = o.do("PATCH", "/api/agents/"+agentID, map[string]any{"runners": []string{"NOPE"}}, o.ownerCookie)
+	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_request" {
+		t.Fatalf("unknown runner: %d %s", res.status, res.body)
+	}
+	res = o.do("GET", "/api/agents/"+agentID, nil, o.ownerCookie)
+	if res.status != http.StatusOK {
+		t.Fatalf("get agent: %d %s", res.status, res.body)
+	}
+	if len(res.json(t)["agent"].(map[string]any)["runners"].([]any)) != 0 {
+		t.Fatal("a refused chain was written anyway")
+	}
+
+	// A runner of another tenant is not reachable either.
+	other := o.register("other@example.com", goodPassword, "Globex", "globex")
+	if other.status != http.StatusCreated {
+		t.Fatalf("register the other tenant: %d %s", other.status, other.body)
+	}
+	foreign := createRunner(t, ownerHarness{harness: o.harness, ownerCookie: other.cookie}, cliRunnerBody("dev-cli"))
+	res = o.do("PATCH", "/api/agents/"+agentID, map[string]any{
+		"runners": []string{foreign["id"].(string)},
+	}, o.ownerCookie)
+	if res.status != http.StatusUnprocessableEntity {
+		t.Fatalf("cross-tenant runner: %d %s", res.status, res.body)
 	}
 }
 

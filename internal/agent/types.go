@@ -87,19 +87,28 @@ const (
 )
 
 // Agent is a tenant-scoped agent registry row.
+//
+// The agent is the WHAT: persona, role, skills, capabilities. The transport —
+// a CLI binary or an API model — moved to the runner registry
+// (internal/runner), and an agent names an ordered chain of runners.
+//
+// Kind, Config and Fallbacks are the LEGACY transport columns. They stay in
+// the schema for this release (nothing reads them any more; a later
+// migration drops them) and are no longer part of the API's agent shape,
+// which is why they are not serialised.
 type Agent struct {
 	ID               string          `json:"id"`
 	TenantID         string          `json:"tenant_id"`
 	Name             string          `json:"name"`
 	Role             Role            `json:"role"`
-	Kind             Kind            `json:"kind"`
-	Config           json.RawMessage `json:"config"`
+	Kind             Kind            `json:"-"`
+	Config           json.RawMessage `json:"-"`
 	Capabilities     json.RawMessage `json:"capabilities"`
 	ConcurrencyLimit int             `json:"concurrency_limit"`
 	Enabled          bool            `json:"enabled"`
 	SoulMD           string          `json:"soul_md"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
-	Fallbacks        json.RawMessage `json:"fallbacks"`
+	Fallbacks        json.RawMessage `json:"-"`
 	CreatedBy        *string         `json:"created_by"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`

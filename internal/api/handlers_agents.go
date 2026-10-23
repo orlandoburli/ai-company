@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 )
 
@@ -40,30 +40,77 @@ func WithAgentRuntime(store *agent.Store, hub *agent.Hub) Option {
 
 // --- agent registry --------------------------------------------------------
 
+// The agent is the WHAT — persona, role, skills, capabilities. Its transport
+// (a CLI binary or an API model) moved to the runner registry, and the agent
+// names an ordered chain of runners: the order the runtime tries them in.
 type agentCreateRequest struct {
 	Name             string          `json:"name"`
 	Role             string          `json:"role"`
-	Kind             string          `json:"kind"`
-	Config           json.RawMessage `json:"config"`
+	Runners          []string        `json:"runners"`
 	Capabilities     json.RawMessage `json:"capabilities"`
 	ConcurrencyLimit int             `json:"concurrency_limit"`
 	Enabled          *bool           `json:"enabled"`
 	SoulMD           *string         `json:"soul_md"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
-	Fallbacks        json.RawMessage `json:"fallbacks"`
+
+	// Legacy transport fields. The transport moved to the runner chain, so
+	// these are accepted and ignored: an old client keeps working, but the
+	// agent it creates carries no transport until a runner is bound to it.
+	Kind      json.RawMessage `json:"kind"`
+	Config    json.RawMessage `json:"config"`
+	Fallbacks json.RawMessage `json:"fallbacks"`
 }
 
 type agentPatchRequest struct {
 	Name             *string         `json:"name"`
 	Role             *string         `json:"role"`
-	Kind             *string         `json:"kind"`
-	Config           json.RawMessage `json:"config"`
+	Runners          *[]string       `json:"runners"`
 	Capabilities     json.RawMessage `json:"capabilities"`
 	ConcurrencyLimit *int            `json:"concurrency_limit"`
 	Enabled          *bool           `json:"enabled"`
 	SoulMD           *string         `json:"soul_md"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
-	Fallbacks        json.RawMessage `json:"fallbacks"`
+
+	// Legacy transport fields — accepted and ignored, see agentCreateRequest.
+	Kind      json.RawMessage `json:"kind"`
+	Config    json.RawMessage `json:"config"`
+	Fallbacks json.RawMessage `json:"fallbacks"`
+}
+
+// agentResponse is the agent as the API returns it: the registry row plus the
+// ordered chain of runners. The transport (kind/config) is not part of the
+// agent any more — it belongs to the runner.
+type agentResponse struct {
+	agent.Agent
+	Runners []runner.Ref `json:"runners"`
+}
+
+// agentWithChain reads an agent's chain and returns the wire shape.
+func (s *Server) agentWithChain(ctx context.Context, sc tenancy.Scope, a agent.Agent) (agentResponse, error) {
+	chain, err := s.runners.Chain(ctx, sc, a.ID)
+	if err != nil {
+		return agentResponse{}, err
+	}
+	refs := make([]runner.Ref, 0, len(chain))
+	for _, r := range chain {
+		refs = append(refs, runner.Ref{ID: r.ID, Name: r.Name})
+	}
+	return agentResponse{Agent: a, Runners: refs}, nil
+}
+
+// validateRunnerChain checks that every runner id in a chain exists in this
+// tenant. It returns a user-facing message when one does not (the request is
+// invalid) and an error when the registry could not be read.
+func (s *Server) validateRunnerChain(ctx context.Context, sc tenancy.Scope, ids []string) (string, error) {
+	for _, id := range ids {
+		if _, err := s.runners.Get(ctx, sc, id); err != nil {
+			if errors.Is(err, runner.ErrNotFound) {
+				return fmt.Sprintf("Runner %s does not exist in this tenant.", id), nil
+			}
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +123,16 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeAgentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agents": list})
+	out := make([]agentResponse, 0, len(list))
+	for _, a := range list {
+		wire, err := s.agentWithChain(r.Context(), sc, a)
+		if err != nil {
+			s.writeAgentError(w, err)
+			return
+		}
+		out = append(out, wire)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": out})
 }
 
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +145,12 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeAgentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent": a})
+	out, err := s.agentWithChain(r.Context(), sc, a)
+	if err != nil {
+		s.writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": out})
 }
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
@@ -109,32 +170,38 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.SoulMD != nil {
 		soul = *req.SoulMD
 	}
-	cfg := normalizeJSONObject(req.Config)
 	role := agent.Role(req.Role)
-	kind := agent.Kind(req.Kind)
 	limit := req.ConcurrencyLimit
 	if limit == 0 {
 		limit = 2
 	}
 	if err := validateAgent(Validation{
-		Name: req.Name, Role: role, Kind: kind, Config: cfg,
+		Name: req.Name, Role: role,
 		Capabilities: req.Capabilities, SkillsPolicy: req.SkillsPolicy,
-		Fallbacks: req.Fallbacks, ConcurrencyLimit: limit, SoulMD: soul,
+		ConcurrencyLimit: limit, SoulMD: soul,
 	}); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_config", err.Error())
 		return
 	}
+	// The chain is checked before anything is written, so a runner id that
+	// does not exist never leaves a half-configured agent behind.
+	if msg, err := s.validateRunnerChain(r.Context(), sc, req.Runners); err != nil {
+		s.log.Error("agent handler", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")
+		return
+	} else if msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_request", msg)
+		return
+	}
+
 	in := agent.Agent{
 		Name:             req.Name,
 		Role:             role,
-		Kind:             kind,
-		Config:           cfg,
 		Capabilities:     normalizeJSONValue(req.Capabilities, "{}"),
 		ConcurrencyLimit: limit,
 		Enabled:          enabled,
 		SoulMD:           soul,
 		SkillsPolicy:     normalizeJSONValue(req.SkillsPolicy, "{}"),
-		Fallbacks:        normalizeJSONValue(req.Fallbacks, "[]"),
 		CreatedBy:        &sc.UserID,
 	}
 	a, err := s.agents.CreateAgent(r.Context(), sc, in)
@@ -146,7 +213,18 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		s.writeAgentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"agent": a})
+	if len(req.Runners) > 0 {
+		if err := s.runners.SetChain(r.Context(), sc, a.ID, req.Runners); err != nil {
+			s.writeRunnerError(w, err)
+			return
+		}
+	}
+	out, err := s.agentWithChain(r.Context(), sc, a)
+	if err != nil {
+		s.writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"agent": out})
 }
 
 func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
@@ -174,28 +252,16 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		role := agent.Role(*req.Role)
 		patch.Role = &role
 	}
-	if req.Kind != nil {
-		kind := agent.Kind(*req.Kind)
-		patch.Kind = &kind
-	}
-	if req.Config != nil {
-		v := normalizeJSONObject(req.Config)
-		patch.Config = &v
-	}
 	if req.Capabilities != nil {
 		patch.Capabilities = &req.Capabilities
 	}
 	if req.SkillsPolicy != nil {
 		patch.SkillsPolicy = &req.SkillsPolicy
 	}
-	if req.Fallbacks != nil {
-		patch.Fallbacks = &req.Fallbacks
-	}
 
-	// Validate the effective row, not just the patch: changing kind without a
-	// config that matches it would leave an un-runnable agent.
-	eff := Validation{Name: cur.Name, Role: cur.Role, Kind: cur.Kind, Config: cur.Config,
-		Capabilities: cur.Capabilities, SkillsPolicy: cur.SkillsPolicy, Fallbacks: cur.Fallbacks,
+	// Validate the effective row, not just the patch.
+	eff := Validation{Name: cur.Name, Role: cur.Role,
+		Capabilities: cur.Capabilities, SkillsPolicy: cur.SkillsPolicy,
 		ConcurrencyLimit: cur.ConcurrencyLimit, SoulMD: cur.SoulMD}
 	if req.Name != nil {
 		eff.Name = *req.Name
@@ -203,20 +269,11 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Role != nil {
 		eff.Role = agent.Role(*req.Role)
 	}
-	if req.Kind != nil {
-		eff.Kind = agent.Kind(*req.Kind)
-	}
-	if req.Config != nil {
-		eff.Config = *patch.Config
-	}
 	if req.Capabilities != nil {
 		eff.Capabilities = req.Capabilities
 	}
 	if req.SkillsPolicy != nil {
 		eff.SkillsPolicy = req.SkillsPolicy
-	}
-	if req.Fallbacks != nil {
-		eff.Fallbacks = req.Fallbacks
 	}
 	if req.ConcurrencyLimit != nil {
 		eff.ConcurrencyLimit = *req.ConcurrencyLimit
@@ -229,12 +286,36 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An omitted chain leaves the agent's runners alone; an empty chain clears
+	// them; a chain of ids replaces them, in order.
+	if req.Runners != nil {
+		if msg, err := s.validateRunnerChain(r.Context(), sc, *req.Runners); err != nil {
+			s.log.Error("agent handler", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")
+			return
+		} else if msg != "" {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_request", msg)
+			return
+		}
+	}
+
 	a, err := s.agents.UpdateAgent(r.Context(), sc, cur.ID, patch, sc.UserID)
 	if err != nil {
 		s.writeAgentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agent": a})
+	if req.Runners != nil {
+		if err := s.runners.SetChain(r.Context(), sc, a.ID, *req.Runners); err != nil {
+			s.writeRunnerError(w, err)
+			return
+		}
+	}
+	out, err := s.agentWithChain(r.Context(), sc, a)
+	if err != nil {
+		s.writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agent": out})
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
@@ -253,19 +334,18 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 var (
 	agentNameRE  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	envNameRE    = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	maxSoulBytes = 200 << 10
 )
 
 // Validation is the effective agent shape the API checks before writing.
+//
+// The transport is not part of it any more: a runner's config is validated
+// against the runner's kind, in internal/runner, where the transport lives.
 type Validation struct {
 	Name             string
 	Role             agent.Role
-	Kind             agent.Kind
-	Config           json.RawMessage
 	Capabilities     json.RawMessage
 	SkillsPolicy     json.RawMessage
-	Fallbacks        json.RawMessage
 	ConcurrencyLimit int
 	SoulMD           string
 }
@@ -277,71 +357,11 @@ func validateAgent(v Validation) error {
 	if !v.Role.Valid() {
 		return fmt.Errorf("role must be one of pm, dev, reviewer, qa, researcher")
 	}
-	if !v.Kind.Valid() {
-		return errors.New("kind must be cli or api")
-	}
 	if v.ConcurrencyLimit < 1 || v.ConcurrencyLimit > 16 {
 		return errors.New("concurrency_limit must be between 1 and 16")
 	}
 	if len(v.SoulMD) > maxSoulBytes {
 		return fmt.Errorf("soul_md is limited to %d bytes", maxSoulBytes)
-	}
-	if len(v.Config) == 0 || !json.Valid(v.Config) {
-		return errors.New("config must be a JSON object")
-	}
-	switch v.Kind {
-	case agent.KindCLI:
-		var cfg agent.CLIConfig
-		if err := strictUnmarshal(v.Config, &cfg); err != nil {
-			return fmt.Errorf("config: %v", err)
-		}
-		if strings.TrimSpace(cfg.Bin) == "" {
-			return errors.New("config.bin is required for a cli agent")
-		}
-		if strings.ContainsRune(cfg.Bin, 0) {
-			return errors.New("config.bin contains an invalid character")
-		}
-		for _, a := range cfg.Args {
-			if strings.ContainsRune(a, 0) {
-				return errors.New("config.args contains an invalid character")
-			}
-		}
-		if cfg.TimeoutSec < 0 || cfg.TimeoutSec > 3600 {
-			return errors.New("config.timeout_sec must be between 0 and 3600")
-		}
-		switch cfg.OutputFormat {
-		case "", "stream-json", "text":
-		default:
-			return errors.New(`config.output_format must be "stream-json" or "text"`)
-		}
-		for k := range cfg.Env {
-			if !envNameRE.MatchString(k) {
-				return fmt.Errorf("config.env key %q is not a valid environment variable name", k)
-			}
-		}
-	case agent.KindAPI:
-		var cfg agent.APIConfig
-		if err := strictUnmarshal(v.Config, &cfg); err != nil {
-			return fmt.Errorf("config: %v", err)
-		}
-		if cfg.Provider != "openai" && cfg.Provider != "anthropic" {
-			return errors.New(`config.provider must be "openai" or "anthropic"`)
-		}
-		if strings.TrimSpace(cfg.Model) == "" {
-			return errors.New("config.model is required for an api agent")
-		}
-		if !envNameRE.MatchString(cfg.KeyEnv) {
-			return errors.New("config.key_env must name an environment variable (e.g. OPENAI_API_KEY)")
-		}
-		if cfg.BaseURL != "" {
-			u, err := url.Parse(cfg.BaseURL)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return errors.New("config.base_url must be an http(s) URL")
-			}
-		}
-		if cfg.MaxTokens < 0 || cfg.MaxTokens > 200000 {
-			return errors.New("config.max_tokens must be between 0 and 200000")
-		}
 	}
 	if len(v.Capabilities) > 0 && !isJSONObject(v.Capabilities) {
 		return errors.New("capabilities must be a JSON object")
@@ -356,12 +376,6 @@ func validateAgent(v Validation) error {
 		}
 		if sp.MaxAttach < 0 || sp.MaxAttach > 10 {
 			return errors.New("skills_policy.max_attach must be between 0 and 10")
-		}
-	}
-	if len(v.Fallbacks) > 0 {
-		var fb []string
-		if err := strictUnmarshal(v.Fallbacks, &fb); err != nil {
-			return fmt.Errorf("fallbacks: %v", err)
 		}
 	}
 	return nil

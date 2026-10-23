@@ -20,6 +20,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/auth"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workflow"
@@ -37,6 +38,7 @@ type Server struct {
 	agents       *agent.Store
 	agentHub     *agent.Hub
 	agentWorker  jobCanceller
+	runners      *runner.Store
 	workflows    *workflow.Store
 	memory       *memory.Store
 	notify       *notification.Store
@@ -84,6 +86,7 @@ func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
 		work:       work.NewStore(db),
 		agents:     agent.NewStore(db),
 		agentHub:   agent.NewHub(),
+		runners:    runner.NewStore(db),
 		log:        log,
 		limits:     newRateLimiter(defaultRateLimits()),
 		sessionTTL: 30 * 24 * time.Hour,
@@ -117,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerCommandRoutes(mux)
 	s.registerGitHubRoutes(mux)
 	s.registerWorkflowValidateRoute(mux)
+	s.registerRunnerRoutes(mux)
 
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)

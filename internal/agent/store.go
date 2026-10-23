@@ -42,6 +42,16 @@ const codeLogAppendOnly = "AIC05"
 // with dashes or inner underscores, at most 64 characters.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
+// legacyKind is what the agents' legacy `kind` column carries when the
+// caller names no kind.
+//
+// The transport moved to the runner registry (internal/runner): an agent is
+// the WHAT and names a chain of runners (the HOW). The legacy kind/config
+// columns stay in the schema for this release — nothing reads them any more,
+// and a later migration drops them — so the row still needs a value the
+// schema accepts.
+const legacyKind = KindAPI
+
 // Store is the agent-runtime store over the application connection.
 type Store struct {
 	db *sql.DB
@@ -239,8 +249,17 @@ func scanAgent(r rowScanner) (Agent, error) {
 
 // CreateAgent adds an agent to the tenant. ConcurrencyLimit defaults to 2 when
 // unset; Config/Capabilities/SoulMD/Enabled are honoured as given.
+//
+// The agent is the WHAT; its transport lives in the runner registry
+// (internal/runner) and the agent names a chain of runners. The legacy kind
+// and config columns stay in the schema for this release, so a caller that
+// names no kind still gets a row the schema accepts.
 func (s *Store) CreateAgent(ctx context.Context, sc tenancy.Scope, in Agent) (Agent, error) {
-	if err := validAgentFields(in.Name, in.Role, in.Kind, in.SoulMD, in.Config, in.Capabilities, in.SkillsPolicy, in.Fallbacks); err != nil {
+	kind := in.Kind
+	if kind == "" {
+		kind = legacyKind
+	}
+	if err := validAgentFields(in.Name, in.Role, kind, in.SoulMD, in.Config, in.Capabilities, in.SkillsPolicy, in.Fallbacks); err != nil {
 		return Agent{}, err
 	}
 	limit := in.ConcurrencyLimit
@@ -260,7 +279,7 @@ func (s *Store) CreateAgent(ctx context.Context, sc tenancy.Scope, in Agent) (Ag
 			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10,
 			        $11::jsonb, $12::jsonb, nullif($13, ''))
 			RETURNING`+agentColumns,
-			newID(), sc.TenantID, in.Name, in.Role, in.Kind,
+			newID(), sc.TenantID, in.Name, in.Role, string(kind),
 			orJSON(in.Config, "{}"), orJSON(in.Capabilities, "{}"),
 			limit, in.Enabled, in.SoulMD,
 			orJSON(in.SkillsPolicy, "{}"), orJSON(in.Fallbacks, "[]"),
@@ -338,6 +357,11 @@ func (s *Store) GetAgentByName(ctx context.Context, sc tenancy.Scope, name strin
 // AgentPatch is a partial update; a nil field is unchanged. SoulMD is a text
 // field like ItemPatch's strings: an empty string clears the soul. The JSON
 // fields are pointers so "not sent" and "{}" stay distinct.
+//
+// Kind and Config are the LEGACY transport fields. The HTTP surface no longer
+// sends them — the transport moved to the runner chain (internal/runner) —
+// but the store still accepts them for callers that manage the registry
+// directly.
 type AgentPatch struct {
 	Name             *string
 	Role             *Role

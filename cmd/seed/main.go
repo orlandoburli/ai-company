@@ -28,6 +28,7 @@ import (
 
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/auth"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 )
@@ -585,15 +586,72 @@ you say what failed and how you know.`,
 		},
 	}
 
+	runners := runner.NewStore(db)
 	for _, a := range agents {
-		if _, err := store.GetAgentByName(ctx, sc, a.Name); err == nil {
+		existing, err := store.GetAgentByName(ctx, sc, a.Name)
+		switch {
+		case err == nil:
+			// The agent exists: make sure it has a runner to run on.
+			if err := ensureSeedRunner(ctx, runners, sc, existing); err != nil {
+				return err
+			}
 			continue
-		} else if !errors.Is(err, agent.ErrNotFound) {
+		case !errors.Is(err, agent.ErrNotFound):
 			return err
 		}
-		if _, err := store.CreateAgent(ctx, sc, a); err != nil {
+		created, err := store.CreateAgent(ctx, sc, a)
+		if err != nil {
 			return fmt.Errorf("create agent %s: %w", a.Name, err)
 		}
+		if err := ensureSeedRunner(ctx, runners, sc, created); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureSeedRunner gives an agent the runner it runs on: one runner carrying
+// the agent's transport, bound to it as the first link of its chain. It is
+// the same rule the schema's conversion uses, done through the stores so the
+// seed runs with the ordinary runtime role.
+func ensureSeedRunner(ctx context.Context, runners *runner.Store, sc tenancy.Scope, a agent.Agent) error {
+	kind := string(a.Kind)
+	if kind == "" {
+		kind = string(runner.KindCLI)
+	}
+	config := a.Config
+	if len(config) == 0 {
+		config = json.RawMessage("{}")
+	}
+	r, found, err := runners.GetByName(ctx, sc, a.Name)
+	if err != nil {
+		return fmt.Errorf("find runner %s: %w", a.Name, err)
+	}
+	if !found {
+		r, err = runners.Create(ctx, sc, runner.NewRunner{
+			Name:   a.Name,
+			Kind:   runner.Kind(kind),
+			Config: config,
+		})
+		if err != nil {
+			return fmt.Errorf("create runner %s: %w", a.Name, err)
+		}
+	}
+	chain, err := runners.Chain(ctx, sc, a.ID)
+	if err != nil {
+		return err
+	}
+	for _, existing := range chain {
+		if existing.ID == r.ID {
+			return nil
+		}
+	}
+	ids := []string{r.ID}
+	for _, existing := range chain {
+		ids = append(ids, existing.ID)
+	}
+	if err := runners.SetChain(ctx, sc, a.ID, ids); err != nil {
+		return fmt.Errorf("bind runner %s to agent %s: %w", r.Name, a.Name, err)
 	}
 	return nil
 }
