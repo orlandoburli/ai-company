@@ -4,6 +4,7 @@ import type {
   BoardColumn,
   CreateInviteResult,
   DependencyEdge,
+  FailureState,
   Invite,
   InvitePeek,
   Item,
@@ -13,7 +14,9 @@ import type {
   Product,
   Project,
   ProjectNode,
-  QueueEntry,
+  QueueItem,
+  RankingEntry,
+  RankingRun,
   Role,
   Status,
 } from "./types";
@@ -216,9 +219,33 @@ export const api = {
   unpinItem: (id: string) => post<{ item: Item }>(`/api/items/${id}/unpin`),
 
   queue: (projectId?: string) =>
-    get<{ queue: QueueEntry[]; weights_version: string }>(
+    get<{ queue: QueueItem[]; weights_version: string }>(
       "/api/queue" + query({ project_id: projectId }),
     ),
+
+  startNow: (id: string) =>
+    post<{ item: Item }>(`/api/items/${encodeURIComponent(id)}/start-now`),
+
+  getFailure: (id: string, workflowId: string) =>
+    get<{ failure: FailureState }>(
+      `/api/items/${encodeURIComponent(id)}/failure` +
+        query({ workflow_id: workflowId }),
+    ),
+
+  resetFailure: (id: string, workflowId: string) =>
+    post<{ failure: FailureState }>(
+      `/api/items/${encodeURIComponent(id)}/failure/reset`,
+      { workflow_id: workflowId },
+    ),
+
+  listRankings: () => get<{ rankings: RankingRun[] }>("/api/rankings"),
+
+  getRanking: (id: string) =>
+    get<{ ranking: RankingRun; entries: RankingEntry[] }>(
+      `/api/rankings/${encodeURIComponent(id)}`,
+    ),
+
+  runRanking: () => post<{ ranking: RankingRun }>("/api/rankings/run"),
 
   board: (filter?: ListItemsFilter) =>
     get<{ columns: BoardColumn[] }>("/api/board" + query({ ...filter })),

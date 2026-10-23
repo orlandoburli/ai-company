@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -171,7 +172,7 @@ func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg 
 	}
 	pr, found, err := gh.FindOpenPullRequest(ctx, cfg.Head)
 	if err != nil {
-		return IntegrationResult{}, integrationFailure(FailureTransient, "could not look up existing pull request")
+		return IntegrationResult{}, integrationFailure(FailureTransient, "could not look up existing pull request: "+excerpt(err))
 	}
 	if !found {
 		// The server commits the agent's work: the agent never commits.
@@ -204,7 +205,7 @@ func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg 
 				pushDir = in.Workdir
 			}
 			if _, err := svc.Git.PushBranch(ctx, pushDir, remote, cfg.Head); err != nil {
-				return IntegrationResult{}, integrationFailure(FailureTransient, "could not push integration branch")
+				return IntegrationResult{}, integrationFailure(FailureTransient, "could not push integration branch: "+excerpt(err))
 			}
 		}
 		pr, err = gh.CreatePullRequest(ctx, integration.PullRequestInput{Base: cfg.Base, Head: cfg.Head, Title: cfg.Title, Body: cfg.Body, Draft: cfg.Draft})
@@ -214,7 +215,7 @@ func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg 
 			if existing, yes, lookupErr := gh.FindOpenPullRequest(ctx, cfg.Head); lookupErr == nil && yes {
 				pr, found = existing, true
 			} else {
-				return IntegrationResult{}, integrationFailure(FailureTransient, "could not create pull request")
+				return IntegrationResult{}, integrationFailure(FailureTransient, "could not create pull request: "+excerpt(err))
 			}
 		}
 	}
@@ -260,7 +261,7 @@ func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationCon
 	for {
 		checks, err := gh.ListChecks(ctx, cfg.PR)
 		if err != nil {
-			return IntegrationResult{}, integrationFailure(FailureTransient, "could not read pull request checks")
+			return IntegrationResult{}, integrationFailure(FailureTransient, "could not read pull request checks: "+excerpt(err))
 		}
 		allSuccess := len(checks) > 0
 		for _, check := range checks {
@@ -290,6 +291,21 @@ func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationCon
 // githubRepoFromURL maps a product's git remote to the API's owner/name form.
 // Example: git@github.com:orlandoburli/fazgiro.git becomes
 // orlandoburli/fazgiro; the SSH URL is never passed to a process here.
+// excerpt is a short, safe description of an upstream failure. The GitHub
+// API's own message is the useful part ("No commits between main and …"), and
+// it never carries the token: the client sends the token in a header and the
+// API does not echo it back.
+func excerpt(err error) string {
+	if err == nil {
+		return ""
+	}
+	var apiErr *integration.APIError
+	if errors.As(err, &apiErr) {
+		return strings.TrimSpace(apiErr.Message)
+	}
+	return ""
+}
+
 // pullRequestNumber reads the pull request number an upstream node reported.
 func pullRequestNumber(inputs map[string]Receipt) int {
 	for _, receipt := range inputs {

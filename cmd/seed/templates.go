@@ -141,7 +141,8 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 // and body may use the {{item.title}} placeholder.
 func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 	spec, err := agentNode("n_pm", "spec", "agent.pm", 2, agents["dev"],
-		"Read the item and write what has to change, in two or three sentences. Do not write code yet.",
+		"Read the item and write what has to change, in two or three sentences, and say which file it touches. "+
+			"Do not write code yet, and do not ask a question — a human approves the result.",
 		map[string]string{"spec_md": "string"})
 	if err != nil {
 		return seedTemplate{}, err
@@ -152,7 +153,10 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	impl, err := agentNode("n_code", "implement", "agent.coder", 3, agents["dev"],
-		"Implement the approved specification. Work in the directory you are in (it is a worktree cut for this step). Keep the change small; do not commit, do not push.",
+		"Implement the approved specification. It is in your context, as the previous step's output. "+
+			"You are working in a worktree cut for this step and you have permission to edit the files in it: "+
+			"do not ask for permission, do not commit, do not push — the server commits and opens the pull request. "+
+			"Keep the change small and add a test for it.",
 		map[string]string{"summary_md": "string", "changed_files": "array"})
 	if err != nil {
 		return seedTemplate{}, err

@@ -147,7 +147,7 @@ export interface ItemScore {
   factors: ScoreFactor[];
 }
 
-export interface QueueEntry {
+export interface QueueItem {
   item: Item;
   score: {
     base_score: number;
@@ -157,6 +157,65 @@ export interface QueueEntry {
   pinned: boolean;
   pinned_at?: string;
   paused: boolean;
+  /** Present when an active ranking run decided this item's relative order. */
+  rank?: number;
+  /** Failure summary attached by the queue endpoint (held-back items may be omitted). */
+  failure_state?: "ok" | "backing_off" | "exhausted" | string;
+  next_eligible_at?: string | null;
+  start_now_at?: string | null;
+}
+
+/** Kept as an alias for M1 components that still use the older name. */
+export type QueueEntry = QueueItem;
+
+export interface FailureState {
+  item_id: string;
+  workflow_id: string;
+  consecutive_failures: number;
+  state: "ok" | "backing_off" | "exhausted" | string;
+  curve: "exponential" | "linear" | string;
+  backoff_params: {
+    x_seconds: number;
+    y: number;
+    step_seconds: number;
+    max_backoff_seconds: number;
+    max_failures: number;
+  };
+  backoff_version: string;
+  last_failure_kind?: string;
+  last_error_md?: string;
+  last_failed_at?: string | null;
+  next_eligible_at?: string | null;
+  exhausted_at?: string | null;
+}
+
+export type RankingState = "running" | "ready" | "failed" | "superseded";
+export type RankingDegradedReason = "llm_failed" | "invalid_output" | "over_budget";
+
+export interface RankingRun {
+  id: string;
+  tenant_id: string;
+  state: RankingState;
+  weights_version: string;
+  llm_model?: string | null;
+  degraded_reason?: RankingDegradedReason | string;
+  input_fingerprint: string;
+  summary_md: string;
+  roots_json: Array<{ item_id: string; unblocks: number; status: string }> | string;
+  computed_at: string;
+  expires_at: string;
+  superseded_by?: string | null;
+}
+
+export interface RankingEntry {
+  id: string;
+  ranking_id: string;
+  item_id: string;
+  rank: number;
+  score: number;
+  reason_md: string;
+  base_score: number;
+  factors_json: unknown[] | string;
 }
 
 export interface BoardColumn {

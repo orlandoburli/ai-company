@@ -1,361 +1,192 @@
 "use client";
 
-import { Suspense, useCallback, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, type ApiError } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
-import type { Item, QueueEntry } from "@/lib/types";
-import { firstName, relTime, formatDateTime } from "@/lib/format";
-import {
-  Dialog,
-  ErrorBlock,
-  Skeleton,
-  Toasts,
-  apiErrorMessage,
-} from "@/components/primitives";
-import { FactorTable } from "@/components/factor-table";
-import { IconPin } from "@/components/icons";
+import type { QueueItem, RankingRun } from "@/lib/types";
+import { ErrorBlock, Skeleton, Toasts } from "@/components/primitives";
 
 export default function QueuePage() {
   return (
-    <Suspense
-      fallback={
-        <div style={{ display: "grid", gap: 12 }}>
-          <Skeleton h={22} w={140} />
-          <Skeleton h={300} />
-        </div>
-      }
-    >
+    <Suspense fallback={<div style={{ display: "grid", gap: 12 }}><Skeleton h={22} w={140} /><Skeleton h={300} /></div>}>
       <QueueView />
     </Suspense>
   );
 }
 
 function QueueView() {
-  const params = useSearchParams();
-  const pathname = usePathname();
-  const router = useRouter();
-  const projectFilter = params.get("project_id") ?? "";
-
   const { canWrite } = useSession();
   const { toasts, push } = useToasts();
+  const queue = useAsync(() => api.queue(), []);
+  const rankings = useAsync(() => api.listRankings(), []);
+  const [now, setNow] = useState(() => Date.now());
+  const [starting, setStarting] = useState<string | null>(null);
 
-  const queue = useAsync(
-    () => api.queue(projectFilter),
-    [projectFilter],
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const activeRun = (rankings.data?.rankings ?? []).find(
+    (run) => run.state === "ready" && Date.parse(run.expires_at) > now,
   );
-  const members = useAsync(
-    () => api.listMembers().then((r) => r.members),
-    [],
+  const ranking = useAsync(
+    () => activeRun ? api.getRanking(activeRun.id) : Promise.resolve(null),
+    [activeRun?.id ?? ""],
   );
-  const projects = useAsync(
-    () => api.listProjects().then((r) => r.projects),
-    [],
-  );
+  const reasonByItem = useMemo(() => {
+    const map = new Map<string, { rank: number; reason: string }>();
+    for (const entry of ranking.data?.entries ?? []) {
+      map.set(entry.item_id, { rank: entry.rank, reason: entry.reason_md });
+    }
+    return map;
+  }, [ranking.data]);
 
-  const memberName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const mem of members.data ?? []) m.set(mem.user_id, mem.name);
-    return m;
-  }, [members.data]);
-
-  const [openFactors, setOpenFactors] = useState<Set<string>>(new Set());
-  const [pauseTarget, setPauseTarget] = useState<Item | null>(null);
-  const [pauseReason, setPauseReason] = useState("");
-
-  const setParam = useCallback(
-    (key: string, value: string) => {
-      const next = new URLSearchParams(params.toString());
-      if (value) next.set(key, value);
-      else next.delete(key);
-      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-    },
-    [pathname, params, router],
-  );
-
-  async function override(
-    id: string,
-    action: "pin" | "unpin" | "pause" | "unpause",
-    reason?: string,
-  ) {
+  async function startNow(item: QueueItem) {
+    setStarting(item.item.id);
     try {
-      if (action === "pin") await api.pinItem(id);
-      else if (action === "unpin") await api.unpinItem(id);
-      else if (action === "pause") await api.pauseItem(id, reason);
-      else await api.unpauseItem(id);
+      await api.startNow(item.item.id);
       await queue.reload();
-    } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("info", `#${item.item.number} moved to the front of the queue.`);
+    } catch (error) {
+      push("error", apiIssue(error));
+    } finally {
+      setStarting(null);
     }
   }
 
-  const entries = useMemo(() => queue.data?.queue ?? [], [queue.data]);
-  const rankOf = useMemo(() => {
-    const m = new Map<string, number>();
-    let r = 0;
-    for (const e of entries) {
-      if (!(e.paused || e.item.paused_at)) {
-        r += 1;
-        m.set(e.item.id, r);
-      }
-    }
-    return m;
-  }, [entries]);
-
+  const entries = queue.data?.queue ?? [];
   return (
     <>
       <div className="pagehead">
-        <h1>Queue</h1>
-        <span className="pagehead__sub">
-          Dispatch order — pinned first, then base score.
-          {queue.data ? ` Weights ${queue.data.weights_version}.` : ""}
-        </span>
-        <span style={{ marginLeft: "auto" }} className="field">
-          <label htmlFor="q-project" className="tiny muted" style={{ textTransform: "none" }}>
-            Project
-          </label>
-          <select
-            id="q-project"
-            className="input input--inline"
-            value={projectFilter}
-            onChange={(e) => setParam("project_id", e.target.value)}
-          >
-            <option value="">All</option>
-            {(projects.data ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+        <h1>Dispatch queue</h1>
+        <span className="pagehead__sub">Eligible work, in the order it can be dispatched.</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Link className="btn btn--sm" href="/rankings">Rankings</Link>
         </span>
       </div>
 
+      <div className="panel" style={{ marginBottom: 14, padding: "10px 14px", borderColor: "rgb(62 207 110 / .28)", background: "linear-gradient(105deg, rgb(62 207 110 / .07), var(--panel) 48%)" }}>
+        <div className="stack" style={{ alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+          <strong className="tiny" style={{ color: "var(--accent)" }}>ORDER IS NOT ELIGIBILITY</strong>
+          <span className="tiny muted">Start now moves an eligible item to the front. It never bypasses a pause, dependency, backoff, or exhausted state.</span>
+        </div>
+      </div>
+
       {queue.error ? (
-        <ErrorBlock
-          message={queue.error.message}
-          retry={() => void queue.reload()}
-        />
+        <ErrorBlock title="The queue could not load." message={apiIssue(queue.error)} retry={() => void queue.reload()} />
       ) : queue.loading ? (
-        <div style={{ display: "grid", gap: 8 }}>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} h={48} />
-          ))}
+        <div style={{ display: "grid", gap: 8 }}>{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} h={64} />)}</div>
+      ) : entries.length === 0 ? (
+        <div className="empty panel" style={{ padding: "42px 20px" }}>
+          <div className="mono tiny muted" style={{ marginBottom: 9 }}>QUEUE / 0 DISPATCHABLE</div>
+          <h3>Nothing is dispatchable right now</h3>
+          <p>Paused, blocked, exhausted, and still-backing-off items are left out of this list. Check the backlog or an item’s failure panel for the reason it is waiting.</p>
+          <Link className="btn" href="/backlog">Open backlog</Link>
         </div>
       ) : (
-        <div>
-          {entries.length === 0 ? (
-            <div className="empty panel" style={{ padding: "40px 20px" }}>
-              <h3>Nothing is dispatchable</h3>
-              <p>
-                The queue covers open, unblocked, non-epic items that are not
-                paused. Move some backlog items to “To do”, or check the
-                project filter above.
-              </p>
-              <Link className="btn" href="/backlog">
-                Open backlog
-              </Link>
-            </div>
-          ) : (
-            <>
-              {(() => {
-                const pausedList = entries.filter(
-                  (e) => e.paused || e.item.paused_at,
-                );
-                return pausedList.length > 0 ? (
-                  <p className="tiny muted" style={{ marginBottom: 6 }}>
-                    {entries.length - pausedList.length} dispatchable ·{" "}
-                    {pausedList.length} paused and listed below the order.
-                  </p>
-                ) : null;
-              })()}
-              <div>
-                {entries.map((e) => {
-                  const isPaused = e.paused || Boolean(e.item.paused_at);
-                  return (
-                    <QueueRow
-                      key={e.item.id}
-                      entry={e}
-                      rank={rankOf.get(e.item.id) ?? null}
-                      canWrite={canWrite}
-                      muted={isPaused}
-                      open={openFactors.has(e.item.id)}
-                      onToggleFactors={() => {
-                        setOpenFactors((s) => {
-                          const next = new Set(s);
-                          if (next.has(e.item.id)) next.delete(e.item.id);
-                          else next.add(e.item.id);
-                          return next;
-                        });
-                      }}
-                      memberName={memberName}
-                      onOverride={(action) => void override(e.item.id, action)}
-                      onPause={() => {
-                        setPauseTarget(e.item);
-                        setPauseReason("");
-                      }}
-                      onUnpause={() => void override(e.item.id, "unpause")}
-                    />
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
+        <section className="panel" aria-label="Dispatch order">
+          <div className="section__head">
+            <h2>Next up</h2>
+            <span className="tiny muted" style={{ marginLeft: "auto" }}>{entries.length} eligible {entries.length === 1 ? "item" : "items"}</span>
+          </div>
+          <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {entries.map((entry, index) => (
+              <QueueRow
+                key={entry.item.id}
+                entry={entry}
+                position={index + 1}
+                count={ranking.data?.entries.length ?? entries.length}
+                reason={reasonByItem.get(entry.item.id)?.reason}
+                rank={reasonByItem.get(entry.item.id)?.rank ?? entry.rank}
+                canWrite={canWrite}
+                busy={starting === entry.item.id}
+                now={now}
+                onStart={() => void startNow(entry)}
+              />
+            ))}
+          </ol>
+          {activeRun ? <div className="section__body tiny muted" style={{ borderTop: "1px solid var(--border)" }}>Order informed by ranking run <Link className="rowlink mono" href={`/rankings?id=${encodeURIComponent(activeRun.id)}`}>{activeRun.id.slice(0, 8)}</Link> · weights {activeRun.weights_version}.</div> : null}
+        </section>
       )}
 
-      {pauseTarget ? (
-        <Dialog
-          title={`Pause #${pauseTarget.number}`}
-          description="A pause removes the item from dispatch. It is not a failure and never expires by itself — unpause to make it eligible again."
-          onClose={() => setPauseTarget(null)}
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const target = pauseTarget;
-              setPauseTarget(null);
-              if (target) void override(target.id, "pause", pauseReason);
-            }}
-            style={{ display: "grid", gap: 12 }}
-          >
-            <div className="field">
-              <label htmlFor="q-reason">Reason (optional)</label>
-              <input
-                id="q-reason"
-                className="input"
-                value={pauseReason}
-                onChange={(e) => setPauseReason(e.target.value)}
-                placeholder="Why this item waits"
-              />
-            </div>
-            <div className="dialog__row">
-              <button type="button" className="btn" onClick={() => setPauseTarget(null)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn btn--primary">
-                Pause item
-              </button>
-            </div>
-          </form>
-        </Dialog>
-      ) : null}
-
+      {rankings.error ? <p className="tiny muted" role="status" style={{ marginTop: 12 }}>Ranking context could not be loaded: {apiIssue(rankings.error)}</p> : null}
+      {ranking.error ? <p className="tiny muted" role="status" style={{ marginTop: 12 }}>Ranking explanations could not be loaded: {apiIssue(ranking.error)}</p> : null}
       <Toasts toasts={toasts} />
     </>
   );
 }
 
-/* --- row --------------------------------------------------------------------- */
-
 function QueueRow(props: {
-  entry: QueueEntry;
-  rank: number | null;
+  entry: QueueItem;
+  position: number;
+  count: number;
+  rank?: number;
+  reason?: string;
   canWrite: boolean;
-  open: boolean;
-  muted: boolean;
-  onToggleFactors: () => void;
-  onPause: () => void;
-  onUnpause: () => void;
-  onOverride: (action: "pin" | "unpin") => void;
-  memberName: Map<string, string>;
+  busy: boolean;
+  now: number;
+  onStart: () => void;
 }) {
-  const { item, score, pinned } = props.entry;
-  const paused = props.muted || Boolean(item.paused_at);
+  const { item } = props.entry;
+  const when = props.entry.next_eligible_at ? Date.parse(props.entry.next_eligible_at) : NaN;
+  const failure = props.entry.failure_state;
+  const explanation = props.entry.start_now_at
+    ? "Start now — moved to the front by a human; eligibility is unchanged."
+    : props.entry.pinned
+    ? "Pinned — this item is first by a human ordering override."
+    : props.rank && props.reason
+      ? `Rank ${props.rank} of ${props.count} — ${props.reason}`
+      : props.rank
+        ? `Rank ${props.rank} in the latest ranking run.`
+        : `Base score ${props.entry.score.base_score} — deterministic score decides this position.`;
 
   return (
-    <div>
-      {props.open ? (
-        <div
-          className="panel section__body"
-          style={{ marginBottom: 6, borderTop: "none", borderRadius: "0 0 8px 8px" }}
-        >
-          <div className="tiny muted" style={{ marginBottom: 6 }}>
-            Base score {score.base_score} · weights {score.weights_version} · this
-            is deterministic: same inputs, same number.
-          </div>
-          <FactorTable factors={score.factors} baseScore={score.base_score} />
+    <li className="queue-row" style={{ gridTemplateColumns: "42px minmax(0, 1fr) auto", gap: 12, padding: "13px 15px", borderBottom: "1px solid var(--border)", borderLeft: props.position === 1 ? "2px solid var(--accent)" : "2px solid transparent" }}>
+      <span className="mono" style={{ color: props.position === 1 ? "var(--accent)" : "var(--muted)", fontSize: 17, textAlign: "center" }}>{String(props.position).padStart(2, "0")}</span>
+      <div style={{ minWidth: 0 }}>
+        <div className="stack" style={{ alignItems: "baseline", flexWrap: "wrap", gap: 7 }}>
+          <Link className="rowlink" href={`/items/${item.id}`} style={{ fontWeight: 650 }}><span className="mono tiny muted">#{item.number}</span> {item.title}</Link>
+          <span className="chip chip--kind">{item.kind}</span>
+          {item.priority ? <span className="tiny muted">{item.priority.replace("priority:", "")}</span> : null}
         </div>
-      ) : null}
-      <div
-        className={[
-          "queue-row",
-          pinned ? "queue-row--pinned" : "",
-          paused ? "queue-row--paused" : "",
-        ].join(" ")}
-      >
-        <span className="queue-row__rank" title={pinned ? "Pinned to rank 1" : "Dispatch rank"}>
-          {props.rank ?? "—"}
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <Link
-            href={`/items/${item.id}`}
-            className="rowlink"
-            style={{ fontWeight: 600, display: "inline-flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}
-          >
-            <span className="mono tiny muted">#{item.number}</span>
-            <span>{item.title}</span>
-            <span className="chip chip--kind">{item.kind}</span>
-          </Link>
-          <div className="tiny muted" style={{ marginTop: 3 }}>
-            Score {score.base_score}
-            {item.is_epic ? " · epic: has open sub-items" : ""}
-            {item.blocked ? " · blocked by an open dependency" : ""}
-            {paused
-              ? ` · paused${item.paused_by ? ` by ${firstName(props.memberName.get(item.paused_by) ?? "")}` : ""}${
-                  item.pause_reason ? ` — ${item.pause_reason}` : ""
-                }`
-              : ""}
-            {pinned && item.pinned_by ? ` · pinned by ${firstName(props.memberName.get(item.pinned_by) ?? "") || "someone"}` : ""}
-            {pinned && item.pinned_at ? ` ${relTime(item.pinned_at)}` : ""}
-          </div>
-          {paused && item.paused_at ? (
-            <div className="tiny muted">
-              Paused since {formatDateTime(item.paused_at)}.
-            </div>
-          ) : null}
-        </div>
-        <span className="mono" title="Base score">
-          {score.base_score}
-        </span>
-        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <button
-            type="button"
-            className="btn btn--sm"
-            aria-expanded={props.open}
-            onClick={props.onToggleFactors}
-          >
-            Why?
-          </button>
-          {props.canWrite ? (
-            <>
-              <button
-                type="button"
-                className="btn btn--sm"
-                onClick={() => props.onOverride(pinned ? "unpin" : "pin")}
-                aria-label={pinned ? "Unpin" : "Pin to top"}
-              >
-                <IconPin width={12} height={12} />
-                {pinned ? "Unpin" : "Pin"}
-              </button>
-              {paused ? (
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  onClick={props.onUnpause}
-                >
-                  Unpause
-                </button>
-              ) : (
-                <button type="button" className="btn btn--sm" onClick={props.onPause}>
-                  Pause
-                </button>
-              )}
-            </>
-          ) : null}
-        </span>
+        <p className="tiny muted" style={{ margin: "4px 0 0" }}>{explanation}</p>
+        {failure === "backing_off" ? (
+          <p className="tiny" style={{ margin: "5px 0 0", color: Number.isFinite(when) && when > props.now ? "var(--warn)" : "var(--accent)" }}>
+            {Number.isFinite(when) && when > props.now ? `Backing off · ${remaining(when - props.now)} remaining · not before ${clock(when)}` : Number.isFinite(when) ? "Backoff has passed — eligible again." : "Backing off · the server did not provide a next eligible time."}
+          </p>
+        ) : failure === "exhausted" ? (
+          <p className="tiny" style={{ margin: "5px 0 0", color: "var(--danger)" }}>Exhausted · a human must reset this item before it can run again.</p>
+        ) : null}
       </div>
-    </div>
+      <div className="stack" style={{ alignItems: "center", justifyContent: "flex-end" }}>
+        <span className="mono tiny" title="Base score">{props.entry.score.base_score}</span>
+        {props.canWrite ? <button type="button" className="btn btn--sm btn--primary" disabled={props.busy} onClick={props.onStart}>{props.busy ? "Moving…" : "Start now"}</button> : <span className="tiny muted">Read only</span>}
+      </div>
+    </li>
   );
+}
+
+function clock(time: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(time);
+}
+
+function remaining(ms: number): string {
+  const seconds = Math.max(1, Math.ceil(ms / 1000));
+  if (seconds < 60) return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours} ${hours === 1 ? "hour" : "hours"} ${remainder} min` : `${hours} ${hours === 1 ? "hour" : "hours"}`;
+}
+
+function apiIssue(error: unknown): string {
+  if (error instanceof Error && "code" in error) {
+    const apiError = error as ApiError;
+    return `${apiError.code}: ${apiError.message}`;
+  }
+  return error instanceof Error ? error.message : "Something went wrong.";
 }

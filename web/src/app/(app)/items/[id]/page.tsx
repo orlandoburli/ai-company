@@ -3,12 +3,13 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { api, type PatchItemBody } from "@/lib/api";
+import { api, ApiError, type PatchItemBody } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import type {
   ActivityEntry,
   DependencyEdge,
+  FailureState,
   Item,
   ItemScore,
   Member,
@@ -200,6 +201,7 @@ function ItemDetail() {
               }}
             />
           ) : null}
+          <FailurePanel itemId={item.id} paused={Boolean(item.paused || item.paused_at)} canWrite={canWrite} push={push} />
           <DependenciesPanel
             item={item}
             blockers={detail.data?.blockers ?? []}
@@ -267,6 +269,139 @@ function ChatPanelSlot(props: { itemId: string; canWrite: boolean }) {
       fullHref={`/chat/${threadId}`}
     />
   );
+}
+
+type FailurePanelData =
+  | { kind: "failure"; failure: FailureState }
+  | { kind: "absent"; reason: string; code?: string };
+
+function FailurePanel(props: {
+  itemId: string;
+  paused: boolean;
+  canWrite: boolean;
+  push: (kind: "error" | "info", text: string) => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [saving, setSaving] = useState(false);
+  const state = useAsync<FailurePanelData>(async () => {
+    if (props.paused) {
+      return { kind: "absent", reason: "This item is paused. Pause is a separate dispatch control, not a workflow failure, so no failure state is shown here." };
+    }
+    const runs = (await api.listRuns({ item_id: props.itemId })).runs;
+    const latest = [...runs].sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at))[0];
+    if (!latest?.template_id) {
+      return { kind: "absent", reason: "No workflow run is attached to this item, so there is no workflow id to check for a failure state." };
+    }
+    try {
+      return { kind: "failure", failure: (await api.getFailure(props.itemId, latest.template_id)).failure };
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "failure_not_found") {
+        return { kind: "absent", code: error.code, reason: "No failure state exists for this item and workflow." };
+      }
+      throw error;
+    }
+  }, [props.itemId, props.paused]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  async function retryNow(failure: FailureState) {
+    setSaving(true);
+    try {
+      await api.resetFailure(props.itemId, failure.workflow_id);
+      await state.reload();
+      props.push("info", "Failure counter and backoff cleared. The item still needs to meet its normal dispatch requirements.");
+    } catch (error) {
+      props.push("error", apiIssue(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const failure = state.data?.kind === "failure" ? state.data.failure : null;
+  const absent = state.data?.kind === "absent" ? state.data : null;
+  const nextAt = failure?.next_eligible_at ? Date.parse(failure.next_eligible_at) : NaN;
+  const timeLeft = nextAt - now;
+
+  return (
+    <section className="section" aria-labelledby="failure-heading">
+      <div className="section__head">
+        <h2 id="failure-heading">Failure &amp; retry</h2>
+        {failure ? <span className={`chip ${failure.state === "exhausted" ? "chip--p0" : "chip--kind"}`} style={{ marginLeft: "auto" }}>{failure.state.replaceAll("_", " ")}</span> : null}
+      </div>
+      <div className="section__body">
+        {state.error ? (
+          <ErrorBlock title="Failure state could not load." message={apiIssue(state.error)} retry={() => void state.reload()} />
+        ) : state.loading ? (
+          <Skeleton h={76} />
+        ) : failure ? (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div className="stack" style={{ flexWrap: "wrap", gap: 18 }}>
+              <div><div className="tiny muted">Consecutive failures</div><strong className="metric" style={{ fontSize: 20 }}>{failure.consecutive_failures}</strong></div>
+              <div><div className="tiny muted">Backoff curve</div><strong>{failure.curve}</strong> <span className="mono tiny muted">{failure.backoff_version}</span></div>
+              <div><div className="tiny muted">Workflow</div><span className="mono tiny">{failure.workflow_id}</span></div>
+            </div>
+            <div className="tiny muted">
+              Parameters: {failure.backoff_params.x_seconds}s initial
+              {failure.curve === "exponential" ? ` × ${failure.backoff_params.y} per failure` : ` + ${failure.backoff_params.step_seconds}s per failure`}
+              {`, capped at ${durationWords(failure.backoff_params.max_backoff_seconds)}; ${failure.backoff_params.max_failures} failures exhaust the retry.`}
+            </div>
+            {failure.state === "backing_off" ? (
+              <div className="error-note" style={{ color: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--warn)" : "var(--accent)", borderColor: !Number.isFinite(nextAt) || timeLeft > 0 ? "rgb(240 180 41 / .3)" : "rgb(62 207 110 / .28)" }}>
+                {Number.isFinite(nextAt) && timeLeft > 0
+                  ? `Backing off · ${durationWords(Math.ceil(timeLeft / 1000))} remaining · not before ${clock(nextAt)}.`
+                  : Number.isFinite(nextAt)
+                    ? "The backoff has passed. This item is eligible again, subject to its normal dispatch requirements."
+                    : "Backing off, but the server did not provide next_eligible_at. The eligible time cannot be confirmed."}
+              </div>
+            ) : failure.state === "exhausted" ? (
+              <div className="error-note" style={{ color: "var(--danger)" }}>
+                Exhausted{failure.exhausted_at ? ` since ${formatDateTime(failure.exhausted_at)}` : ""}. A human must reset this failure state before the workflow can run again.
+              </div>
+            ) : <div className="tiny muted">No active backoff. The failure counter is currently clear.</div>}
+            <div style={{ borderLeft: "2px solid var(--border-strong)", paddingLeft: 10 }}>
+              <div className="tiny muted" style={{ marginBottom: 3 }}>Last error{failure.last_failure_kind ? ` · ${failure.last_failure_kind}` : ""}</div>
+              <div className="tiny" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{failure.last_error_md || "No error message was recorded."}</div>
+            </div>
+            {props.canWrite ? (
+              <div className="stack" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+                <span className="tiny muted">Retry now clears the failure counter; it does not unpause or bypass blockers.</span>
+                <button type="button" className="btn btn--sm btn--primary" disabled={saving} onClick={() => void retryNow(failure)}>{saving ? "Resetting…" : "Retry now"}</button>
+              </div>
+            ) : <p className="tiny muted" style={{ margin: 0 }}>Read only — ask a member to reset this failure state.</p>}
+          </div>
+        ) : (
+          <p className="tiny muted" style={{ margin: 0 }}>
+            {absent?.code ? <><span className="mono">{absent.code}</span> — </> : null}{absent?.reason ?? "No failure state is available."}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function clock(time: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(time);
+}
+
+function durationWords(seconds: number): string {
+  const value = Math.max(0, Math.floor(seconds));
+  if (value < 60) return `${value} ${value === 1 ? "second" : "seconds"}`;
+  const minutes = Math.ceil(value / 60);
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} ${hours === 1 ? "hour" : "hours"} ${rest} min` : `${hours} ${hours === 1 ? "hour" : "hours"}`;
+}
+
+function apiIssue(error: unknown): string {
+  if (error instanceof Error && "code" in error) {
+    const apiError = error as ApiError;
+    return `${apiError.code}: ${apiError.message}`;
+  }
+  return error instanceof Error ? error.message : "Something went wrong.";
 }
 
 /* --- editable-draft plumbing -------------------------------------------------- */
@@ -1027,4 +1162,3 @@ function AfterDiff({ entry }: { entry: ActivityEntry }) {
 }
 
 // end of file
-
