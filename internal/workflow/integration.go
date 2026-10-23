@@ -50,9 +50,29 @@ type Services struct {
 type IntegrationRequest struct {
 	Type, RunID, StepRunID, NodeID, IterationPath string
 	Workdir, Branch, RepoURL, ProductID, ItemID   string
-	RunIndex                                      int
-	Config                                        json.RawMessage
-	IdempotencyKey                                string
+	// MirrorPath is the app-owned bare mirror the worktree was cut from. The
+	// push goes from there, not from the agent's worktree: the agent's refs
+	// are data, not authority.
+	MirrorPath     string
+	RunIndex       int
+	Config         json.RawMessage
+	IdempotencyKey string
+	// Inputs are the receipts of the incoming edges. They carry what the
+	// upstream execution produced — the pull request number, the branch the
+	// work landed on — so a node does not have to guess it.
+	Inputs map[string]Receipt
+}
+
+// CredentialAwareGit is implemented by the git service that can authenticate a
+// push with a credential it resolves at the moment of the call.
+type CredentialAwareGit interface {
+	WithCredential(integration.CredentialResolver) *integration.Git
+}
+
+// Committer is implemented by a git service that can commit the agent's work.
+// The agent never commits: the server does, on the branch the server created.
+type Committer interface {
+	CommitAll(ctx context.Context, workdir, message string) (integration.Commit, error)
 }
 
 type IntegrationArtifact struct {
@@ -154,12 +174,36 @@ func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg 
 		return IntegrationResult{}, integrationFailure(FailureTransient, "could not look up existing pull request")
 	}
 	if !found {
-		if svc.Git != nil && in.Workdir != "" {
+		// The server commits the agent's work: the agent never commits.
+		if in.Workdir != "" {
+			if committer, ok := svc.Git.(Committer); ok {
+				if _, err := committer.CommitAll(ctx, in.Workdir, "AI Company: work from the run"); err != nil {
+					return IntegrationResult{}, integrationFailure(FailureTransient, "could not commit the work")
+				}
+			}
+		}
+		if svc.Git != nil && (in.MirrorPath != "" || in.Workdir != "") {
 			remote := cfg.Remote
 			if remote == "" {
-				remote = "origin"
+				remote = httpsRemote(cfg.Repo)
 			}
-			if _, err := svc.Git.PushBranch(ctx, in.Workdir, remote, cfg.Head); err != nil {
+			if remote == "" {
+				return IntegrationResult{}, integrationFailure(FailureCapability, "github.open_pr needs a repository remote")
+			}
+			// The push is authenticated with the credential from the keychain:
+			// it never appears in the arguments, the environment or a log line.
+			if aware, ok := svc.Git.(CredentialAwareGit); ok && svc.Tokens != nil && cfg.SecretRef != "" {
+				aware.WithCredential(func(ctx context.Context) (string, error) {
+					return svc.Tokens.Resolve(ctx, cfg.SecretRef)
+				})
+			}
+			// The push goes from the app-owned mirror, never from the agent's
+			// worktree: the agent's refs are data, not authority.
+			pushDir := in.MirrorPath
+			if pushDir == "" {
+				pushDir = in.Workdir
+			}
+			if _, err := svc.Git.PushBranch(ctx, pushDir, remote, cfg.Head); err != nil {
 				return IntegrationResult{}, integrationFailure(FailureTransient, "could not push integration branch")
 			}
 		}
@@ -183,6 +227,13 @@ func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg 
 }
 
 func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationConfig, in IntegrationRequest) (IntegrationResult, error) {
+	if cfg.PR <= 0 {
+		// The pull request the upstream node opened: it reported its number on
+		// its output port.
+		if number := pullRequestNumber(in.Inputs); number > 0 {
+			cfg.PR = number
+		}
+	}
 	if cfg.PR <= 0 {
 		if in.Branch == "" {
 			return IntegrationResult{}, integrationFailure(FailureCapability, "github.wait_ci requires pr or an execution branch")
@@ -239,6 +290,32 @@ func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationCon
 // githubRepoFromURL maps a product's git remote to the API's owner/name form.
 // Example: git@github.com:orlandoburli/fazgiro.git becomes
 // orlandoburli/fazgiro; the SSH URL is never passed to a process here.
+// pullRequestNumber reads the pull request number an upstream node reported.
+func pullRequestNumber(inputs map[string]Receipt) int {
+	for _, receipt := range inputs {
+		if receipt.State != ReceiptDelivered || len(receipt.Value) == 0 {
+			continue
+		}
+		var fields struct {
+			Number int `json:"number"`
+		}
+		if json.Unmarshal(receipt.Value, &fields) == nil && fields.Number > 0 {
+			return fields.Number
+		}
+	}
+	return 0
+}
+
+// httpsRemote turns an "owner/name" repository into the HTTPS URL a
+// credential-authenticated push uses.
+func httpsRemote(repo string) string {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repo), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return ""
+	}
+	return "https://github.com/" + owner + "/" + name + ".git"
+}
+
 func githubRepoFromURL(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {

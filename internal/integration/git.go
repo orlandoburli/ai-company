@@ -26,9 +26,54 @@ type Status struct {
 	Changes []string `json:"changes"`
 }
 
-type Git struct{}
+// CredentialResolver returns the secret a push authenticates with. The
+// secret is resolved at the moment of the call and never reaches a command
+// line: it is written to a file with owner-only permissions and read back by
+// git's askpass helper.
+type CredentialResolver func(ctx context.Context) (string, error)
+
+// Git is the server-side git. It runs the locked-down configuration the design
+// requires (no system config, no global config, no hooks, no ssh command, an
+// empty HOME) — the app acts for the operator through the keychain, never
+// through the operator's files.
+type Git struct {
+	credential CredentialResolver
+}
 
 func NewGit() *Git { return &Git{} }
+
+// WithCredential gives the git service the credential it authenticates a push
+// with.
+func (g *Git) WithCredential(fn CredentialResolver) *Git {
+	g.credential = fn
+	return g
+}
+
+// CommitAll stages and commits everything in the worktree. The agent never
+// commits: the server commits the work, on the branch the server created.
+func (g *Git) CommitAll(ctx context.Context, workdir, message string) (Commit, error) {
+	if strings.TrimSpace(workdir) == "" {
+		return Commit{}, errors.New("git worktree directory is required")
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "AI Company: work from the run"
+	}
+	if err := runGit(ctx, workdir, nil, "add", "--all"); err != nil {
+		return Commit{}, err
+	}
+	// An empty tree is not an error: there may be nothing to commit.
+	if err := runGit(ctx, workdir, nil, "commit", "--no-verify", "-m", message); err != nil {
+		var out string
+		if err := runGit(ctx, workdir, &out, "status", "--porcelain"); err != nil {
+			return Commit{}, err
+		}
+		if strings.TrimSpace(out) == "" {
+			return g.HeadCommit(ctx, workdir)
+		}
+		return Commit{}, err
+	}
+	return g.HeadCommit(ctx, workdir)
+}
 
 func (g *Git) HeadCommit(ctx context.Context, workdir string) (Commit, error) {
 	var out string
@@ -54,7 +99,7 @@ func (g *Git) PushBranch(ctx context.Context, workdir, remote, branch string) (C
 		return Commit{}, err
 	}
 	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
-	if err := runGit(ctx, workdir, nil, "push", "--porcelain", remote, refspec); err != nil {
+	if err := runGitWithCredential(ctx, workdir, nil, g.credential, "push", "--porcelain", remote, refspec); err != nil {
 		return Commit{}, err
 	}
 	return commit, nil
@@ -81,7 +126,44 @@ func (g *Git) Status(ctx context.Context, workdir string) (Status, error) {
 	return s, scanner.Err()
 }
 
+// runGitWithCredential runs git with a credential available to git's askpass
+// helper. The secret is written to a file with owner-only permissions and
+// removed when the command finishes; it never appears in the arguments, the
+// environment or an error message.
+func runGitWithCredential(ctx context.Context, dir string, stdout *string, credential CredentialResolver, args ...string) error {
+	if credential == nil {
+		return runGit(ctx, dir, stdout, args...)
+	}
+	secret, err := credential(ctx)
+	if err != nil {
+		return errors.New("git credential is unavailable")
+	}
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("git credential is empty")
+	}
+	dir2, err := os.MkdirTemp("", "aic-git-cred-*")
+	if err != nil {
+		return errors.New("git credential directory could not be created")
+	}
+	defer os.RemoveAll(dir2) //nolint:errcheck // the secret dies with the directory
+
+	tokenFile := dir2 + "/token"
+	if err := os.WriteFile(tokenFile, []byte(secret), 0o600); err != nil {
+		return errors.New("git credential could not be written")
+	}
+	askpass := dir2 + "/askpass.sh"
+	script := "#!/bin/sh\ncat " + tokenFile + "\n"
+	if err := os.WriteFile(askpass, []byte(script), 0o700); err != nil {
+		return errors.New("git askpass helper could not be written")
+	}
+	return runGitEnv(ctx, dir, stdout, askpass, args...)
+}
+
 func runGit(ctx context.Context, dir string, stdout *string, args ...string) error {
+	return runGitEnv(ctx, dir, stdout, "", args...)
+}
+
+func runGitEnv(ctx context.Context, dir string, stdout *string, askpass string, args ...string) error {
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("git worktree directory is required")
 	}
@@ -103,6 +185,13 @@ func runGit(ctx context.Context, dir string, stdout *string, args ...string) err
 	}
 	defer os.RemoveAll(home) //nolint:errcheck // per-command empty HOME
 	cmd.Env = gitEnvironment(home)
+	if askpass != "" {
+		for i, entry := range cmd.Env {
+			if strings.HasPrefix(entry, "GIT_ASKPASS=") {
+				cmd.Env[i] = "GIT_ASKPASS=" + askpass
+			}
+		}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output strings.Builder
 	if stdout != nil {

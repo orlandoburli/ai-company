@@ -222,8 +222,9 @@ export default function SkillsSettingsPage() {
 
       {selectedId ? (
         <SkillDetail
+          key={selectedId}
           skill={selectedSkill}
-          data={detailQ.data}
+          data={detailQ.data?.skill.id === selectedId ? detailQ.data : null}
           error={detailQ.error}
           loading={detailQ.loading}
           reload={refreshSelected}

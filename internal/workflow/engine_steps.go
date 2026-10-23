@@ -112,6 +112,9 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			if _, ok := ports["main"]; !ok {
 				ports["main"] = rawJSON(map[string]string{"text": output})
 			}
+			// The downstream integration needs to know which branch the work
+			// landed on and where it lives: the receipt carries both.
+			ports["main"] = withWorkLocation(ports["main"], step.ContextManifest)
 			result["summary"] = output
 			result["output"] = output
 		}
@@ -326,7 +329,7 @@ func (e *Engine) dispatchStep(ctx context.Context, sc tenancy.Scope, run Run, t 
 		res := rawJSON(map[string]any{"status": "succeeded", "exit_reason": "ok", "iteration": ready.Iteration, "summary": "loop " + port})
 		return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, res, out, "")
 	case NodeIntegration:
-		return e.failClaim(ctx, sc, run, t, claimed, "capability", "integration nodes are not available until M4")
+		return e.runIntegration(ctx, sc, run, t, claimed, ready, node)
 	default:
 		return e.failClaim(ctx, sc, run, t, claimed, "capability", "unsupported workflow node")
 	}
@@ -360,6 +363,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		}
 	}
 	workdir := ""
+	branch := ""
 	scratchReason := ""
 	if node.Workspace == WorkspaceWorktree {
 		productID, repoURL := e.productForItem(ctx, sc, item)
@@ -375,6 +379,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 				scratchReason = "No repository mirror could be prepared (" + prepErr.Error() + "); this execution uses a scratch workspace."
 			} else {
 				workdir = ws.Dir
+				branch = ws.Branch
 			}
 		}
 	}
@@ -445,7 +450,12 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	jobID := job.ID
 	wk := string(node.Workspace)
 	wd := workdir
-	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "workspace_note": scratchReason})
+	if branch == "" {
+		// No worktree: the execution still gets a branch name, so a downstream
+		// integration has something stable to talk about.
+		branch = fmt.Sprintf("aic/%s-%s-%d", item.ID, step.ID, maxInt(1, ready.Attempt))
+	}
+	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "workspace_note": scratchReason, "branch": branch, "workdir": workdir})
 	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk})
 	if err != nil {
 		return err
@@ -499,6 +509,217 @@ func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work
 		}
 	}
 	return "", ""
+}
+
+// runIntegration executes an integration node: a deterministic, idempotent
+// action of a platform (github.open_pr, github.wait_ci, github.comment).
+//
+// The node's config carries what the template knows; the execution supplies
+// what only the run knows — the worktree, the branch, the repository. The
+// idempotency key is the design's `run:node:path:index`, so a replay attaches
+// to the same action instead of opening a second pull request.
+func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, t *Template, claimed StepRun, ready ReadyNode, node Node) error {
+	if e.integrations == nil {
+		return e.failClaim(ctx, sc, run, t, claimed, "capability", "integrations are not configured")
+	}
+	var item work.Item
+	if run.ItemID != "" && e.work != nil {
+		if loaded, err := e.work.GetItem(ctx, sc, run.ItemID); err == nil {
+			item = loaded
+		}
+	}
+	productID, repoURL := e.productForItem(ctx, sc, item)
+	mirrorPath := ""
+	if productID != "" && e.workspaces != nil {
+		mirrorPath = e.workspaces.MirrorPath(productID)
+	}
+
+	// The template may use placeholders for what only the item knows.
+	config := node.Config
+	if len(config) > 0 {
+		replaced := strings.ReplaceAll(string(config), "{{item.title}}", item.Title)
+		replaced = strings.ReplaceAll(replaced, "{{item.id}}", item.ID)
+		replaced = strings.ReplaceAll(replaced, "{{item.description}}", item.DescriptionMD)
+		config = json.RawMessage(replaced)
+	}
+	if secretRef := e.tenantSecretRef(ctx, sc, "github"); secretRef != "" {
+		config = withSecretRef(config, secretRef)
+	}
+
+	branch := fmt.Sprintf("aic/%s-%s-%d", item.ID, claimed.ID, maxInt(1, ready.Attempt))
+	workdir := claimed.Workdir
+	if upstreamBranch, upstreamWorkdir := workLocationFromInputs(ready.Inputs); upstreamBranch != "" {
+		// The work happened upstream: the integration pushes that branch, from
+		// that worktree.
+		branch = upstreamBranch
+		if upstreamWorkdir != "" {
+			workdir = upstreamWorkdir
+		}
+	}
+	req := IntegrationRequest{
+		Type:           node.Type,
+		RunID:          run.ID,
+		StepRunID:      claimed.ID,
+		NodeID:         node.ID,
+		IterationPath:  ready.IterationPath,
+		RunIndex:       ready.RunIndex,
+		Config:         config,
+		Workdir:        workdir,
+		MirrorPath:     mirrorPath,
+		Branch:         branch,
+		RepoURL:        repoURL,
+		ProductID:      productID,
+		ItemID:         item.ID,
+		IdempotencyKey: fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex),
+		Inputs:         ready.Inputs,
+	}
+	result, err := RunIntegration(ctx, *e.integrations, req)
+	if err != nil {
+		kind := FailureCapability
+		var typed *IntegrationError
+		if errors.As(err, &typed) {
+			kind = typed.Kind
+		}
+		return e.failClaim(ctx, sc, run, t, claimed, string(kind), err.Error())
+	}
+	for _, artifact := range result.Artifacts {
+		_, _ = e.store.CreateArtifact(ctx, sc, NewArtifact{
+			RunID: run.ID, StepRunID: claimed.ID, ItemID: item.ID,
+			Kind: artifact.Kind, URI: artifact.URI, Meta: artifact.Meta,
+		})
+	}
+	return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, result.Result, result.OutputPorts, "")
+}
+
+// tenantSecretRef returns the secret reference the tenant registered for a
+// platform, if any. The reference names a secret held elsewhere (the OS
+// keychain); the secret itself never reaches the database.
+func (e *Engine) tenantSecretRef(ctx context.Context, sc tenancy.Scope, kind string) string {
+	if e.store == nil {
+		return ""
+	}
+	var ref string
+	// The read is tenant-scoped like every other query: the row is behind the
+	// same policy as the rest of the tenant's data.
+	err := e.store.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT secret_ref FROM integration_credentials WHERE kind=$1`, kind).Scan(&ref)
+	})
+	if err != nil {
+		return ""
+	}
+	return ref
+}
+
+// withRemote fills the push remote into an integration config when the
+// template did not name one.
+func withRemote(config json.RawMessage, remote string) json.RawMessage {
+	if remote == "" || len(config) == 0 {
+		return config
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(config, &fields); err != nil {
+		return config
+	}
+	if existing, ok := fields["remote"]; ok {
+		var current string
+		if json.Unmarshal(existing, &current) == nil && current != "" {
+			return config
+		}
+	}
+	encoded, err := json.Marshal(remote)
+	if err != nil {
+		return config
+	}
+	fields["remote"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return config
+	}
+	return out
+}
+
+// withSecretRef fills the secret reference into an integration config when the
+// template did not name one.
+func withSecretRef(config json.RawMessage, ref string) json.RawMessage {
+	if ref == "" || len(config) == 0 {
+		return config
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(config, &fields); err != nil {
+		return config
+	}
+	if existing, ok := fields["secret_ref"]; ok {
+		var current string
+		if json.Unmarshal(existing, &current) == nil && current != "" {
+			return config
+		}
+	}
+	encoded, err := json.Marshal(ref)
+	if err != nil {
+		return config
+	}
+	fields["secret_ref"] = encoded
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return config
+	}
+	return out
+}
+
+// withWorkLocation adds the branch and the workdir of a finished execution to
+// its output value, so the node downstream (an integration that opens a pull
+// request) knows what to push and from where.
+func withWorkLocation(value json.RawMessage, contextManifest json.RawMessage) json.RawMessage {
+	var info struct {
+		Branch  string `json:"branch"`
+		Workdir string `json:"workdir"`
+	}
+	if len(contextManifest) == 0 || json.Unmarshal(contextManifest, &info) != nil {
+		return value
+	}
+	if info.Branch == "" && info.Workdir == "" {
+		return value
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(value, &fields); err != nil || fields == nil {
+		fields = map[string]json.RawMessage{"text": value}
+	}
+	if info.Branch != "" {
+		fields["branch"] = rawJSON(info.Branch)
+	}
+	if info.Workdir != "" {
+		fields["workdir"] = rawJSON(info.Workdir)
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return value
+	}
+	return out
+}
+
+// workLocationFromInputs finds the branch and the workdir an upstream
+// execution reported on its output port.
+func workLocationFromInputs(inputs map[string]Receipt) (branch, workdir string) {
+	for _, receipt := range inputs {
+		if receipt.State != ReceiptDelivered || len(receipt.Value) == 0 {
+			continue
+		}
+		var fields struct {
+			Branch  string `json:"branch"`
+			Workdir string `json:"workdir"`
+		}
+		if json.Unmarshal(receipt.Value, &fields) != nil {
+			continue
+		}
+		if fields.Branch != "" {
+			branch = fields.Branch
+		}
+		if fields.Workdir != "" {
+			workdir = fields.Workdir
+		}
+	}
+	return branch, workdir
 }
 
 // fingerprint is a short, stable identifier of a piece of text.

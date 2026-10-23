@@ -110,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 	s.registerWorkflowRunRoutes(mux)
 	s.registerCheckpointRoutes(mux)
 	s.registerSkillRoutes(mux)
+	s.registerIntegrationRoutes(mux)
+	s.registerQueueRoutes(mux)
 
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -175,7 +177,6 @@ func (s *Server) Handler() http.Handler {
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePinItem)))
 	mux.Handle("POST /api/items/{id}/unpin",
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleUnpinItem)))
-	mux.Handle("GET /api/queue", s.authenticated(s.handleQueue))
 
 	mux.Handle("GET /api/board", s.authenticated(s.handleBoard))
 

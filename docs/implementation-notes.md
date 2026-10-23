@@ -12,7 +12,7 @@ current edge of it so a later session does not have to rediscover it.
 | M1 — work structure, queue overrides, base score, invitations | done | done |
 | M2 — first agent | done | done |
 | M3 — graph engine and checkpoints | done | done |
-| M4 — GitHub, memory, LLM ranking, backoff | not started | — |
+| M4 — GitHub, memory, LLM ranking, backoff | in progress | in progress |
 
 ## Dev harness
 

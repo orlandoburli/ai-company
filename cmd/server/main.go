@@ -24,6 +24,8 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/agent/adapters"
 	"github.com/orlandoburli/ai-company/internal/api"
+	"github.com/orlandoburli/ai-company/internal/failure"
+	"github.com/orlandoburli/ai-company/internal/integration"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/skill"
@@ -109,6 +111,18 @@ func run() error {
 	// set from the persisted state and dispatches the ready nodes. It shares
 	// the process with the API and the agent worker, like everything else in
 	// the MVP.
+	// The platform connectors: the git operations run as the server (the agent
+	// never pushes), and the GitHub client is built per repository from the
+	// token the keychain holds — the token never reaches a URL, a log line or
+	// the database.
+	integrations := &workflow.Services{
+		Git:    integration.NewGit(),
+		Tokens: integration.Credentials{},
+		GitHubFactory: func(token, owner, repo string) workflow.GitHubService {
+			return integration.NewGitHub(http.DefaultClient, "https://api.github.com", token, owner, repo)
+		},
+	}
+
 	engine := workflow.NewEngine(workflow.EngineDeps{
 		Store:         workflowStore,
 		Agents:        agentStore,
@@ -117,6 +131,8 @@ func run() error {
 		Work:          work.NewStore(db),
 		Workspaces:    workspace.NewProvider(),
 		Notifications: notifyStore,
+		Failures:      failure.NewStore(db),
+		Integrations:  integrations,
 		Logger:        log,
 	})
 	engine.Start(ctx)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/failure"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/skill"
@@ -27,9 +28,15 @@ type EngineDeps struct {
 	Work          *work.Store
 	Workspaces    *workspace.Provider
 	Notifications *notification.Store
-	Logger        *slog.Logger
-	TickInterval  time.Duration
-	Lease         time.Duration
+	// Failures carries the per-item retry state: the backoff curve and the
+	// exhausted marker.
+	Failures *failure.Store
+	// Integrations carries the platform connectors (GitHub, git). Nil means
+	// integration nodes fail with a capability failure instead of pretending.
+	Integrations *Services
+	Logger       *slog.Logger
+	TickInterval time.Duration
+	Lease        time.Duration
 }
 
 // Engine is a stateless, replay-driven workflow scheduler.
@@ -41,6 +48,8 @@ type Engine struct {
 	work          *work.Store
 	workspaces    *workspace.Provider
 	notifications *notification.Store
+	failures      *failure.Store
+	integrations  *Services
 	logger        *slog.Logger
 	tickInterval  time.Duration
 	lease         time.Duration
@@ -59,7 +68,7 @@ func NewEngine(deps EngineDeps) *Engine {
 	if deps.Lease <= 0 {
 		deps.Lease = 2 * time.Minute
 	}
-	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work,
+	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work, integrations: deps.Integrations, failures: deps.Failures,
 		workspaces: deps.Workspaces, notifications: deps.Notifications, logger: logger,
 		tickInterval: deps.TickInterval, lease: deps.Lease}
 }
@@ -277,8 +286,48 @@ func (e *Engine) tickRun(ctx context.Context, sc tenancy.Scope, runID string) er
 	}
 	if updated.State == RunFailed {
 		e.notifyRunFailure(ctx, sc, updated)
+		e.recordItemFailure(ctx, sc, updated, string(plan.RunFailureKind), plan.RunError)
+	}
+	if updated.State == RunCompleted {
+		e.clearItemFailure(ctx, sc, updated)
 	}
 	return nil
+}
+
+// recordItemFailure puts the run's item into backoff after a failed run.
+//
+// The item is not punished for a broken workflow: the failure counter lives
+// on the (item, workflow) pair, the curve is the one configured for the
+// tenant, and a pause never touches this state — a pause is not a failure.
+func (e *Engine) recordItemFailure(ctx context.Context, sc tenancy.Scope, run Run, kind, message string) {
+	if e.failures == nil || run.ItemID == "" {
+		return
+	}
+	curve := failure.CurveExponential
+	params := failure.DefaultParams(curve)
+	if _, err := e.failures.Record(ctx, sc, failure.Record{
+		ItemID:     run.ItemID,
+		WorkflowID: run.TemplateID,
+		Curve:      curve,
+		Params:     params,
+		Version:    failure.Version("bo-exp-1"),
+		Kind:       kind,
+		ErrorMD:    message,
+		FailedAt:   time.Now(),
+	}); err != nil {
+		e.logger.Warn("record item failure", "run", run.ID, "item", run.ItemID, "error", err)
+	}
+}
+
+// clearItemFailure resets the counter after a successful run: the next failure
+// starts from the first step of the curve again.
+func (e *Engine) clearItemFailure(ctx context.Context, sc tenancy.Scope, run Run) {
+	if e.failures == nil || run.ItemID == "" {
+		return
+	}
+	if err := e.failures.Succeed(ctx, sc, run.ItemID, run.TemplateID); err != nil {
+		e.logger.Warn("clear item failure", "run", run.ID, "item", run.ItemID, "error", err)
+	}
 }
 
 func (e *Engine) notifyRunFailure(ctx context.Context, sc tenancy.Scope, run Run) {
