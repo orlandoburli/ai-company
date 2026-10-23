@@ -17,12 +17,135 @@ const KIND_META: Record<string, { title: string; caption: string; input: string[
 };
 const PORT_ROW = 24;
 const CARD_W = 252;
+const NODE_H = 118;
+const GAP_X = 120;
+const GAP_Y = 48;
 const BASE_X = 3200;
 const BASE_Y = 2500;
 const OUTPUT_TYPES = ["string", "number", "integer", "boolean", "object", "array"] as const;
 const INTEGRATIONS = ["github.open_pr", "github.wait_ci", "github.comment"];
 const ERROR_POLICIES = ["stop_workflow", "continue_regular_output", "continue_error_output"];
 const WORKSPACES = ["scratch", "worktree", "dir"];
+
+/** Lay nodes out by their incoming graph edges without changing placed nodes. */
+export function layoutGraph(graph: WorkflowGraph, ignorePositions = false): Record<string, { x: number; y: number }> {
+  const nodes = graph.nodes;
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const predecessors = nodes.map(() => new Set<number>());
+  const connected = new Set<number>();
+  for (const edge of graph.edges) {
+    const from = indexById.get(edge.from.node);
+    const to = indexById.get(edge.to.node);
+    if (from === undefined || to === undefined) continue;
+    predecessors[to].add(from);
+    connected.add(from);
+    connected.add(to);
+  }
+  const incoming = predecessors.map((set) => [...set]);
+
+  // Break cycles at the latest node in each discovered cycle. It becomes the
+  // start of that loop; its incoming loop edges no longer hold up ranking.
+  for (;;) {
+    const state = nodes.map(() => 0);
+    const pathIndex = nodes.map(() => -1);
+    let cycle: number[] | null = null;
+    for (let start = 0; start < nodes.length && !cycle; start += 1) {
+      if (state[start]) continue;
+      const stack = [start];
+      const nextPredecessor = [0];
+      state[start] = 1;
+      pathIndex[start] = 0;
+      while (stack.length && !cycle) {
+        const current = stack[stack.length - 1];
+        const next = nextPredecessor[nextPredecessor.length - 1];
+        if (next >= incoming[current].length) {
+          state[current] = 2;
+          pathIndex[current] = -1;
+          stack.pop();
+          nextPredecessor.pop();
+          continue;
+        }
+        const predecessor = incoming[current][next];
+        nextPredecessor[nextPredecessor.length - 1] += 1;
+        if (state[predecessor] === 0) {
+          state[predecessor] = 1;
+          pathIndex[predecessor] = stack.length;
+          stack.push(predecessor);
+          nextPredecessor.push(0);
+        } else if (state[predecessor] === 1) {
+          cycle = stack.slice(pathIndex[predecessor]);
+        }
+      }
+    }
+    if (!cycle) break;
+    const cycleNodes = new Set(cycle);
+    const breakAt = cycle.reduce((latest, index) => Math.max(latest, index), -1);
+    incoming[breakAt] = incoming[breakAt].filter((predecessor) => !cycleNodes.has(predecessor));
+  }
+
+  const outgoing = nodes.map(() => [] as number[]);
+  const remainingIncoming = incoming.map((list) => list.length);
+  incoming.forEach((list, nodeIndex) => list.forEach((predecessor) => outgoing[predecessor].push(nodeIndex)));
+  const ranks = nodes.map(() => 0);
+  const ready = nodes.map((_, index) => index).filter((index) => remainingIncoming[index] === 0);
+  for (let cursor = 0; cursor < ready.length; cursor += 1) {
+    const predecessor = ready[cursor];
+    for (const next of outgoing[predecessor]) {
+      ranks[next] = Math.max(ranks[next], ranks[predecessor] + 1);
+      remainingIncoming[next] -= 1;
+      if (remainingIncoming[next] === 0) ready.push(next);
+    }
+  }
+  const connectedMaxRank = nodes.reduce((rank, _node, index) => connected.has(index) ? Math.max(rank, ranks[index]) : rank, -1);
+  let isolatedOffset = 0;
+  nodes.forEach((_node, index) => {
+    if (!connected.has(index)) ranks[index] = connectedMaxRank + 1 + isolatedOffset++;
+  });
+
+  const rankCounts = new Map<number, number>();
+  ranks.forEach((rank) => rankCounts.set(rank, (rankCounts.get(rank) ?? 0) + 1));
+  const rankOffsets = new Map<number, number>();
+  const stepY = NODE_H + GAP_Y;
+  const arranged = nodes.map((_node, index) => {
+    const rank = ranks[index];
+    const ordinal = rankOffsets.get(rank) ?? 0;
+    rankOffsets.set(rank, ordinal + 1);
+    const count = rankCounts.get(rank) ?? 1;
+    return { x: rank * (CARD_W + GAP_X), y: (ordinal - (count - 1) / 2) * stepY };
+  });
+
+  const positions: Record<string, { x: number; y: number }> = {};
+  const occupied = new Set<string>();
+  const movable: number[] = [];
+  const pointKey = (point: { x: number; y: number }) => `${point.x},${point.y}`;
+  const usable = (position: WorkflowNode["position"] | null | undefined): position is { x: number; y: number } => Boolean(position && Number.isFinite(position.x) && Number.isFinite(position.y));
+
+  // Reserve the first occurrence of each usable, non-origin user position.
+  // Later duplicates are the only explicit positions that may be corrected.
+  for (let index = 0; index < nodes.length; index += 1) {
+    const position = nodes[index].position as WorkflowNode["position"] | null | undefined;
+    if (ignorePositions || !usable(position) || (position.x === 0 && position.y === 0)) { movable.push(index); continue; }
+    const key = pointKey(position);
+    if (occupied.has(key)) movable.push(index);
+    else occupied.add(key);
+  }
+
+  for (const index of movable) {
+    const original = nodes[index].position as WorkflowNode["position"] | null | undefined;
+    const originalKey = usable(original) ? pointKey(original) : "";
+    const isDuplicate = !ignorePositions && usable(original) && occupied.has(originalKey) && !(original.x === 0 && original.y === 0);
+    let point = isDuplicate ? { ...original } : arranged[index];
+    while ((point.x === 0 && point.y === 0) || occupied.has(pointKey(point))) point = { x: point.x, y: point.y + stepY };
+    occupied.add(pointKey(point));
+    positions[nodes[index].id] = point;
+  }
+  return positions;
+}
+
+function applyLayout(graph: WorkflowGraph, positions: Record<string, { x: number; y: number }>): WorkflowGraph {
+  if (!Object.keys(positions).length) return graph;
+  return { ...graph, nodes: graph.nodes.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node) };
+}
 
 function asConfig(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -154,18 +277,22 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const [runItem, setRunItem] = useState("");
   const [runResult, setRunResult] = useState("");
   const [runVariables, setRunVariables] = useState<[string, string][]>([]);
+  const [fitVersion, setFitVersion] = useState(0);
   const dirty = Boolean(saved && (JSON.stringify({ ...meta, graph }) !== JSON.stringify(saved)));
   const published = Boolean(template && isPublished(template));
   const editable = Boolean(manager && !published);
   const agentMap = useMemo(() => new Map((agentsQ.data?.agents ?? []).map((agent) => [agent.id, agent])), [agentsQ.data]);
+  const renderedGraph = useMemo(() => applyLayout(graph, layoutGraph(graph)), [graph]);
 
   useEffect(() => {
     if (!query.data?.template) return;
     const incoming = query.data.template;
     const nextMeta = { name: incoming.name ?? "", applies_to: incoming.applies_to ?? "", max_concurrency: incoming.max_concurrency ?? 4 };
     const nextGraph = incoming.graph ?? { schema_version: 1, nodes: [], edges: [] };
-    setTemplate(incoming); setMeta(nextMeta); setGraph(nextGraph);
-    setSaved({ ...nextMeta, graph: nextGraph });
+    const laidOutGraph = applyLayout(nextGraph, layoutGraph(nextGraph));
+    setTemplate(incoming); setMeta(nextMeta); setGraph(laidOutGraph);
+    setSaved({ ...nextMeta, graph: isPublished(incoming) ? laidOutGraph : nextGraph });
+    setFitVersion((version) => version + 1);
     setSelection(null);
   }, [query.data]);
 
@@ -261,6 +388,10 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     if (problem.node_id) { setSelection({ type: "node", id: problem.node_id }); window.dispatchEvent(new CustomEvent("workflow-focus", { detail: problem.node_id })); }
     if (problem.edge_id) { const edge = graph.edges.find((candidate) => candidate.id === problem.edge_id); setSelection({ type: "edge", id: problem.edge_id }); if (edge) window.dispatchEvent(new CustomEvent("workflow-focus", { detail: edge.to.node })); }
   }
+  function arrangeGraph() {
+    setGraph((current) => applyLayout(current, layoutGraph(current, true)));
+    setFitVersion((version) => version + 1);
+  }
 
   if (query.loading && !query.data) return <div className="run-stack"><Skeleton h={30} w="40%" /><Skeleton h={500} /></div>;
   if (query.error && !query.data) return <ErrorBlock title="Workflow could not be opened" message={errorText(query.error)} retry={() => void query.reload()} />;
@@ -271,7 +402,7 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
 
   return <div className="workflow-editor-page">
     <header className="workflow-editor-head">
-      <div className="workflow-editor-title"><Link href="/workflows" className="tiny muted">← Workflows</Link><div className="workflow-title-line"><span className="workflow-mark">↗</span><div><div className="workflow-eyebrow">WORKFLOW STUDIO <span>／</span> GRAPH EDITOR</div><h1>{meta.name || "Untitled workflow"}</h1></div><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? `Published · v${template.version ?? 1}` : "Draft"}</span>{dirty && editable ? <span className="workflow-unsaved"><i />Unsaved</span> : null}</div>
+      <div className="workflow-editor-title"><Link href="/workflows" className="tiny muted">← Workflows</Link><div className="workflow-title-line"><span className="workflow-mark">↗</span><div><div className="workflow-eyebrow">WORKFLOW STUDIO <span>／</span> GRAPH EDITOR</div><h1>{meta.name || "Untitled workflow"}</h1></div><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? `Published · v${template.version ?? 1}` : "Draft"}</span>{dirty && !published ? <span className="workflow-unsaved"><i />Unsaved</span> : null}</div>
         <p>Connect named ports to shape how work moves. Canvas position never changes execution order.</p>
       </div>
       <div className="workflow-header-actions">
@@ -302,8 +433,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
       </aside>
 
       <main className="workflow-canvas-column">
-      <div className="workflow-canvas-toolbar"><div><span className="workflow-live-dot" />Graph canvas<span className="tiny muted">· {editable ? "drag nodes · drag ports to connect" : "read-only view"}</span></div><div className="workflow-zoom-tools"><button className="btn btn--sm" aria-label="Zoom out" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: -0.1 }))}>−</button><button className="btn btn--sm" aria-label="Zoom in" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: 0.1 }))}>＋</button><button className="btn btn--sm" onClick={() => window.dispatchEvent(new Event("workflow-fit"))}>Fit</button></div></div>
-        <WorkflowCanvas graph={graph} agents={agentMap} editable={editable} selection={selection} problems={problems} onSelect={setSelection} onPosition={(id, position) => updateNode(id, (node) => ({ ...node, position }))} onAddEdge={(edge) => { setGraph((current) => ({ ...current, edges: [...current.edges, edge] })); setSelection({ type: "edge", id: edge.id }); }} onMessage={(text) => push("error", text)} onAddNode={addNode} />
+      <div className="workflow-canvas-toolbar"><div><span className="workflow-live-dot" />Graph canvas<span className="tiny muted">· {editable ? "drag nodes · drag ports to connect" : "read-only view"}</span></div><div className="workflow-zoom-tools"><button className="btn btn--sm" aria-label="Zoom out" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: -0.1 }))}>−</button><button className="btn btn--sm" aria-label="Zoom in" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: 0.1 }))}>＋</button><button className="btn btn--sm" disabled={published} title={published ? "Published versions are frozen." : "Lay the graph out in reading order"} onClick={arrangeGraph}>Arrange</button><button className="btn btn--sm" onClick={() => window.dispatchEvent(new Event("workflow-fit"))}>Fit</button></div></div>
+        <WorkflowCanvas graph={renderedGraph} fitVersion={fitVersion} agents={agentMap} editable={editable} selection={selection} problems={problems} onSelect={setSelection} onPosition={(id, position) => updateNode(id, (node) => ({ ...node, position }))} onAddEdge={(edge) => { setGraph((current) => ({ ...current, edges: [...current.edges, edge] })); setSelection({ type: "edge", id: edge.id }); }} onMessage={(text) => push("error", text)} onAddNode={addNode} />
         <section className="workflow-validation">
           <div className="workflow-validation-head"><div><span className="workflow-panel-index">02</span><strong>Validation</strong></div><span className={`workflow-validation-state workflow-validation-state--${validation}`}>{validation === "loading" ? "Checking…" : validation === "offline" ? "Unavailable" : problems.length ? `${problems.length} issue${problems.length === 1 ? "" : "s"}` : "Ready"}</span></div>
           {validation === "offline" ? <p className="workflow-validation-empty workflow-validation-error">{validationMessage}</p> : validation === "loading" ? <p className="workflow-validation-empty">Checking the graph with the server…</p> : problems.length ? <ul className="workflow-problem-list">{problems.map((problem, index) => <li key={`${problem.code}-${problem.node_id ?? problem.edge_id ?? index}`}><button type="button" onClick={() => focusProblem(problem)}><span className="workflow-problem-code">{problem.code}</span><span>{problem.message}</span><span className="workflow-problem-target">{problem.node_id ? `node ${problem.node_id.slice(0, 8)}` : problem.edge_id ? `edge ${problem.edge_id.slice(0, 8)}` : "graph"} ↗</span></button></li>)}</ul> : <p className="workflow-validation-empty workflow-valid">✓ The graph is valid</p>}
@@ -331,8 +462,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   </div>;
 }
 
-function WorkflowCanvas({ graph, agents, editable, selection, problems, onSelect, onPosition, onAddEdge, onMessage, onAddNode }: {
-  graph: WorkflowGraph; agents: Map<string, Agent>; editable: boolean; selection: Selection; problems: WorkflowProblem[];
+function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, problems, onSelect, onPosition, onAddEdge, onMessage, onAddNode }: {
+  graph: WorkflowGraph; fitVersion: number; agents: Map<string, Agent>; editable: boolean; selection: Selection; problems: WorkflowProblem[];
   onSelect: (selection: Selection) => void; onPosition: (id: string, position: { x: number; y: number }) => void;
   onAddEdge: (edge: WorkflowEdge) => void; onMessage: (message: string) => void; onAddNode: (kind: string, position: { x: number; y: number }) => void;
 }) {
@@ -341,6 +472,7 @@ function WorkflowCanvas({ graph, agents, editable, selection, problems, onSelect
   const [drag, setDrag] = useState<PortDrag | null>(null);
   const dragRef = useRef<PortDrag | null>(null);
   const [dropMessage, setDropMessage] = useState("");
+  const fitRef = useRef<() => void>(() => {});
   const problemNodes = new Set(problems.map((problem) => problem.node_id).filter(Boolean));
   const problemEdges = new Set(problems.map((problem) => problem.edge_id).filter(Boolean));
   const setDragBoth = (next: PortDrag | null) => { dragRef.current = next; setDrag(next); };
@@ -359,7 +491,9 @@ function WorkflowCanvas({ graph, agents, editable, selection, problems, onSelect
     const x = rect.width / 2 - ((left + right) / 2) * scale; const y = rect.height / 2 - ((top + bottom) / 2) * scale;
     setView({ x, y, scale });
   }, [graph.nodes]);
+  fitRef.current = fit;
   useEffect(() => { if (graph.nodes.length) fit(); }, [graph.nodes.length]);
+  useEffect(() => { if (fitVersion) fitRef.current(); }, [fitVersion]);
   useEffect(() => {
     const zoom = (event: Event) => { const delta = (event as CustomEvent<number>).detail; setView((current) => ({ ...current, scale: Math.max(0.35, Math.min(1.65, current.scale + delta)) })); };
     const onFit = () => fit();

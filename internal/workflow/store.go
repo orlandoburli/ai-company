@@ -23,6 +23,7 @@ var (
 	ErrClaimLost         = errors.New("workflow: claim lost")
 	ErrInvalidTransition = errors.New("workflow: invalid transition")
 	ErrDuplicateStep     = errors.New("workflow: duplicate step")
+	ErrInvalidArtifact   = errors.New("workflow: invalid artifact")
 )
 
 type Store struct{ db *sql.DB }
@@ -1332,6 +1333,39 @@ func (s *Store) ListArtifacts(ctx context.Context, sc tenancy.Scope, runID strin
 		return rows.Err()
 	})
 	return out, err
+}
+
+// UpsertRunArtifact records an artifact of a run.
+//
+// The artifacts of a worktree — the branch, the commit, the diff stat — are
+// facts about the run, not about one step: the row is written once and a
+// later execution updates it instead of adding a second one. The step and the
+// item of an existing row are kept unless the caller names new ones.
+func (s *Store) UpsertRunArtifact(ctx context.Context, sc tenancy.Scope, in NewArtifact) (Artifact, error) {
+	if len(in.Meta) == 0 {
+		in.Meta = json.RawMessage(`{}`)
+	}
+	if in.RunID == "" {
+		return Artifact{}, ErrInvalidArtifact
+	}
+	var out Artifact
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var id string
+		e := tx.QueryRowContext(ctx, `SELECT id FROM artifacts WHERE run_id=$1 AND kind=$2 ORDER BY created_at,id LIMIT 1 FOR UPDATE`, in.RunID, in.Kind).Scan(&id)
+		if errors.Is(e, sql.ErrNoRows) {
+			out, e = scanArtifact(tx.QueryRowContext(ctx, `INSERT INTO artifacts (id,tenant_id,run_id,step_run_id,item_id,kind,uri,meta_json) VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7,$8::jsonb) RETURNING `+artifactCols, newID(), sc.TenantID, in.RunID, in.StepRunID, in.ItemID, in.Kind, in.URI, in.Meta))
+			return e
+		}
+		if e != nil {
+			return e
+		}
+		out, e = scanArtifact(tx.QueryRowContext(ctx, `UPDATE artifacts SET uri=$2, meta_json=$3::jsonb, step_run_id=coalesce(nullif($4,''),step_run_id), item_id=coalesce(nullif($5,''),item_id) WHERE id=$1 RETURNING `+artifactCols, id, in.URI, in.Meta, in.StepRunID, in.ItemID))
+		return e
+	})
+	if err != nil {
+		return Artifact{}, mapError(err)
+	}
+	return out, nil
 }
 
 func raw(v json.RawMessage) []byte {

@@ -821,8 +821,8 @@ function tailText(entries: LogEntry[] | undefined): string | null {
 }
 
 /**
- * Markdown-lite renderer: paragraphs, fenced code blocks, inline code, bold,
- * italic and bare links. Builds React nodes only — raw HTML is never
+ * Markdown-lite renderer: headings, paragraphs, lists, fenced code blocks,
+ * inline code, bold, italic and bare links. Builds React nodes only — raw HTML is never
  * interpreted, so agent output stays safe without a markdown dependency.
  */
 export function renderMarkdown(md: string): ReactNode {
@@ -830,6 +830,7 @@ export function renderMarkdown(md: string): ReactNode {
   const out: ReactNode[] = [];
   let para: string[] = [];
   let code: string[] | null = null;
+  let list: { ordered: boolean; items: string[] } | null = null;
 
   const flushPara = () => {
     if (para.length === 0) return;
@@ -840,11 +841,22 @@ export function renderMarkdown(md: string): ReactNode {
     );
     para = [];
   };
+  const flushList = () => {
+    if (!list) return;
+    const Tag = list.ordered ? "ol" : "ul";
+    out.push(
+      <Tag className="msg__list" key={`l${out.length}`}>
+        {list.items.map((item, index) => <li key={index}>{inline(item)}</li>)}
+      </Tag>,
+    );
+    list = null;
+  };
 
   for (const line of lines) {
     if (line.trimStart().startsWith("```")) {
       if (code === null) {
         flushPara();
+        flushList();
         code = [];
       } else {
         out.push(
@@ -862,11 +874,32 @@ export function renderMarkdown(md: string): ReactNode {
     }
     if (line.trim() === "") {
       flushPara();
+      flushList();
       continue;
     }
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.trim());
+    if (heading) {
+      flushPara();
+      flushList();
+      const level = heading[1].length;
+      const Tag = `h${level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+      out.push(<Tag className="msg__heading" key={`h${out.length}`}>{inline(heading[2])}</Tag>);
+      continue;
+    }
+    const listItem = /^\s*(?:([-*+])|(\d+)\.)\s+(.+)$/.exec(line);
+    if (listItem) {
+      flushPara();
+      const ordered = Boolean(listItem[2]);
+      if (list && list.ordered !== ordered) flushList();
+      if (!list) list = { ordered, items: [] };
+      list.items.push(listItem[3]);
+      continue;
+    }
+    flushList();
     para.push(line);
   }
   flushPara();
+  flushList();
   if (code !== null && code.length > 0) {
     out.push(
       <pre className="msg-code mono" key={`c${out.length}`}>

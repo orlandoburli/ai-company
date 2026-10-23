@@ -1094,9 +1094,17 @@ func (e *Engine) dispatchCheckpoint(ctx context.Context, sc tenancy.Scope, run R
 	var fields json.RawMessage = cfg["fields"]
 	question := stringConfig(cfg, "question")
 	if question == "" {
-		question = node.Name
+		question = DefaultCheckpointQuestion(node.Name)
 	}
-	cp, err := e.store.CreateCheckpoint(ctx, sc, NewCheckpoint{RunID: run.ID, StepRunID: step.ID, NodeID: node.ID, Lap: lap, SummaryMD: question, FieldsSpec: fields})
+	// The card a human decides on carries the work so far, not the node's
+	// name: the brief says what was done, what the agent says and what
+	// changed.
+	brief, _, err := e.checkpointBrief(ctx, sc, run, t, node, question)
+	if err != nil {
+		e.logger.Warn("build checkpoint brief", "run", run.ID, "node", node.ID, "error", err)
+		brief = question
+	}
+	cp, err := e.store.CreateCheckpoint(ctx, sc, NewCheckpoint{RunID: run.ID, StepRunID: step.ID, NodeID: node.ID, Lap: lap, SummaryMD: brief, FieldsSpec: fields})
 	if err != nil {
 		return err
 	}
@@ -1105,8 +1113,144 @@ func (e *Engine) dispatchCheckpoint(ctx context.Context, sc tenancy.Scope, run R
 	if _, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &waiting, Result: &result}); err != nil {
 		return err
 	}
-	e.notifyCheckpoint(ctx, sc, run, cp)
+	e.notifyCheckpoint(ctx, sc, run, cp, question)
 	return nil
+}
+
+// checkpointBrief assembles the brief a human decides on: the question, what
+// happened so far, the agent's own words and the change.
+//
+// The artifacts the brief collected are facts about the run's worktree, so
+// they are recorded once per run: a later checkpoint updates the row instead
+// of adding a second one.
+func (e *Engine) checkpointBrief(ctx context.Context, sc tenancy.Scope, run Run, t *Template, node Node, question string) (string, []ArtifactSummary, error) {
+	var item work.Item
+	if run.ItemID != "" && e.work != nil {
+		loaded, err := e.work.GetItem(ctx, sc, run.ItemID)
+		if err != nil {
+			// A deleted item must not stop a checkpoint from being decided.
+			e.logger.Warn("read item for checkpoint brief", "run", run.ID, "item", run.ItemID, "error", err)
+		} else {
+			item = loaded
+		}
+	}
+	rows, err := e.store.ListStepRuns(ctx, sc, run.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	artifacts, err := e.store.ListArtifacts(ctx, sc, run.ID)
+	if err != nil {
+		e.logger.Warn("read artifacts for checkpoint brief", "run", run.ID, "error", err)
+	}
+	workdir, branch := briefWorktree(rows)
+	brief, evidence, err := BuildCheckpointBrief(BriefInput{
+		ItemNumber: item.Number,
+		ItemTitle:  item.Title,
+		Question:   question,
+		Steps:      briefSteps(t, rows, node.ID),
+		Artifacts:  ArtifactSummaries(artifacts),
+		Workdir:    workdir,
+		Branch:     branch,
+		BaseBranch: defaultBaseBranch,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	e.recordCheckpointArtifacts(ctx, sc, run, item, evidence)
+	return brief, evidence, nil
+}
+
+// recordCheckpointArtifacts records the worktree facts of a run's artifacts.
+//
+// The branch, the commit and the diff stat describe the worktree, not one
+// step: they are written once per run and updated afterwards.
+func (e *Engine) recordCheckpointArtifacts(ctx context.Context, sc tenancy.Scope, run Run, item work.Item, artifacts []ArtifactSummary) {
+	for _, artifact := range artifacts {
+		switch artifact.Kind {
+		case "branch", "commit", "diff_summary":
+		default:
+			continue
+		}
+		if _, err := e.store.UpsertRunArtifact(ctx, sc, NewArtifact{RunID: run.ID, ItemID: item.ID, Kind: artifact.Kind, URI: artifact.URI, Meta: artifact.Meta}); err != nil {
+			e.logger.Warn("record checkpoint artifact", "run", run.ID, "kind", artifact.Kind, "error", err)
+		}
+	}
+}
+
+// briefSteps lists the run's steps that already produced a result, in the
+// order of the graph.
+//
+// The node the checkpoint asks about is left out: the card asks the question,
+// it does not report the question as work.
+func briefSteps(t *Template, rows []StepRun, nodeID string) []BriefStep {
+	out := []BriefStep{}
+	seen := map[string]bool{}
+	for _, node := range t.Nodes {
+		seen[node.ID] = true
+		if node.ID == nodeID {
+			continue
+		}
+		step, ok := latestStepAny(rows, node.ID)
+		if !ok || len(step.Result) == 0 {
+			continue
+		}
+		out = append(out, briefStep(step))
+	}
+	// A step whose node is not in the graph — the template changed under a
+	// running execution — keeps its creation order.
+	for _, row := range rows {
+		if seen[row.NodeID] || row.NodeID == nodeID || len(row.Result) == 0 {
+			continue
+		}
+		out = append(out, briefStep(row))
+	}
+	return out
+}
+
+// briefStep turns a step run into the line the brief shows.
+//
+// Whether the line is work or a question is decided by the brief itself.
+func briefStep(step StepRun) BriefStep {
+	return BriefStep{Name: step.Name, Kind: step.Kind, State: string(step.State), Summary: stepSummary(step), Output: stepOutput(step)}
+}
+
+// latestStepAny finds the latest execution of a node, whatever its iteration
+// path is.
+func latestStepAny(rows []StepRun, nodeID string) (StepRun, bool) {
+	var found StepRun
+	for _, step := range rows {
+		if step.NodeID != nodeID || step.State == StepSuperseded {
+			continue
+		}
+		if found.ID == "" || step.RunIndex > found.RunIndex || (step.RunIndex == found.RunIndex && step.CreatedAt.After(found.CreatedAt)) {
+			found = step
+		}
+	}
+	return found, found.ID != ""
+}
+
+// briefWorktree finds the worktree the run works in: the last step that has
+// one. The branch comes from the step's context manifest.
+func briefWorktree(rows []StepRun) (workdir, branch string) {
+	for _, step := range rows {
+		if step.Workdir == "" {
+			continue
+		}
+		workdir = step.Workdir
+		if name := stepBranch(step); name != "" {
+			branch = name
+		}
+	}
+	return workdir, branch
+}
+
+// stepOutput reads the agent's output out of a step's result.
+func stepOutput(step StepRun) string {
+	var result struct {
+		Output string `json:"output"`
+	}
+	_ = json.Unmarshal(step.Result, &result)
+	return strings.TrimSpace(result.Output)
 }
 
 func nextCheckpointLap(ctx context.Context, st *Store, sc tenancy.Scope, runID, nodeID string) (int, error) {
@@ -1117,18 +1261,26 @@ func nextCheckpointLap(ctx context.Context, st *Store, sc tenancy.Scope, runID, 
 	return lap, err
 }
 
-func (e *Engine) notifyCheckpoint(ctx context.Context, sc tenancy.Scope, run Run, cp Checkpoint) {
+// notifyCheckpoint tells the human that a decision is waiting.
+//
+// The body is the question, not the brief: a notification is one line, and the
+// brief is what the card shows when the human opens it.
+func (e *Engine) notifyCheckpoint(ctx context.Context, sc tenancy.Scope, run Run, cp Checkpoint, question string) {
 	if e.notifications == nil || run.StartedBy == "" {
 		return
+	}
+	body := question
+	if body == "" {
+		body = cp.SummaryMD
 	}
 	payload := rawJSON(map[string]string{"run_id": run.ID, "checkpoint_id": cp.ID})
 	title := "Workflow checkpoint needs review"
 	link := "/checkpoints/" + cp.ID
-	_, err := e.notifications.CreateMany(ctx, sc, notification.New{Kind: notification.KindCheckpointPending, TitleMD: title, BodyMD: cp.SummaryMD, Link: link, Payload: payload}, []string{run.StartedBy})
+	_, err := e.notifications.CreateMany(ctx, sc, notification.New{Kind: notification.KindCheckpointPending, TitleMD: title, BodyMD: body, Link: link, Payload: payload}, []string{run.StartedBy})
 	if err != nil {
 		e.logger.Warn("notify pending workflow checkpoint", "checkpoint_id", cp.ID, "error", err)
 	}
-	e.notifyChannels(ctx, sc, "checkpoint_pending", run, title, cp.SummaryMD, link)
+	e.notifyChannels(ctx, sc, "checkpoint_pending", run, title, body, link)
 }
 
 // notifyChannels delivers the event to the out-of-band channels: the browser

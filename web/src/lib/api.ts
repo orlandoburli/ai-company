@@ -675,11 +675,15 @@ export interface StepRun {
   memory_manifest?: unknown[]; context_manifest?: unknown[]; claim_expires_at?: string | null;
   started_at?: string | null; finished_at?: string | null;
 }
-export interface CheckpointFieldSpec { key: string; type: "string" | "number" | "boolean" | "enum"; label: string; required?: boolean; options?: string[]; }
+export interface CheckpointFieldSpec { key: string; type: "string" | "text" | "number" | "boolean" | "enum"; label: string; required?: boolean; options?: string[]; }
 export type CheckpointDecision = "approve" | "approve_with_edits" | "reject" | "abort";
+export type CheckpointArtifactKind = "branch" | "commit" | "pr" | "diff_summary" | "file" | "report";
+export interface CheckpointArtifact { kind: CheckpointArtifactKind; uri?: string | null; meta?: Record<string, unknown> | string | null; }
+export interface CheckpointItemRef { id: string; number: number; title: string; }
 export interface Checkpoint {
   id: string; run_id: string; step_run_id: string; node_id: string; lap: number; state: string;
-  summary_md?: string; decision_md?: string | null; fields?: Record<string, unknown> | null;
+  summary_md: string; question?: string | null; artifacts: CheckpointArtifact[]; item: CheckpointItemRef | null;
+  decision_md?: string | null; fields?: Record<string, unknown> | null;
   fields_spec?: CheckpointFieldSpec[]; decided_by_kind?: string | null; decided_by?: string | null;
   decided_at?: string | null; remind_after?: string | null; created_at?: string;
 }

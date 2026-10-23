@@ -296,8 +296,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	// step (the decision endpoint takes the checkpoint id, not the step id).
 	checkpoints := []checkpointWire{}
 	if cps, err := s.workflows.ListRunCheckpoints(r.Context(), sc, run.ID); err == nil {
+		runEvidence := s.checkpointRunEvidenceOfRun(r.Context(), sc, run)
 		for _, cp := range cps {
-			checkpoints = append(checkpoints, checkpointResponse(cp))
+			checkpoints = append(checkpoints, checkpointResponse(cp, s.checkpointEvidenceFor(r.Context(), sc, cp, runEvidence)))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": runResponse(run), "steps": out, "checkpoints": checkpoints})
@@ -623,14 +624,16 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 			flush()
 			return
 		}
+		runs := map[string]checkpointRunEvidence{}
 		for _, cp := range checkpoints {
 			if cp.RunID != runID {
 				continue
 			}
-			b, _ := json.Marshal(checkpointResponse(cp))
+			evidence := s.checkpointEvidenceOf(r.Context(), sc, cp, runs)
+			b, _ := json.Marshal(checkpointResponse(cp, evidence))
 			key := string(b)
 			if seenCPs[cp.ID] != key {
-				s.writeSSE(w, "checkpoint", map[string]any{"checkpoint": checkpointResponse(cp)})
+				s.writeSSE(w, "checkpoint", map[string]any{"checkpoint": checkpointResponse(cp, evidence)})
 				seenCPs[cp.ID] = key
 			}
 		}
