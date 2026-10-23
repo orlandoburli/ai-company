@@ -103,8 +103,13 @@ func (e *IntegrationError) Error() string            { return e.Message }
 func (e *IntegrationError) FailureKind() FailureKind { return e.Kind }
 
 type integrationConfig struct {
-	Repo          string `json:"repo"`
-	Remote        string `json:"remote"`
+	Repo   string `json:"repo"`
+	Remote string `json:"remote"`
+	// SecretRef is the reference the integration authenticates with. The
+	// engine fills it with the run's identity — the credential of the runner
+	// the run's agent used — unless the node names one itself. It is a
+	// reference, never a secret: the secret is resolved at the moment the
+	// client is built.
 	SecretRef     string `json:"secret_ref"`
 	Base          string `json:"base"`
 	Head          string `json:"head"`

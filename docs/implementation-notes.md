@@ -584,11 +584,30 @@ that already exists alone, so re-running cannot break a live integration.
 **Five identities, one account.** The GitHub tokens are not interchangeable:
 each persona of the Apiary project pushes under its own account. That is
 the shape the AI Company's agent / runner split wants — an agent is a
-persona, a runner is a transport, and the credential belongs to the agent —
-but the wiring is not finished: a runner stores a `credential_ref` and
-**nothing resolves it yet** (the API adapter reads the key from an
-environment variable named by `key_env`). Giving each agent its own
-credential is the next piece of work, not a configuration.
+persona, a runner is a transport, and the credential belongs to the agent.
+
+**The wiring.** A runner's `credential_ref` is resolved **at execution
+time**: the worker loads the runner of the job, resolves the reference from
+the keychain, and hands the secret to the adapter — the API adapter prefers
+it over the environment variable named by `key_env`, and says plainly when
+neither exists. The secret is never persisted and never logged; only the
+reference is. A reference that does not resolve is a warning, not a
+failure: the step still runs.
+
+**The identity of a run's GitHub work** is the credential of the runner the
+run's agent used. The agent step records its runner's reference, and the
+integration (the step that opens the pull request) resolves in this order:
+the node's own `secret_ref`, then the run's most recent agent credential,
+then the tenant's registered reference. A reference that does not resolve
+falls through to the next.
+
+**What that costs in practice:** a persona must be able to *write* to the
+repository. Pointing the developer agent at the reviewer's account made the
+pull-request step fail with a 404 — not because the wiring was wrong, but
+because that account cannot see the private repository. The other three
+personas (staff, reviewer, QA) are separate accounts with no access to
+`orlandoburli/fazgiro`; giving them collaborator access is a GitHub
+administration task, not a configuration one.
 
 
 ## M5 decisions (Jira deferred, agent policy, usage, notifications)

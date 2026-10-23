@@ -9,8 +9,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 )
+
+// SecretResolver resolves a secret reference — "<service>/<account>" — to the
+// secret itself.
+//
+// The secret is returned to the caller only: it is never stored, never logged
+// and never returned by the API. The interface is declared here, in the
+// package that needs it, so that the agent runtime does not depend on the
+// integration package.
+type SecretResolver interface {
+	Resolve(context.Context, string) (string, error)
+}
 
 // Worker claims queued jobs from Postgres and runs them. The queue is the
 // database, not a channel: a crash leaves queued rows behind and a lease
@@ -22,6 +34,12 @@ type Worker struct {
 	adapters map[string]Adapter
 	log      *slog.Logger
 	workerID string
+
+	// secrets resolves a runner's credential reference at execution time; the
+	// runner store is where the reference comes from. Both are optional: a
+	// worker without them behaves exactly as before.
+	secrets SecretResolver
+	runners *runner.Store
 
 	workers int
 	lease   time.Duration
@@ -71,6 +89,33 @@ func WithWorkerLogger(l *slog.Logger) WorkerOption {
 	return func(w *Worker) {
 		if l != nil {
 			w.log = l
+		}
+	}
+}
+
+// WithSecretResolver sets the resolver the worker fetches a runner's
+// credential with.
+//
+// The secret is resolved at the moment the job runs, not when the job is
+// queued: the job row carries a reference, never a secret.
+func WithSecretResolver(r SecretResolver) WorkerOption {
+	return func(w *Worker) {
+		if r != nil {
+			w.secrets = r
+		}
+	}
+}
+
+// WithRunnerStore sets the runner registry the worker reads a job's runner
+// from.
+//
+// The registry is where the runner's credential reference lives. Without it
+// the worker cannot resolve a credential, and the adapter falls back to its
+// own environment variable.
+func WithRunnerStore(s *runner.Store) WorkerOption {
+	return func(w *Worker) {
+		if s != nil {
+			w.runners = s
 		}
 	}
 }
@@ -238,6 +283,9 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 	job.AgentRole = agentRow.Role
 	job.Config = config
 	job.Capabilities = agentRow.Capabilities
+	// The runner's credential is fetched here, at the moment the job runs:
+	// the job row carries a reference, never a secret.
+	w.resolveCredential(ctx, sc, &job)
 
 	jobCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
@@ -336,6 +384,40 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 		return
 	}
 	w.publishState(sc, job.ID)
+}
+
+// resolveCredential fills the job's credential from the runner the job was
+// queued with.
+//
+// The runner names a REFERENCE to a secret, never the secret: the secret is
+// fetched from the keychain at the moment the job runs, so it is never at
+// rest in the database and never travels with the job row.
+//
+// A reference that does not resolve is a warning, not a failure: the job
+// still runs, and the adapter falls back to its own environment variable.
+// The secret is never written to a log line — only the reference is.
+func (w *Worker) resolveCredential(ctx context.Context, sc tenancy.Scope, job *Job) {
+	if job.RunnerID == nil || *job.RunnerID == "" || w.runners == nil || w.secrets == nil {
+		return
+	}
+	r, err := w.runners.Get(ctx, sc, *job.RunnerID)
+	if err != nil {
+		w.log.Warn("read the job's runner", "job", job.ID, "runner_id", *job.RunnerID, "error", err)
+		return
+	}
+	ref := strings.TrimSpace(r.CredentialRef)
+	if ref == "" {
+		return
+	}
+	// The reference is recorded even when it does not resolve: the adapter
+	// names it when it has no credential at all.
+	job.CredentialRef = ref
+	secret, err := w.secrets.Resolve(ctx, ref)
+	if err != nil || strings.TrimSpace(secret) == "" {
+		w.log.Warn("the runner's credential did not resolve", "job", job.ID, "runner", r.Name, "credential_ref", ref)
+		return
+	}
+	job.Credential = secret
 }
 
 func (w *Worker) heartbeat(ctx context.Context, sc tenancy.Scope, jobID string, done <-chan struct{}) {

@@ -91,16 +91,18 @@ func (a *API) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 	if cfg.Model == "" {
 		return nil, invalid("model is required")
 	}
-	if cfg.KeyEnv == "" {
-		return nil, invalid("key_env is required")
+	// The provider key is the credential the worker resolved for this job —
+	// the runner's credential, fetched from the keychain at the moment the
+	// job ran. The environment variable is the fallback for a runner that
+	// names no credential (and for a legacy job).
+	key := strings.TrimSpace(job.Credential)
+	if key == "" && cfg.KeyEnv != "" {
+		key = strings.TrimSpace(os.Getenv(cfg.KeyEnv))
 	}
-	key := os.Getenv(cfg.KeyEnv)
 	if key == "" {
-		// Non-secret by construction: the name, never the value — keys are
+		// Non-secret by construction: the names, never the value — keys are
 		// never stored, logged or returned (m2-contract.md §Agents).
-		return nil, classify(agent.FailurePermanent,
-			fmt.Errorf("api agent %s: environment variable %s is not set (config.key_env)",
-				job.ID, cfg.KeyEnv))
+		return nil, classify(agent.FailurePermanent, credentialError(job, cfg))
 	}
 
 	base := strings.TrimSuffix(cfg.BaseURL, "/")
@@ -177,6 +179,26 @@ func (a *API) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 	sink.Emit(agent.Event{Stream: "engine", Level: "info", Kind: "usage", Data: usage})
 
 	return &agent.Result{Output: text, TokensIn: tin, TokensOut: tout}, nil
+}
+
+// credentialError says that no credential was found for this job.
+//
+// It names the two places a credential can come from — the runner's reference
+// and the environment variable — and never a secret value.
+func credentialError(job agent.Job, cfg agent.APIConfig) error {
+	switch {
+	case job.CredentialRef != "" && cfg.KeyEnv != "":
+		return fmt.Errorf("api agent %s: no credential found: the runner's credential reference %q did not resolve and the environment variable %s is not set (config.key_env)",
+			job.ID, job.CredentialRef, cfg.KeyEnv)
+	case job.CredentialRef != "":
+		return fmt.Errorf("api agent %s: no credential found: the runner's credential reference %q did not resolve and the runner's config names no key_env",
+			job.ID, job.CredentialRef)
+	case cfg.KeyEnv != "":
+		return fmt.Errorf("api agent %s: no credential found: the environment variable %s is not set (config.key_env)",
+			job.ID, cfg.KeyEnv)
+	default:
+		return fmt.Errorf("api agent %s: no credential found: the runner's config names no key_env", job.ID)
+	}
 }
 
 func buildPayload(cfg agent.APIConfig, prompt string) map[string]any {

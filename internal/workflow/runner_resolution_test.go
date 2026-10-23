@@ -490,9 +490,10 @@ func TestEngineDispatchCarriesTheRunnerSnapshot(t *testing.T) {
 	if err = json.Unmarshal(job.RunnerConfig, &cfg); err != nil || cfg["bin"] != "claude" {
 		t.Fatalf("the job's runner config = %s, want the runner's config", job.RunnerConfig)
 	}
-	// The prompt names the runner it runs on.
-	if !strings.Contains(job.Prompt, "You are running as the `claude` runner.") {
-		t.Fatalf("the prompt does not name the runner:\n%s", job.Prompt)
+	// The prompt does not name the runner: the persona is silent about its
+	// transport.
+	if strings.Contains(job.Prompt, "You are running as the") || strings.Contains(job.Prompt, "`claude`") {
+		t.Fatalf("the prompt names the runner:\n%s", job.Prompt)
 	}
 	// The step says which runner ran it.
 	var result map[string]any

@@ -161,9 +161,18 @@ type Job struct {
 	// They are empty for a LEGACY job — one queued before the agent/runner
 	// split. The worker falls back to the agent's own kind and config for
 	// those, so nothing that is already in flight breaks.
-	RunnerID       *string         `json:"runner_id"`
-	RunnerKind     string          `json:"runner_kind"`
-	RunnerConfig   json.RawMessage `json:"runner_config"`
+	RunnerID     *string         `json:"runner_id"`
+	RunnerKind   string          `json:"runner_kind"`
+	RunnerConfig json.RawMessage `json:"runner_config"`
+	// Credential is the secret resolved for this job: the runner's credential
+	// reference, resolved from the OS keychain at the moment the job runs. It
+	// is filled by the worker at execution time and is never written to the
+	// database — the job row carries the reference, never the secret.
+	Credential string `json:"-"`
+	// CredentialRef is the reference the credential was resolved from: a
+	// name, never a secret. The worker fills it so that a failure can say
+	// WHICH reference did not resolve.
+	CredentialRef  string          `json:"-"`
 	ThreadID       *string         `json:"thread_id"`
 	MessageID      *string         `json:"message_id"`
 	ItemID         *string         `json:"item_id"`

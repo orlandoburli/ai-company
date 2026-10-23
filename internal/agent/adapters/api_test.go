@@ -255,6 +255,81 @@ func TestAPIMissingKeyEnv(t *testing.T) {
 	}
 }
 
+// TestAPIPrefersTheResolvedCredential checks that the key the worker resolved
+// for the job wins over the environment variable.
+func TestAPIPrefersTheResolvedCredential(t *testing.T) {
+	srv := newAPIServer(t, http.StatusOK, `{"choices":[{"message":{"content":"hi"}}],"usage":{}}`)
+	t.Setenv("AIC_TEST_OPENAI_KEY", "sk-from-the-environment")
+
+	job := apiJob("a10", agent.APIConfig{
+		Provider: "openai", Model: "m", BaseURL: srv.URL + "/v1", KeyEnv: "AIC_TEST_OPENAI_KEY",
+	})
+	job.Credential = "sk-from-the-keychain"
+	job.CredentialRef = "ai-company/github:agent"
+	if _, err := NewAPI().Run(context.Background(), job, (&collector{}).sink()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, auth, _, _, _, _ := srv.round()
+	if auth != "Bearer sk-from-the-keychain" {
+		t.Fatalf("auth = %q, want the resolved credential", auth)
+	}
+
+	// A runner whose credential is the key needs no environment variable at
+	// all: the reference replaces the variable, it does not add to it.
+	bare := apiJob("a11", agent.APIConfig{Provider: "openai", Model: "m", BaseURL: srv.URL + "/v1"})
+	bare.Credential = "sk-from-the-keychain"
+	bare.CredentialRef = "ai-company/github:agent"
+	if _, err := NewAPI().Run(context.Background(), bare, (&collector{}).sink()); err != nil {
+		t.Fatalf("Run without key_env: %v", err)
+	}
+	_, auth, _, _, _, _ = srv.round()
+	if auth != "Bearer sk-from-the-keychain" {
+		t.Fatalf("auth = %q, want the resolved credential", auth)
+	}
+}
+
+// TestAPIFallsBackToTheKeyEnv checks that a job without a resolved credential
+// falls back to the environment variable the runner names.
+func TestAPIFallsBackToTheKeyEnv(t *testing.T) {
+	srv := newAPIServer(t, http.StatusOK, `{"choices":[{"message":{"content":"hi"}}],"usage":{}}`)
+	t.Setenv("AIC_TEST_OPENAI_KEY", "sk-from-the-environment")
+
+	job := apiJob("a12", agent.APIConfig{
+		Provider: "openai", Model: "m", BaseURL: srv.URL + "/v1", KeyEnv: "AIC_TEST_OPENAI_KEY",
+	})
+	if _, err := NewAPI().Run(context.Background(), job, (&collector{}).sink()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_, auth, _, _, _, _ := srv.round()
+	if auth != "Bearer sk-from-the-environment" {
+		t.Fatalf("auth = %q, want the environment's key", auth)
+	}
+}
+
+// TestAPINoCredentialNamesBothPossibilities checks that a job with no
+// credential at all says plainly that none was found, and names both places
+// one could have come from.
+func TestAPINoCredentialNamesBothPossibilities(t *testing.T) {
+	job := apiJob("a13", agent.APIConfig{
+		Provider: "openai", Model: "m", KeyEnv: "AIC_TEST_MISSING_KEY",
+	})
+	job.CredentialRef = "ai-company/github:agent"
+	_, err := NewAPI().Run(context.Background(), job, (&collector{}).sink())
+	if err == nil {
+		t.Fatal("a job without a credential must fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{"no credential", "ai-company/github:agent", "AIC_TEST_MISSING_KEY"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q must name %q", msg, want)
+		}
+	}
+	assertClassified(t, err)
+	if agent.FailureKind(err) != agent.FailurePermanent {
+		t.Errorf("no credential → agent.FailureKind = %q, want permanent", agent.FailureKind(err))
+	}
+}
+
 func TestAPIInvalidConfig(t *testing.T) {
 	a := NewAPI()
 	if _, err := a.Run(context.Background(), agent.Job{ID: "a6", Config: nil},

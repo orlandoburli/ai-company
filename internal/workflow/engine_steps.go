@@ -155,10 +155,17 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 		result["tokens_in"], result["tokens_out"], result["cost_usd"] = job.TokensIn, job.TokensOut, job.CostUSD
 		// The step says which runner ran it: the transport is part of the
 		// result, not only of the job.
-		if trace := readRunnerTrace(step); trace.Runner != "" {
+		trace := readRunnerTrace(step)
+		if trace.Runner != "" {
 			result["runner"] = trace.Runner
 			result["runner_attempt"] = trace.Attempt
 			result["runners_tried"] = trace.Tried
+		}
+		// The step says WHICH credential the runner ran under: the reference
+		// is a name, so it is safe to keep next to the result. It is what
+		// makes the run's GitHub work run under the agent's identity.
+		if trace.Credential != "" {
+			result["runner_credential"] = trace.Credential
 		}
 		var contextInfo struct {
 			WorkspaceNote string   `json:"workspace_note"`
@@ -472,9 +479,9 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 	promptTmpl = strings.ReplaceAll(promptTmpl, "{{item.description}}", item.DescriptionMD)
 	var task strings.Builder
 	task.WriteString(promptTmpl)
-	// The persona and the transport are separate now: the model is told which
-	// runner it is running on, so it knows what it is.
-	fmt.Fprintf(&task, "\n\nYou are running as the `%s` runner.", transport.Name)
+	// The persona is the persona: the task says WHAT to do, never WHICH
+	// transport carries it out. The runner is the platform's business, not
+	// the agent's.
 	if item.ID != "" {
 		fmt.Fprintf(&task, "\n\nWork item: %s\nStatus: %s\n\n%s", item.Title, item.Status, item.DescriptionMD)
 	}
@@ -545,8 +552,14 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "trimmed": bundle.Trimmed, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
 	// The step remembers which runner it is on: the result says what ran, and
 	// the tried list is what keeps a fallback from retrying the same runner.
-	trace := readRunnerTrace(step).with(transport.Name, attempt)
-	stepResult := rawJSON(map[string]any{"status": "running", "runner": trace.Runner, "runner_attempt": trace.Attempt, "runners_tried": trace.Tried})
+	// The credential reference travels with it: it is the identity the run's
+	// work runs under.
+	trace := readRunnerTrace(step).with(transport.Name, attempt, transport.CredentialRef)
+	stepResultFields := map[string]any{"status": "running", "runner": trace.Runner, "runner_attempt": trace.Attempt, "runners_tried": trace.Tried}
+	if trace.Credential != "" {
+		stepResultFields["runner_credential"] = trace.Credential
+	}
+	stepResult := rawJSON(stepResultFields)
 	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk, Result: ptrRaw(stepResult)})
 	if err != nil {
 		return err
@@ -644,6 +657,10 @@ type runnerTrace struct {
 	Runner string `json:"runner"`
 	// Tried lists the runners the step has tried, in order.
 	Tried []string `json:"runners_tried"`
+	// Credential is the credential REFERENCE of the runner the step is on:
+	// a name, never a secret. It says which identity the run's work runs
+	// under.
+	Credential string `json:"runner_credential,omitempty"`
 }
 
 // readRunnerTrace reads the runner trace out of a step's result.
@@ -658,10 +675,12 @@ func readRunnerTrace(step StepRun) runnerTrace {
 	return trace
 }
 
-// with records a runner attempt: the runner the step is on, and the list of
-// runners the step has tried.
-func (t runnerTrace) with(name string, attempt int) runnerTrace {
+// with records a runner attempt: the runner the step is on, the list of
+// runners the step has tried and the credential reference the runner runs
+// under.
+func (t runnerTrace) with(name string, attempt int, credential string) runnerTrace {
 	t.Runner = name
+	t.Credential = credential
 	if attempt > t.Attempt {
 		t.Attempt = attempt
 	}
@@ -802,8 +821,14 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 		replaced = strings.ReplaceAll(replaced, "{{item.description}}", item.DescriptionMD)
 		config = json.RawMessage(replaced)
 	}
-	if secretRef := e.tenantSecretRef(ctx, sc, "github"); secretRef != "" {
-		config = withSecretRef(config, secretRef)
+	// The identity of the run's GitHub work is the credential of the runner
+	// the run's agent used: the agent's own reference first, the tenant's
+	// registered reference second. The node's own reference wins over both
+	// — the template knows the identity it wants.
+	if configSecretRef(config) == "" {
+		if ref := e.runIdentitySecretRef(ctx, sc, run); ref != "" {
+			config = withSecretRef(config, ref)
+		}
 	}
 
 	branch := fmt.Sprintf("aic/%s-%s-%d", item.ID, claimed.ID, maxInt(1, ready.Attempt))
@@ -911,6 +936,71 @@ func (e *Engine) tenantSecretRef(ctx context.Context, sc tenancy.Scope, kind str
 	return ref
 }
 
+// runIdentitySecretRef returns the secret reference the run's platform work
+// authenticates with.
+//
+// The identity of a run's GitHub work is the credential of the runner the
+// run's agent used: the agent's own reference first, the tenant's registered
+// reference second. A reference that does not resolve is not an identity —
+// the next one is tried, and a run whose references all fail leaves the
+// integration without a credential (the GitHub service is then not
+// configured).
+//
+// The reference is a NAME. The secret behind it is fetched at the moment the
+// integration needs it and never reaches the database.
+func (e *Engine) runIdentitySecretRef(ctx context.Context, sc tenancy.Scope, run Run) string {
+	if ref := e.agentCredentialRef(ctx, sc, run); ref != "" && e.secretResolves(ctx, ref) {
+		return ref
+	}
+	if ref := e.tenantSecretRef(ctx, sc, "github"); ref != "" && e.secretResolves(ctx, ref) {
+		return ref
+	}
+	return ""
+}
+
+// agentCredentialRef returns the credential reference of the runner the run's
+// agent used: the most recent succeeded agent step of the run that carries
+// one.
+//
+// The reference is a name, not a secret: it is read out of the step's result,
+// which is safe to store.
+func (e *Engine) agentCredentialRef(ctx context.Context, sc tenancy.Scope, run Run) string {
+	if e.store == nil || run.ID == "" {
+		return ""
+	}
+	steps, err := e.store.ListStepRuns(ctx, sc, run.ID)
+	if err != nil {
+		e.logger.Warn("read the run's steps for the agent's credential", "run", run.ID, "error", err)
+		return ""
+	}
+	ref := ""
+	// The steps come in creation order, so the last one that carries a
+	// reference is the most recent one.
+	for _, step := range steps {
+		if step.Kind != string(NodeAgent) || step.State != StepSucceeded {
+			continue
+		}
+		var result struct {
+			Credential string `json:"runner_credential"`
+		}
+		if json.Unmarshal(step.Result, &result) != nil || result.Credential == "" {
+			continue
+		}
+		ref = result.Credential
+	}
+	return ref
+}
+
+// secretResolves reports whether the reference resolves to a secret. The
+// secret itself is not kept: only the fact that it exists matters here.
+func (e *Engine) secretResolves(ctx context.Context, ref string) bool {
+	if e.integrations == nil || e.integrations.Tokens == nil {
+		return false
+	}
+	secret, err := e.integrations.Tokens.Resolve(ctx, ref)
+	return err == nil && strings.TrimSpace(secret) != ""
+}
+
 // withRemote fills the push remote into an integration config when the
 // template did not name one.
 func withRemote(config json.RawMessage, remote string) json.RawMessage {
@@ -941,13 +1031,21 @@ func withRemote(config json.RawMessage, remote string) json.RawMessage {
 
 // withSecretRef fills the secret reference into an integration config when the
 // template did not name one.
+//
+// A config that names its own reference keeps it: the template's choice wins
+// over the run's identity.
 func withSecretRef(config json.RawMessage, ref string) json.RawMessage {
-	if ref == "" || len(config) == 0 {
+	if ref == "" {
 		return config
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(config, &fields); err != nil {
-		return config
+	fields := map[string]json.RawMessage{}
+	if len(config) > 0 {
+		if err := json.Unmarshal(config, &fields); err != nil {
+			return config
+		}
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
+		}
 	}
 	if existing, ok := fields["secret_ref"]; ok {
 		var current string
@@ -965,6 +1063,23 @@ func withSecretRef(config json.RawMessage, ref string) json.RawMessage {
 		return config
 	}
 	return out
+}
+
+// configSecretRef returns the secret reference an integration config names
+// itself, if any.
+func configSecretRef(config json.RawMessage) string {
+	if len(config) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(config, &fields); err != nil {
+		return ""
+	}
+	var ref string
+	if err := json.Unmarshal(fields["secret_ref"], &ref); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(ref)
 }
 
 // withWorkLocation adds the branch and the workdir of a finished execution to

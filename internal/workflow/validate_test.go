@@ -37,6 +37,8 @@ func TestValidateAllCollectsIndependentProblems(t *testing.T) {
 			t.Errorf("problem %q id = %q, want %q (problems: %#v)", code, got[code], id, problems)
 		}
 	}
+	// The validator walks the nodes in the graph's own order, so the first
+	// unreachable node it names is always the same one.
 	if len(problems) < len(want) {
 		t.Fatalf("got %d problems, want at least %d: %#v", len(problems), len(want), problems)
 	}

@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,17 +12,20 @@ import (
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/store/postgres/pgtest"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 )
 
 type workerFixture struct {
-	t     *testing.T
-	agent *agent.Store
-	work  *work.Store
-	sc    tenancy.Scope
-	item  work.Item
+	t       *testing.T
+	db      *sql.DB
+	agent   *agent.Store
+	runners *runner.Store
+	work    *work.Store
+	sc      tenancy.Scope
+	item    work.Item
 }
 
 func newWorkerFixture(t *testing.T) *workerFixture {
@@ -47,7 +51,22 @@ func newWorkerFixture(t *testing.T) *workerFixture {
 	if err != nil {
 		t.Fatalf("create item: %v", err)
 	}
-	return &workerFixture{t: t, agent: agent.NewStore(app), work: ws, sc: sc, item: item}
+	return &workerFixture{t: t, db: app, agent: agent.NewStore(app), runners: runner.NewStore(app), work: ws, sc: sc, item: item}
+}
+
+// createRunner registers a runner that runs a job under a credential
+// reference. The reference is a name: the secret behind it lives in the
+// keychain, never in the database.
+func (f *workerFixture) createRunner(name, credentialRef string) runner.Runner {
+	f.t.Helper()
+	r, err := f.runners.Create(context.Background(), f.sc, runner.NewRunner{
+		Name: name, Kind: runner.KindCLI, Config: json.RawMessage(`{"bin":"echo","args":["-p"]}`),
+		CredentialRef: credentialRef,
+	})
+	if err != nil {
+		f.t.Fatalf("create runner %q: %v", name, err)
+	}
+	return r
 }
 
 func (f *workerFixture) createAgent(name string, limit int) agent.Agent {

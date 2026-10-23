@@ -103,9 +103,19 @@ func run() error {
 
 	agentStore := agent.NewStore(db)
 	agentHub := agent.NewHub()
+	// The runner registry: the HOW half of the agent registry. The engine
+	// resolves the runner of every node from it, the agent's chain is the
+	// fallback order, and the worker reads it to resolve the credential a
+	// job runs under.
+	runnerStore := runner.NewStore(db)
 	worker := agent.NewWorker(agentStore, agentHub,
 		[]agent.Adapter{adapters.NewCLI(), adapters.NewAPI()},
-		agent.WithWorkerLogger(log))
+		agent.WithWorkerLogger(log),
+		// A runner's credential is a reference to a secret in the OS
+		// keychain. The worker resolves it at the moment a job runs, so the
+		// secret is never at rest in the database.
+		agent.WithSecretResolver(integration.Credentials{}),
+		agent.WithRunnerStore(runnerStore))
 	worker.Start(ctx)
 
 	// M3 stores: the workflow persistence, the memory tiers and the
@@ -133,11 +143,6 @@ func run() error {
 	}
 
 	workStore := work.NewStore(db)
-
-	// The runner registry: the HOW half of the agent registry. The engine
-	// resolves the runner of every node from it, and the agent's chain is
-	// the fallback order.
-	runnerStore := runner.NewStore(db)
 
 	engine := workflow.NewEngine(workflow.EngineDeps{
 		Store:         workflowStore,

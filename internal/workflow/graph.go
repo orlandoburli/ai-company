@@ -303,7 +303,12 @@ func (t *Template) Validate() error {
 		visited[id] = true
 		stack = append(stack, t.Successors(id)...)
 	}
-	for id := range nodes {
+	// The nodes are walked in the graph's own order, not over the map: the
+	// first unreachable node must be the same one every time, so the
+	// validation panel highlights the same offender and the server's verdict
+	// does not change between two identical requests.
+	for i := range t.Nodes {
+		id := t.Nodes[i].ID
 		if !visited[id] {
 			return validationError(CodeUnreachableNode, "node %q is unreachable from every entry node", id)
 		}
