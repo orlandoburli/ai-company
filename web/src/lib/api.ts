@@ -200,6 +200,10 @@ export const api = {
 
   listMembers: () => get<{ members: Member[] }>("/api/tenant/members"),
 
+  getTenantVariables: () => get<{ variables: Record<string, string> }>("/api/tenant/variables"),
+  setTenantVariables: (variables: Record<string, string>) =>
+    request<{ variables: Record<string, string> }>("PUT", "/api/tenant/variables", { variables }),
+
   setMemberRole: (userId: string, role: Role) =>
     patch<{ user_id: string; role: Role }>(`/api/tenant/members/${userId}`, { role }),
 
@@ -323,6 +327,14 @@ export const api = {
 
   deleteAgent: (id: string) => del(`/api/agents/${id}`),
 
+  // --- runner registry and tenant defaults ---------------------------------
+  listRunners: () => get<{ runners: Runner[] }>("/api/runners"),
+  createRunner: (body: RunnerInput) => post<{ runner: Runner }>("/api/runners", body),
+  getRunner: (id: string) => get<{ runner: Runner }>(`/api/runners/${encodeURIComponent(id)}`),
+  updateRunner: (id: string, body: Partial<RunnerInput>) =>
+    patch<{ runner: Runner }>(`/api/runners/${encodeURIComponent(id)}`, body),
+  deleteRunner: (id: string) => del(`/api/runners/${encodeURIComponent(id)}`),
+
   // --- trusted skill registry ----------------------------------------------
   listSkills: (productId?: string) =>
     get<{ skills: Skill[] }>("/api/skills" + query({ product_id: productId })),
@@ -410,8 +422,8 @@ export const api = {
     post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/versions`),
   validateWorkflowTemplate: (graph: WorkflowGraph) =>
     post<{ problems: WorkflowProblem[] }>("/api/workflow-templates/validate", { graph }),
-  startItemRun: (itemId: string, templateId: string) =>
-    post<{ run: Run }>(`/api/items/${encodeURIComponent(itemId)}/runs`, { template_id: templateId }),
+  startItemRun: (itemId: string, templateId: string, variables?: Record<string, string>) =>
+    post<{ run: Run }>(`/api/items/${encodeURIComponent(itemId)}/runs`, { template_id: templateId, ...(variables ? { variables } : {}) }),
   listRuns: (filter?: { item_id?: string; state?: RunState; limit?: number }) =>
     get<{ runs: Run[] }>("/api/runs" + query({ ...filter, limit: filter?.limit?.toString() })),
   getRun: (id: string) => get<{ run: Run; steps: StepRun[] }>(`/api/runs/${encodeURIComponent(id)}`),
@@ -483,28 +495,28 @@ export type { PatchItemBody };
 
 // --- M2 types: agents, threads, messages, jobs ------------------------------
 
-export type AgentKind = "cli" | "api";
-
-/**
- * Opaque config object; the server validates it per `kind`
- * (cli: bin/args/output_format/timeout_sec, api: provider/model/base_url/
- * key_env/max_tokens). Secrets never live here — `key_env` names an
- * environment variable.
- */
+export type RunnerKind = "cli" | "api";
 export type AgentConfig = Record<string, unknown>;
+export interface RunnerRef { id: string; name: string; }
+export interface Runner {
+  id: string; name: string; kind: RunnerKind; config: AgentConfig; credential_ref: string;
+  budget_tokens: number; budget_cost_usd: number; enabled: boolean; created_at: string; updated_at: string;
+}
+export interface RunnerInput {
+  name: string; kind: RunnerKind; config: AgentConfig; credential_ref?: string;
+  budget_tokens: number; budget_cost_usd: number; enabled: boolean;
+}
 
 export interface Agent {
   id: string;
   name: string;
   role: string;
-  kind: AgentKind;
-  config: AgentConfig;
+  runners: RunnerRef[];
   capabilities: AgentConfig;
   concurrency_limit: number;
   enabled: boolean;
   soul_md: string;
   skills_policy: AgentConfig;
-  fallbacks: string[];
   created_at: string;
   updated_at: string;
 }
@@ -516,14 +528,12 @@ export interface Agent {
 export interface AgentInput {
   name?: string;
   role?: string;
-  kind?: AgentKind;
-  config?: AgentConfig;
+  runners?: string[];
   capabilities?: AgentConfig;
   concurrency_limit?: number;
   enabled?: boolean;
   soul_md?: string;
   skills_policy?: AgentConfig;
-  fallbacks?: string[];
 }
 
 /** A trusted procedure in the tenant skill registry. A null product_id means
@@ -646,6 +656,7 @@ export interface WorkflowTemplate {
 }
 export interface Run {
   id: string; item_id: string; template_id: string; template_version: number; state: RunState;
+  variables?: Record<string, string>;
   max_concurrency?: number; started_by?: string; started_at: string; finished_at?: string | null;
   error?: string | null; failure_kind?: string | null; branch?: string | null; worktree_path?: string | null;
   definition_snapshot_json?: WorkflowGraph | string;
@@ -654,6 +665,7 @@ export interface TokenUsage { in?: number; out?: number; }
 export interface StepResult {
   status?: string; exit_reason?: string; summary?: string; tokens?: TokenUsage;
   cost_usd?: number; failure_kind?: string | null; artifacts?: unknown[];
+  runner?: string; runners_tried?: string[]; runner_attempt?: number;
 }
 export interface StepRun {
   id: string; run_id: string; node_id: string; iteration_path?: string; run_index?: number;

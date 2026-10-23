@@ -2025,3 +2025,67 @@ table.data + table.data {
   .workflow-problem-target { grid-column: 2; }
 }
 @media (prefers-reduced-motion: reduce) { .workflow-template-card { animation: none; } }
+
+/* Agent ↔ runner control plane */
+.runner-chain-inline { font: 11px var(--mono); }
+.runner-first { color: var(--text-strong); font-weight: 700; }
+.runner-missing { color: #e8b75f; font-size: 10px; }
+.runner-chain-editor { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(140deg, rgb(88 166 255 / .055), transparent 68%), var(--bg-raised); }
+.runner-chain-editor > .spread strong { color: var(--text-strong); font-size: 12px; }
+.runner-chain-editor > .spread p { margin: 3px 0 0; }
+.runner-chain-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; counter-reset: runner; }
+.runner-chain-list li { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); }
+.runner-chain-index, .workflow-chain-number { display: grid; place-items: center; flex: none; width: 21px; height: 21px; border-radius: 50%; background: rgb(88 166 255 / .1); color: #89beff; font: 10px var(--mono); }
+.runner-chain-name { display: grid; gap: 2px; flex: 1; min-width: 0; color: var(--text-strong); font: 11px var(--mono); overflow-wrap: anywhere; }
+.runner-chain-name small { color: var(--muted); font: 9px var(--sans); }
+.runner-chain-empty { padding: 10px; border: 1px dashed rgb(232 183 95 / .35); border-radius: 5px; color: #e8b75f; font-size: 10px; line-height: 1.5; }
+.runner-add-control { align-items: center; }
+.runner-add-control .input { flex: 1; min-width: 0; }
+.runner-transport strong { color: var(--text-strong); font-size: 11px; }
+.runner-args { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runner-credential { display: inline-block; max-width: 220px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 9px; overflow-wrap: anywhere; }
+.runner-budget { line-height: 1.7; white-space: nowrap; }
+.runner-budget-note { margin: 14px 0 0; padding: 10px 12px; border-left: 2px solid #e8b75f; background: rgb(232 183 95 / .055); color: var(--muted); font-size: 10px; line-height: 1.55; }
+.runner-config-fieldset { display: grid; gap: 11px; min-width: 0; margin: 0; padding: 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); }
+.runner-config-fieldset legend { padding: 0 5px; color: var(--muted); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+.runner-secret-note { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid rgb(62 207 110 / .23); border-radius: 5px; background: rgb(62 207 110 / .045); }
+.runner-secret-note strong { color: var(--text-strong); font-size: 10px; }
+.runner-secret-note span { color: var(--accent); font: 11px var(--mono); overflow-wrap: anywhere; }
+.runner-secret-note small { color: var(--muted); font-size: 9px; }
+.runner-form-budget { display: grid; gap: 11px; padding: 12px; border: 1px solid rgb(232 183 95 / .27); border-radius: 6px; background: rgb(232 183 95 / .035); }
+.runner-form-budget__intro { display: grid; gap: 4px; }
+.runner-form-budget__intro strong { color: var(--text-strong); font-size: 11px; }
+.runner-form-budget__intro span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.tenant-variables-section { margin-top: 18px; }
+.tenant-variable-list { display: grid; gap: 6px; }
+.tenant-variable-list > div { display: grid; grid-template-columns: minmax(125px, .35fr) minmax(0, 1fr); align-items: start; gap: 12px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-raised); }
+.tenant-variable-list code { color: #89beff; font: 10px var(--mono); }
+.tenant-variable-list span { min-width: 0; color: var(--text); font: 10px var(--mono); overflow-wrap: anywhere; }
+.tenant-variable-editor { display: grid; gap: 9px; }
+.tenant-variable-row, .workflow-run-var-row { display: grid; grid-template-columns: minmax(90px, .45fr) minmax(0, 1fr) 28px; gap: 6px; }
+.tenant-vars-note { margin: 12px 0 0; }
+.workflow-agent-chain { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-raised); }
+.workflow-agent-chain ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.workflow-agent-chain li { display: flex; align-items: center; gap: 7px; color: var(--text); font: 9px var(--mono); }
+.workflow-agent-chain li small { margin-left: auto; color: var(--accent); font: 8px var(--sans); text-transform: uppercase; }
+.workflow-chain-number { width: 17px; height: 17px; font-size: 8px; }
+.workflow-agent-chain p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.workflow-runner-variable { display: grid; gap: 4px; padding: 8px; border: 1px solid rgb(88 166 255 / .2); border-radius: 5px; background: rgb(88 166 255 / .045); }
+.workflow-runner-variable strong { color: #89beff; font: 10px var(--mono); }
+.workflow-runner-variable span, .workflow-runner-variable small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.workflow-runner-variable code { color: var(--text); font: 9px var(--mono); }
+.workflow-run-vars { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-raised); }
+.workflow-run-vars .spread strong { color: var(--text-strong); font-size: 10px; }
+.workflow-run-vars .input { width: 100%; }
+.run-variables-card { margin-bottom: 2px; }
+.step-runner-info { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+.step-runner-info > div { display: grid; gap: 3px; min-width: 130px; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-raised); }
+.step-runner-info span { color: var(--muted); font-size: 9px; }
+.step-runner-info strong { color: var(--text-strong); font: 10px var(--mono); overflow-wrap: anywhere; }
+.run-node__runner { overflow: hidden; color: #89beff; font: 8px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.runner-switch-note { margin: 0 0 10px; padding: 9px 10px; border-left: 2px solid var(--warn); background: rgb(232 183 95 / .06); color: #e8c879; font-size: 10px; line-height: 1.5; }
+@media (max-width: 650px) {
+  .tenant-variable-list > div { grid-template-columns: minmax(90px, .4fr) minmax(0, 1fr); gap: 8px; }
+  .runner-chain-list li { flex-wrap: wrap; }
+  .runner-chain-list li > .stack { margin-left: auto; }
+}

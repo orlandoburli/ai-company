@@ -2,22 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useSession } from "@/lib/session";
 
 /**
- * Sub-navigation for the settings area. Skills are visible to every role, but
- * the registry itself gates writes to owners and admins. Agents remain
- * owner/admin-only.
+ * Sub-navigation for the settings area. Runner and skill registries are
+ * readable by every role; their APIs gate writes to owners and admins.
  */
 export function SettingsNav() {
-  const { me } = useSession();
   const pathname = usePathname();
-  const isManager =
-    me?.tenant.role === "owner" || me?.tenant.role === "admin";
 
   const links = [
     { href: "/settings", label: "Company" },
-    ...(isManager ? [{ href: "/settings/agents", label: "Agents" }] : []),
+    { href: "/settings/agents", label: "Agents" },
+    { href: "/settings/runners", label: "Runners" },
     { href: "/settings/notifications", label: "Notifications" },
     { href: "/settings/skills", label: "Skills" },
   ];

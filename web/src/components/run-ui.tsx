@@ -109,7 +109,7 @@ export function RunGraph({ graph, steps, selected, onSelect }: RunGraphProps) {
         const step = stepByNode.get(node.id);
         const state = step?.state ?? "pending";
         return <button type="button" key={node.id} className={`run-node ${selected === step?.id ? "run-node--selected" : ""}`} style={{ left: layout.points.get(node.id)?.x, top: layout.points.get(node.id)?.y, borderLeftColor: STEP_COLOR[state] }} onClick={() => step && onSelect(step)} aria-pressed={selected === step?.id}>
-          <span className="run-node__kind">{node.kind}</span><strong>{node.name || node.id}</strong><span className="run-node__foot"><StateChip state={state} />{step?.run_index ? <span className="mono">lap {step.run_index + 1}</span> : null}</span>
+          <span className="run-node__kind">{node.kind}</span><strong>{node.name || node.id}</strong>{step?.result?.runner ? <span className="run-node__runner">↳ {step.result.runner}</span> : null}<span className="run-node__foot"><StateChip state={state} />{step?.run_index ? <span className="mono">lap {step.run_index + 1}</span> : null}</span>
         </button>;
       })}
     </div>
@@ -226,6 +226,8 @@ export function RunMonitor({ runId }: { runId: string }) {
   const { canWrite } = useSession();
   const { toasts, push } = useToasts();
   const detail = useAsync(() => api.getRun(runId), [runId]);
+  const agents = useAsync(() => api.listAgents().then((response) => response.agents), []);
+  const tenantVariables = useAsync(() => api.getTenantVariables().then((response) => response.variables), []);
   const item = useAsync(async () => {
     if (!detail.data) return null;
     return (await api.getItem(detail.data.run.item_id)).item;
@@ -305,6 +307,14 @@ export function RunMonitor({ runId }: { runId: string }) {
   const graph = useMemo(() => graphFromRun(run ?? detail.data?.run), [run, detail.data]);
   const activeStep = steps.find((step) => step.id === selected) ?? null;
   const selectedNode = graph?.nodes.find((node) => node.id === activeStep?.node_id);
+  const configuredRunner = String(selectedNode?.config?.runner ?? "");
+  const selectedAgent = agents.data?.find((agent) => agent.id === String(selectedNode?.config?.agent_id ?? ""));
+  const chainDefault = selectedAgent?.runners?.[0]?.name ?? "";
+  const configuredRunnerName = configuredRunner.startsWith("$")
+    ? (tenantVariables.data?.[configuredRunner.slice(1)] && tenantVariables.data[configuredRunner.slice(1)] !== activeStep?.result?.runner
+      ? tenantVariables.data[configuredRunner.slice(1)] : chainDefault)
+    : configuredRunner || chainDefault;
+  const switchedForBudget = Boolean(activeStep?.result?.runner && configuredRunnerName && configuredRunnerName !== activeStep.result.runner && activeStep.result.runners_tried?.includes(activeStep.result.runner));
   const checkpoint = checkpoints.find((cp) => cp.step_run_id === activeStep?.id && cp.state === "pending");
   const canRunIntervention = Boolean(canWrite && activeStep && activeStep.state !== "cancelled" && activeStep.state !== "superseded" && !["succeeded", "failed", "skipped", "blocked"].includes(activeStep.state));
   const terminal = Boolean(run && ["completed", "failed", "cancelled"].includes(run.state));
@@ -330,8 +340,9 @@ export function RunMonitor({ runId }: { runId: string }) {
   if (!run) return null;
   return <div className="run-stack">
     <div className="pagehead run-pagehead"><div><Link href="/runs" className="tiny muted">← All runs</Link><h1>{item.data?.title ?? `Run ${run.id.slice(0, 10)}`}</h1><div className="pagehead__sub"><span className="mono">{run.id}</span> · {templates.data?.templates.find((t) => t.id === run.template_id)?.name ?? `Template ${run.template_id.slice(0, 8)}`} v{run.template_version} · started {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}</div></div><div className="run-head-actions"><StateChip state={run.state} /><span className="mono">{formatElapsed(run.started_at, run.finished_at)}</span><button className="btn btn--danger btn--sm" disabled={!canWrite || terminal || busy} onClick={() => void cancelRun()}>Cancel run</button></div></div>
-    {item.error ? <p className="tiny muted">Item details are unavailable: {item.error.message}</p> : null}
-    {templates.error ? <p className="tiny muted">Template metadata unavailable; using the run snapshot where possible.</p> : null}
+     {item.error ? <p className="tiny muted">Item details are unavailable: {item.error.message}</p> : null}
+     {templates.error ? <p className="tiny muted">Template metadata unavailable; using the run snapshot where possible.</p> : null}
+     <section className="section run-variables-card"><header className="section__head"><h2>Run variables</h2><span className="tiny muted">Tenant defaults plus run overrides</span></header><div className="section__body">{Object.keys(run.variables ?? {}).length ? <div className="tenant-variable-list">{Object.entries(run.variables ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => <div key={name}><code>${name}</code><span>{value}</span></div>)}</div> : <p className="tiny muted">This run has no variables. Tenant defaults may be empty.</p>}<p className="tiny muted tenant-vars-note">When a runner is over budget, the engine updates the run’s variable to the next runner in that agent’s chain.</p></div></section>
     <div className="monitor-grid">
       <section className="section graph-section"><header className="section__head"><h2>Execution graph</h2><span className="tiny muted">Select a node to inspect receipts, output and context</span></header><div className="section__body"><RunGraph graph={graph} steps={steps} selected={activeStep?.id} onSelect={(step) => setSelected(step.id)} /><div className="graph-legend"><span><i style={{ background: EDGE_COLOR.delivered }} />Delivered</span><span><i style={{ background: EDGE_COLOR.skipped }} />Skipped</span><span><i style={{ background: EDGE_COLOR.dead }} />Dead</span></div></div></section>
       <section className="section stream-section"><header className="section__head"><h2>Live event stream</h2><span className="tiny muted">{eventsError ? "Polling fallback" : "Live"}</span></header>{eventsError ? <div className="stream-warning">{eventsError}</div> : null}<ol className="timeline run-timeline">{activity.map((event) => <li key={event.id}><div className="tiny muted mono">{new Date(event.at).toLocaleTimeString()} · {event.kind}</div>{event.kind === "step" ? <button className="link-button" onClick={() => { const step = steps.find((s) => event.text.startsWith(s.name)); if (step) setSelected(step.id); }}>{event.text}</button> : <div className="run-log-message">{event.text}</div>}</li>)}{!activity.length ? <li className="muted tiny">Waiting for the first run event…</li> : null}</ol></section>
@@ -339,7 +350,9 @@ export function RunMonitor({ runId }: { runId: string }) {
     <div className="monitor-grid monitor-grid--lower">
       <section className="section inspector-section"><header className="section__head"><h2>Step inspector</h2>{activeStep ? <StateChip state={activeStep.state} /> : null}</header><div className="section__body">{activeStep ? <>
         <div className="inspector-title"><div><span className="tiny muted">{activeStep.kind} · {activeStep.node_id}</span><h3>{activeStep.name}</h3></div><span className="tiny muted">Execution {activeStep.run_index ?? 0}</span></div>
-        {checkpoint ? <div className="checkpoint-inline"><h4>Human checkpoint · lap {checkpoint.lap}</h4><p>{checkpoint.summary_md}</p><CheckpointActions checkpoint={checkpoint} onDecided={(next) => setCheckpoints((all) => all.map((cp) => cp.id === next.id ? next : cp))} compact /></div> : null}
+         {checkpoint ? <div className="checkpoint-inline"><h4>Human checkpoint · lap {checkpoint.lap}</h4><p>{checkpoint.summary_md}</p><CheckpointActions checkpoint={checkpoint} onDecided={(next) => setCheckpoints((all) => all.map((cp) => cp.id === next.id ? next : cp))} compact /></div> : null}
+         <div className="step-runner-info"><div><span>Runner</span><strong>{activeStep.result?.runner ?? "Not reported"}</strong></div>{activeStep.result?.runners_tried?.length ? <div><span>Runners tried</span><strong>{activeStep.result.runners_tried.join(" → ")}</strong></div> : null}</div>
+         {switchedForBudget ? <p className="runner-switch-note">Switched to {activeStep.result?.runner} — the {configuredRunnerName} runner’s budget was spent.</p> : null}
         <h4>Incoming receipts</h4>{activeStep.input_edges && Object.keys(activeStep.input_edges).length ? <div className="receipt-list">{Object.entries(activeStep.input_edges).map(([edge, receipt]) => <div className="receipt-row" key={edge}><code>{edge}</code><StateChip state={receipt.state} /><code>{receipt.port ?? "—"}</code><pre>{JSON.stringify(receipt.value ?? null, null, 2)}</pre></div>)}</div> : <p className="tiny muted">No incoming receipts.</p>}
         <div className="result-grid"><div><span>Status</span><strong>{activeStep.result?.status ?? activeStep.state}</strong></div><div><span>Exit reason</span><strong>{activeStep.result?.exit_reason ?? "—"}</strong></div><div><span>Tokens</span><strong>{activeStep.result?.tokens ? `${activeStep.result.tokens.in ?? 0} in / ${activeStep.result.tokens.out ?? 0} out` : "—"}</strong></div><div><span>Cost</span><strong>{activeStep.result?.cost_usd == null ? "—" : `$${activeStep.result.cost_usd.toFixed(4)}`}</strong></div><div><span>Failure kind</span><strong>{activeStep.failure_kind ?? activeStep.result?.failure_kind ?? "—"}</strong></div></div>
         {activeStep.result?.summary ? <div className="inspector-summary"><h4>Summary</h4><p>{activeStep.result.summary}</p></div> : null}

@@ -610,7 +610,7 @@ function Composer(props: {
                   className="tiny muted"
                   style={{ marginLeft: "auto", flex: "none" }}
                 >
-                  {a.kind}
+                  {a.runners?.[0]?.name ?? "no runner"}
                 </span>
               </button>
             ))}
@@ -732,7 +732,7 @@ function RunAgentDialog(props: {
             >
               {props.enabledAgents.map((a) => (
                 <option key={a.id} value={a.id}>
-                  @{a.name} — {a.role} ({a.kind})
+                  @{a.name} — {a.role} ({a.runners?.map((runner) => runner.name).join(" → ") || "no runner"})
                 </option>
               ))}
             </select>

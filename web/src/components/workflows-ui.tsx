@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type Agent, type WorkflowEdge, type WorkflowGraph, type WorkflowNode, type WorkflowProblem, type WorkflowTemplate, type WorkflowTemplateInput, type WorkflowTemplateSummary } from "@/lib/api";
+import { api, ApiError, type Agent, type Runner, type WorkflowEdge, type WorkflowGraph, type WorkflowNode, type WorkflowProblem, type WorkflowTemplate, type WorkflowTemplateInput, type WorkflowTemplateSummary } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
@@ -137,6 +137,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const manager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const query = useAsync(() => api.getWorkflowTemplate(templateId), [templateId]);
   const agentsQ = useAsync(() => api.listAgents(), []);
+  const runnersQ = useAsync(() => api.listRunners(), []);
+  const variablesQ = useAsync(() => api.getTenantVariables(), []);
   const itemsQ = useAsync(() => api.listItems({ limit: 200 }), []);
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [graph, setGraph] = useState<WorkflowGraph>({ schema_version: 1, nodes: [], edges: [] });
@@ -151,6 +153,7 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const [runPicker, setRunPicker] = useState(false);
   const [runItem, setRunItem] = useState("");
   const [runResult, setRunResult] = useState("");
+  const [runVariables, setRunVariables] = useState<[string, string][]>([]);
   const dirty = Boolean(saved && (JSON.stringify({ ...meta, graph }) !== JSON.stringify(saved)));
   const published = Boolean(template && isPublished(template));
   const editable = Boolean(manager && !published);
@@ -249,7 +252,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   async function startRun() {
     if (!template || !runItem || !canWrite || busy) return;
     setBusy(true); setPageError("");
-    try { const result = await api.startItemRun(runItem, template.id); setRunResult(result.run.id); push("info", "Run started. Real agents may incur usage costs."); }
+    const variables = Object.fromEntries(runVariables.map(([key, value]) => [key.trim(), value]).filter(([key]) => key));
+    try { const result = await api.startItemRun(runItem, template.id, variables); setRunResult(result.run.id); push("info", "Run started. Real agents may incur usage costs."); }
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); }
     finally { setBusy(false); }
   }
@@ -309,13 +313,16 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
       <aside className="workflow-inspector">
         <div className="workflow-panel-title"><span>03</span><strong>Inspector</strong>{selection ? <button className="workflow-clear-selection" onClick={() => setSelection(null)}>Clear</button> : null}</div>
         <div className="workflow-inspector-body">
-          {selectedNode ? <NodeInspector node={selectedNode} agents={agentsQ.data?.agents ?? []} nodes={graph.nodes} editable={editable} onUpdate={(fn) => updateNode(selectedNode.id, fn)} onConfig={(patch) => updateConfig(selectedNode.id, patch)} onDelete={deleteSelection} /> : selectedEdge ? <EdgeInspector edge={selectedEdge} graph={graph} onDelete={deleteSelection} editable={editable} /> : <EmptyState title="Select a node or edge" body="Choose something on the canvas to inspect its settings." />}
+          {selectedNode ? <NodeInspector node={selectedNode} agents={agentsQ.data?.agents ?? []} runners={runnersQ.data?.runners ?? []} variables={variablesQ.data?.variables ?? {}} runnersError={runnersQ.error} variablesError={variablesQ.error} nodes={graph.nodes} editable={editable} onUpdate={(fn) => updateNode(selectedNode.id, fn)} onConfig={(patch) => updateConfig(selectedNode.id, patch)} onDelete={deleteSelection} /> : selectedEdge ? <EdgeInspector edge={selectedEdge} graph={graph} onDelete={deleteSelection} editable={editable} /> : <EmptyState title="Select a node or edge" body="Choose something on the canvas to inspect its settings." />}
           {agentsQ.error ? <p className="tiny muted">Agent picker unavailable: {errorText(agentsQ.error)}</p> : null}
+          {runnersQ.error ? <p className="tiny muted">Runner picker unavailable: {errorText(runnersQ.error)}</p> : null}
         </div>
         <div className="workflow-runbox"><div className="workflow-runbox-head"><span className="workflow-kind-icon workflow-kind-icon--agent">▶</span><div><strong>Run on an item</strong><small>Starts this published workflow</small></div></div>
           <p className="workflow-cost-warning">This starts real agents and may incur model or service costs.</p>
           {runResult ? <div className="workflow-run-success">Run started · <Link href={`/runs/${runResult}`}>Open monitor →</Link></div> : null}
-          {!runPicker ? <button className="btn btn--primary btn--sm workflow-run-button" disabled={!canWrite || !published} onClick={() => setRunPicker(true)}>{published ? "Choose an item" : "Publish to run"}</button> : <div className="workflow-run-picker"><select className="input" value={runItem} disabled={itemsQ.loading || !canWrite} onChange={(event) => setRunItem(event.target.value)}><option value="">{itemsQ.loading ? "Loading items…" : "Choose an item…"}</option>{eligibleItems.map((item) => <option key={item.id} value={item.id}>#{item.number} · {item.title}</option>)}</select>{itemsQ.error ? <span className="tiny muted">Items could not be loaded: {errorText(itemsQ.error)}</span> : null}{!itemsQ.loading && !itemsQ.error && !eligibleItems.length ? <span className="tiny muted">No matching items. Check the applies-to kinds.</span> : null}<div className="stack"><button className="btn btn--primary btn--sm" disabled={!runItem || busy || !canWrite} onClick={() => void startRun()}>{busy ? "Starting…" : "Start run"}</button><button className="btn btn--sm" onClick={() => setRunPicker(false)}>Cancel</button></div></div>}
+          {!runPicker ? <button className="btn btn--primary btn--sm workflow-run-button" disabled={!canWrite || !published} onClick={() => setRunPicker(true)}>{published ? "Choose an item" : "Publish to run"}</button> : <div className="workflow-run-picker"><select className="input" value={runItem} disabled={itemsQ.loading || !canWrite} onChange={(event) => setRunItem(event.target.value)}><option value="">{itemsQ.loading ? "Loading items…" : "Choose an item…"}</option>{eligibleItems.map((item) => <option key={item.id} value={item.id}>#{item.number} · {item.title}</option>)}</select>{itemsQ.error ? <span className="tiny muted">Items could not be loaded: {errorText(itemsQ.error)}</span> : null}{!itemsQ.loading && !itemsQ.error && !eligibleItems.length ? <span className="tiny muted">No matching items. Check the applies-to kinds.</span> : null}
+            <div className="workflow-run-vars"><div className="spread"><strong>Run variables</strong><span className="tiny muted">Optional overrides</span></div>{runVariables.map(([key, value], index) => <div className="workflow-run-var-row" key={`${index}-${key}`}><input className="input mono" aria-label="Run variable name" value={key} placeholder="RUNNER" onChange={(event) => setRunVariables((current) => current.map((row, i) => i === index ? [event.target.value, row[1]] : row))} /><input className="input" aria-label={`Run variable value ${key}`} value={value} placeholder="claude" onChange={(event) => setRunVariables((current) => current.map((row, i) => i === index ? [row[0], event.target.value] : row))} /><button className="workflow-remove-row" aria-label={`Remove run variable ${key}`} onClick={() => setRunVariables((current) => current.filter((_, i) => i !== index))}>×</button></div>)}<button type="button" className="btn btn--sm" onClick={() => setRunVariables((current) => [...current, ["", ""]])}>＋ Add variable</button><span className="tiny muted">Tenant defaults are inherited; values entered here take precedence.</span>{variablesQ.error ? <span className="tiny muted">Tenant defaults unavailable: {errorText(variablesQ.error)}</span> : null}</div>
+            <div className="stack"><button className="btn btn--primary btn--sm" disabled={!runItem || busy || !canWrite} onClick={() => void startRun()}>{busy ? "Starting…" : "Start run"}</button><button className="btn btn--sm" onClick={() => setRunPicker(false)}>Cancel</button></div></div>}
           {!canWrite ? <p className="tiny muted">Your role is read-only for starting runs.</p> : null}
         </div>
       </aside>
@@ -470,8 +477,11 @@ function bezier(ax: number, ay: number, bx: number, by: number) {
   return `M ${ax} ${ay} C ${ax + curve} ${ay}, ${bx - curve} ${by}, ${bx} ${by}`;
 }
 
-function NodeInspector({ node, agents, nodes, editable, onUpdate, onConfig, onDelete }: { node: WorkflowNode; agents: Agent[]; nodes: WorkflowNode[]; editable: boolean; onUpdate: (fn: (node: WorkflowNode) => WorkflowNode) => void; onConfig: (patch: Record<string, unknown>) => void; onDelete: () => void }) {
+function NodeInspector({ node, agents, runners, variables, runnersError, variablesError, nodes, editable, onUpdate, onConfig, onDelete }: { node: WorkflowNode; agents: Agent[]; runners: Runner[]; variables: Record<string, string>; runnersError: Error | null; variablesError: Error | null; nodes: WorkflowNode[]; editable: boolean; onUpdate: (fn: (node: WorkflowNode) => WorkflowNode) => void; onConfig: (patch: Record<string, unknown>) => void; onDelete: () => void }) {
   const config = asConfig(node.config);
+  const selectedAgent = agents.find((agent) => agent.id === String(config.agent_id ?? ""));
+  const runnerChoice = String(config.runner ?? "");
+  const selectedVariable = runnerChoice.startsWith("$") ? runnerChoice.slice(1) : "";
   const [integrationJson, setIntegrationJson] = useState(() => JSON.stringify(config, null, 2));
   const [integrationJsonError, setIntegrationJsonError] = useState("");
   useEffect(() => { setIntegrationJson(JSON.stringify(asConfig(node.config), null, 2)); setIntegrationJsonError(""); }, [node.id, node.config]);
@@ -482,7 +492,11 @@ function NodeInspector({ node, agents, nodes, editable, onUpdate, onConfig, onDe
     <div className="workflow-inspector-entity"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>✦</span><div><small>{node.kind} node</small><strong>{node.name || "Unnamed step"}</strong></div></div>
     {text("Display name", node.name, (name) => onUpdate((current) => ({ ...current, name })), "e.g. review changes")}
     {node.kind === "agent" ? <>
-      <Field label="Agent"><select className="input" value={String(config.agent_id ?? "")} disabled={!editable} onChange={(event) => { const agent = agents.find((candidate) => candidate.id === event.target.value); onConfig({ agent_id: event.target.value }); if (agent) onUpdate((current) => ({ ...current, type: `agent.${agent.role || "dev"}` })); }}><option value="">Choose an agent…</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.enabled ? "" : "Disabled · "}@{agent.name} · {agent.role || agent.kind}</option>)}</select></Field>
+      <Field label="Agent"><select className="input" value={String(config.agent_id ?? "")} disabled={!editable} onChange={(event) => { const agent = agents.find((candidate) => candidate.id === event.target.value); onConfig({ agent_id: event.target.value }); if (agent) onUpdate((current) => ({ ...current, type: `agent.${agent.role || "dev"}` })); }}><option value="">Choose an agent…</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.enabled ? "" : "Disabled · "}@{agent.name} · {agent.role}</option>)}</select></Field>
+      <Field label="Runner choice"><select className="input" value={runnerChoice} disabled={!editable} onChange={(event) => onConfig({ runner: event.target.value || undefined })}><option value="">Use agent default</option><optgroup label="Tenant runners">{runners.map((runner) => <option key={runner.id} value={runner.name}>{runner.enabled ? "" : "Disabled · "}{runner.name} · {runner.kind}</option>)}</optgroup>{Object.keys(variables).length ? <optgroup label="Use a tenant variable">{Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => <option key={name} value={`$${name}`}>${name} = {value}</option>)}</optgroup> : null}</select><span className="tiny muted">Choose a specific runner or use a variable from the run.</span></Field>
+      {selectedVariable ? <div className="workflow-runner-variable"><strong>${selectedVariable}</strong><span>Current tenant default: <code>{variables[selectedVariable] ?? "not set"}</code></span><small>A run’s own value takes precedence. If it resolves to a runner that is over budget, the engine follows the agent’s chain.</small></div> : null}
+      {runnersError ? <p className="tiny muted">Runners are unavailable: {errorText(runnersError)}</p> : null}{variablesError ? <p className="tiny muted">Tenant variables are unavailable: {errorText(variablesError)}</p> : null}
+      <div className="workflow-agent-chain"><div className="workflow-form-subhead"><strong>Agent runner chain</strong><span>fallback order</span></div>{selectedAgent?.runners?.length ? <ol>{selectedAgent.runners.map((runner, index) => <li key={runner.id}><span className="workflow-chain-number">{index + 1}</span><span>{runner.name}</span>{index === 0 ? <small>default</small> : null}</li>)}</ol> : <p>{selectedAgent ? "This agent has no runner, so it cannot be dispatched." : "Choose an agent to see its default and fallback runners."}</p>}</div>
       <Field label="Prompt template"><textarea className="input workflow-prompt" value={String(config.prompt_tmpl ?? "")} disabled={!editable} placeholder="Describe the work for this agent…" onChange={(event) => onConfig({ prompt_tmpl: event.target.value })} /></Field>
       <div className="workflow-form-subhead"><strong>Declared outputs</strong><span>key → JSON type</span></div>
       <OutputRows value={asConfig(config.outputs)} disabled={!editable} onChange={(outputs) => onConfig({ outputs })} />
