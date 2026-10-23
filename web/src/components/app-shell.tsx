@@ -20,6 +20,7 @@ const NAV = [
   { href: "/backlog", label: "Backlog" },
   { href: "/queue", label: "Queue" },
   { href: "/runs", label: "Runs" },
+  { href: "/workflows", label: "Workflows" },
   { href: "/checkpoints", label: "Checkpoints" },
   { href: "/usage", label: "Usage" },
   { href: "/settings", label: "Settings" },

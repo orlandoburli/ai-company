@@ -238,8 +238,8 @@ export const api = {
   tree: (productId?: string) =>
     get<{ projects: ProjectNode[] }>("/api/tree" + query({ product_id: productId })),
 
-  listItems: (filter?: ListItemsFilter) =>
-    get<{ items: Item[] }>("/api/items" + query({ ...filter })),
+  listItems: (filter?: ListItemsFilter & { limit?: number }) =>
+    get<{ items: Item[] }>("/api/items" + query({ ...filter, limit: filter?.limit?.toString() })),
 
   createItem: (b: Partial<Item> & { project_id: string; kind: string; title: string }) =>
     post<{ item: Item }>("/api/items", b),
@@ -395,7 +395,23 @@ export const api = {
   cancelJob: (id: string) => post<{ job: Job }>(`/api/jobs/${id}/cancel`),
 
   // --- workflow runs, checkpoints and notifications (M3 contract) ---------
-  listWorkflowTemplates: () => get<{ templates: WorkflowTemplate[] }>("/api/workflow-templates"),
+  listWorkflowTemplates: () => get<{ templates: WorkflowTemplateSummary[] }>("/api/workflow-templates"),
+  createWorkflowTemplate: (body: WorkflowTemplateInput) =>
+    post<{ template: WorkflowTemplate }>("/api/workflow-templates", body),
+  getWorkflowTemplate: (id: string) =>
+    get<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}`),
+  updateWorkflowTemplate: (id: string, body: WorkflowTemplateInput) =>
+    patch<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}`, body),
+  deleteWorkflowTemplate: (id: string) =>
+    del(`/api/workflow-templates/${encodeURIComponent(id)}`),
+  publishWorkflowTemplate: (id: string) =>
+    post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/publish`),
+  createWorkflowVersion: (id: string) =>
+    post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/versions`),
+  validateWorkflowTemplate: (graph: WorkflowGraph) =>
+    post<{ problems: WorkflowProblem[] }>("/api/workflow-templates/validate", { graph }),
+  startItemRun: (itemId: string, templateId: string) =>
+    post<{ run: Run }>(`/api/items/${encodeURIComponent(itemId)}/runs`, { template_id: templateId }),
   listRuns: (filter?: { item_id?: string; state?: RunState; limit?: number }) =>
     get<{ runs: Run[] }>("/api/runs" + query({ ...filter, limit: filter?.limit?.toString() })),
   getRun: (id: string) => get<{ run: Run; steps: StepRun[] }>(`/api/runs/${encodeURIComponent(id)}`),
@@ -616,9 +632,17 @@ export interface WorkflowNode {
 }
 export interface WorkflowEdge { id: string; from: { node: string; port: string }; to: { node: string; port: string }; }
 export interface WorkflowGraph { schema_version?: number; nodes: WorkflowNode[]; edges: WorkflowEdge[]; }
+export interface WorkflowProblem { code: string; message: string; node_id?: string; edge_id?: string; }
+export interface WorkflowTemplateSummary {
+  id: string; name: string; applies_to?: string; version?: number; published_at?: string | null;
+  max_concurrency?: number; created_at?: string;
+}
+export interface WorkflowTemplateInput {
+  name: string; applies_to: string; max_concurrency: number; graph: WorkflowGraph;
+}
 export interface WorkflowTemplate {
   id: string; name: string; applies_to?: string; version?: number; published?: boolean;
-  status?: string; max_concurrency?: number; graph?: WorkflowGraph; created_at?: string; updated_at?: string;
+  published_at?: string | null; status?: string; max_concurrency?: number; graph?: WorkflowGraph; created_at?: string; updated_at?: string;
 }
 export interface Run {
   id: string; item_id: string; template_id: string; template_version: number; state: RunState;

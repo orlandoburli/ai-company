@@ -24,6 +24,11 @@ func (s *Server) registerWorkflowTemplateRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/workflow-templates/{id}/versions", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleNewWorkflowTemplateVersion)))
 }
 
+// registerWorkflowValidateRoute installs the read-only graph validation API.
+func (s *Server) registerWorkflowValidateRoute(mux *http.ServeMux) {
+	mux.Handle("POST /api/workflow-templates/validate", s.authenticated(s.handleValidateWorkflowTemplate))
+}
+
 type workflowTemplateRequest struct {
 	Name           *string         `json:"name"`
 	AppliesTo      *string         `json:"applies_to"`
@@ -32,16 +37,26 @@ type workflowTemplateRequest struct {
 }
 
 type workflowTemplateResponse struct {
-	ID             string            `json:"id"`
-	TenantID       string            `json:"tenant_id"`
-	Name           string            `json:"name"`
-	Version        int               `json:"version"`
-	AppliesTo      string            `json:"applies_to"`
-	Graph          workflow.Template `json:"graph"`
-	MaxConcurrency int               `json:"max_concurrency"`
-	CreatedBy      string            `json:"created_by"`
-	PublishedAt    any               `json:"published_at"`
-	CreatedAt      any               `json:"created_at"`
+	ID             string                    `json:"id"`
+	TenantID       string                    `json:"tenant_id"`
+	Name           string                    `json:"name"`
+	Version        int                       `json:"version"`
+	AppliesTo      string                    `json:"applies_to"`
+	Graph          workflow.Template         `json:"graph"`
+	MaxConcurrency int                       `json:"max_concurrency"`
+	CreatedBy      string                    `json:"created_by"`
+	PublishedAt    any                       `json:"published_at"`
+	CreatedAt      any                       `json:"created_at"`
+	Versions       []workflowTemplateVersion `json:"versions,omitempty"`
+}
+
+type workflowTemplateVersion struct {
+	Version        int    `json:"version"`
+	PublishedAt    any    `json:"published_at"`
+	CreatedAt      any    `json:"created_at"`
+	Name           string `json:"name"`
+	AppliesTo      string `json:"applies_to"`
+	MaxConcurrency int    `json:"max_concurrency"`
 }
 
 type workflowTemplateSummary struct {
@@ -163,7 +178,48 @@ func (s *Server) handleGetWorkflowTemplate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")
 		return
 	}
+	versions, err := s.workflows.ListTemplates(r.Context(), sc, false)
+	if err != nil {
+		s.writeWorkflowTemplateError(w, err)
+		return
+	}
+	for _, version := range versions {
+		if version.Name == row.Name {
+			result.Versions = append(result.Versions, workflowTemplateVersion{
+				Version: version.Version, PublishedAt: version.PublishedAt, CreatedAt: version.CreatedAt,
+				Name: version.Name, AppliesTo: version.AppliesTo, MaxConcurrency: version.MaxConcurrency,
+			})
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"template": result})
+}
+
+type workflowValidateRequest struct {
+	Graph json.RawMessage `json:"graph"`
+}
+
+func (s *Server) handleValidateWorkflowTemplate(w http.ResponseWriter, r *http.Request) {
+	var req workflowValidateRequest
+	if !decodeM3JSON(w, r, &req) {
+		return
+	}
+	var shape map[string]json.RawMessage
+	if len(req.Graph) == 0 || json.Unmarshal(req.Graph, &shape) != nil || shape == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "The graph must be a JSON object.")
+		return
+	}
+	var graph workflow.Template
+	dec := json.NewDecoder(bytes.NewReader(req.Graph))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&graph); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "The graph is malformed or contains unknown fields.")
+		return
+	}
+	problems := workflow.ValidateAll(&graph)
+	if problems == nil {
+		problems = []workflow.Problem{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"problems": problems})
 }
 
 func (s *Server) handlePatchWorkflowTemplate(w http.ResponseWriter, r *http.Request) {

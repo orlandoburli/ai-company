@@ -302,7 +302,7 @@ export function RunMonitor({ runId }: { runId: string }) {
     return () => { closed = true; close(); if (timer) clearTimeout(timer); };
   }, [runId, run?.state]);
 
-  const graph = useMemo(() => graphFromRun(run ?? detail.data?.run) ?? templates.data?.templates.find((t) => t.id === run?.template_id)?.graph ?? null, [run, detail.data, templates.data]);
+  const graph = useMemo(() => graphFromRun(run ?? detail.data?.run), [run, detail.data]);
   const activeStep = steps.find((step) => step.id === selected) ?? null;
   const selectedNode = graph?.nodes.find((node) => node.id === activeStep?.node_id);
   const checkpoint = checkpoints.find((cp) => cp.step_run_id === activeStep?.id && cp.state === "pending");

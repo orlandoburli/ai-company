@@ -42,6 +42,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		WithWorkflowStores(workflow.NewStore(app), memory.NewStore(app), notification.NewStore(app)))
 	mux := http.NewServeMux()
 	s.registerWorkflowTemplateRoutes(mux)
+	s.registerWorkflowValidateRoute(mux)
 	s.registerMemoryRoutes(mux)
 	s.registerNotificationRoutes(mux)
 	mux.Handle("/", s.Handler())
@@ -51,6 +52,28 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		t: t, db: app, admin: db, srv: srv,
 		store: s.workflows, mem: s.memory, notify: s.notify,
 	}
+}
+
+func (h *workflowHarness) doRaw(method, path, body, cookie string) workflowResponse {
+	h.t.Helper()
+	req, err := http.NewRequest(method, h.srv.URL+path, bytes.NewBufferString(body))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if cookie != "" {
+		req.AddCookie(&http.Cookie{Name: SessionCookie, Value: cookie})
+	}
+	resp, err := h.srv.Client().Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return workflowResponse{status: resp.StatusCode, body: b}
 }
 
 func (h *workflowHarness) do(method, path string, body any, cookie string) workflowResponse {
@@ -200,6 +223,13 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	if version.status != http.StatusCreated || version.json(t)["template"].(map[string]any)["version"].(float64) != 2 {
 		t.Fatalf("new version: %d %s", version.status, version.body)
 	}
+	history := h.do("GET", "/api/workflow-templates/"+templateID, nil, ownerCookie).json(t)["template"].(map[string]any)["versions"].([]any)
+	if len(history) != 2 {
+		t.Fatalf("template version history = %v, want two versions", history)
+	}
+	if _, hasGraph := history[0].(map[string]any)["graph"]; hasGraph {
+		t.Fatalf("template version history included graph bodies: %v", history)
+	}
 	versionID := version.json(t)["template"].(map[string]any)["id"].(string)
 	if deleted := h.do("DELETE", "/api/workflow-templates/"+versionID, nil, ownerCookie); deleted.status != http.StatusNoContent {
 		t.Fatalf("delete draft: %d %s", deleted.status, deleted.body)
@@ -228,6 +258,54 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	foreignID := foreign.json(t)["template"].(map[string]any)["id"].(string)
 	if res := h.do("GET", "/api/workflow-templates/"+foreignID, nil, ownerCookie); res.status != http.StatusNotFound || workflowErrCode(t, res) != "template_not_found" {
 		t.Fatalf("cross-tenant template read: %d %s", res.status, res.body)
+	}
+}
+
+func TestWorkflowTemplateValidateEndpoint(t *testing.T) {
+	h := newWorkflowHarness(t)
+	cookie, _, _ := h.register("validate@example.com", "Acme", "acme")
+	path := "/api/workflow-templates/validate"
+	if unauthenticated := h.do("POST", path, map[string]any{"graph": map[string]any{}}, ""); unauthenticated.status != http.StatusUnauthorized {
+		t.Fatalf("validate without session: %d %s", unauthenticated.status, unauthenticated.body)
+	}
+
+	brokenGraph := map[string]any{
+		"schema_version": 1,
+		"nodes": []any{
+			map[string]any{"id": "entry", "kind": "agent", "name": "entry", "type": "agent.test", "type_version": 1, "config": map[string]any{"agent_id": "a"}, "on_error": "stop_workflow"},
+			map[string]any{"id": "orphan", "kind": "agent", "name": "orphan", "type": "agent.test", "type_version": 1, "config": map[string]any{"agent_id": "b"}, "on_error": "stop_workflow"},
+		},
+		"edges": []any{map[string]any{"id": "bad-edge", "from": map[string]any{"node": "entry", "port": "unknown"}, "to": map[string]any{"node": "missing", "port": "in"}}},
+	}
+	broken := h.do("POST", path, map[string]any{"graph": brokenGraph}, cookie)
+	if broken.status != http.StatusOK {
+		t.Fatalf("validate broken graph: %d %s", broken.status, broken.body)
+	}
+	problems, ok := broken.json(t)["problems"].([]any)
+	if !ok || len(problems) == 0 {
+		t.Fatalf("broken graph problems = %v", broken.json(t))
+	}
+	foundEdge := false
+	for _, raw := range problems {
+		problem := raw.(map[string]any)
+		if problem["edge_id"] == "bad-edge" {
+			foundEdge = true
+		}
+	}
+	if !foundEdge {
+		t.Fatalf("response did not identify bad-edge: %v", problems)
+	}
+
+	validGraph := templateBody("valid")["graph"]
+	valid := h.do("POST", path, map[string]any{"graph": validGraph}, cookie)
+	if valid.status != http.StatusOK || len(valid.json(t)["problems"].([]any)) != 0 {
+		t.Fatalf("validate valid graph: %d %s", valid.status, valid.body)
+	}
+	if malformed := h.doRaw("POST", path, `{"graph":`, cookie); malformed.status != http.StatusBadRequest || workflowErrCode(t, malformed) != "invalid_request" {
+		t.Fatalf("malformed validate request: %d %s", malformed.status, malformed.body)
+	}
+	if nonObject := h.do("POST", path, map[string]any{"graph": []any{}}, cookie); nonObject.status != http.StatusBadRequest || workflowErrCode(t, nonObject) != "invalid_request" {
+		t.Fatalf("non-object graph: %d %s", nonObject.status, nonObject.body)
 	}
 }
 
