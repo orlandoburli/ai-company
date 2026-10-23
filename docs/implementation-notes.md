@@ -538,16 +538,10 @@ with polling fallback, and guests get a read-only chat.
 
 ## Known gaps
 
-- `item_failures`, backoff and `exhausted` at item level (M4). Agent jobs have
-  their own attempt counter, but items have none yet.
-- `priority_rankings` / ranking runs, LLM ranking, stale-run fallback (M4).
-- Start-now (M4) and agent assignees (M4).
-- Graph workflows, checkpoints and the merge node are built; what is still
-  missing is the `integration` node kind (GitHub/Jira are M4) — an integration
-  node fails with the `capability` kind, which is honest but not useful.
-- The `skills` and `skill_versions` tables are not built (M4), so the context
-  bundle's skills tier is always empty; the memory tiers and the task file are
-  built and in use.
+- **Jira is deferred** (M5): the connector needs a Cloud site (an email and an
+  API token) and one project per product. It is a self-contained follow-up with
+  the same shape as the GitHub connector — a narrow client, a fake server in
+  the tests, the credential in the keychain.
 - **A loop's body does not re-execute per iteration.** The iteration budget is
   enforced — the loop stops at `max_iterations` and the node fails with
   `cycle_budget_exhausted` — but the body nodes share one execution row, so
@@ -560,11 +554,15 @@ with polling fallback, and guests get a read-only chat.
   seeded *Repair* template ends on its budget.
 - The macOS sandbox profile (§10) is still missing. A workflow node runs in an
   app-owned worktree and a chat run in a temp directory, so the operator's
-  checkout is out of reach, but the child process itself is not confined.
+  checkout is out of reach, but the child process itself is not confined. The
+  per-agent policy (FR-AG-6) is accident prevention and telemetry, not
+  isolation, and says so where it matters.
 - The API adapter does not stream tokens and cannot call tools yet; the CLI
   adapter has no tool-permission gate.
-- `job_logs` is append-only but not partitioned (see above).
-- Cost is recorded per job (`cost_usd`) but nothing budgets or caps it.
+- The browser push needs a service worker before a browser can subscribe; the
+  toggle says so instead of pretending.
+- Cost is recorded per job (`cost_usd`) and aggregated per product, but
+  nothing budgets or caps it.
 - No email delivery; no password reset.
 - Rate limiting charges the login bucket after Argon2 verification, so it stops
   credential stuffing but does not shield CPU from a flood of login attempts.
@@ -573,3 +571,5 @@ with polling fallback, and guests get a read-only chat.
 - The SSE hub and the rate limiter are per-process, so running more than one
   API process would split live job frames and counters. The engine's run event
   stream is a polling SSE and is therefore process-independent.
+- The `gh` CLI fallback (FR-GH-6) is not built: the keychain holds a token, so
+  the fallback is not needed for the current setup.
