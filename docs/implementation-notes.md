@@ -461,6 +461,55 @@ version is immutable. In the context bundle the skills tier sits after the
 soul and before the memory, and it is the first thing trimmed when the budget
 is over.
 
+## M5 decisions (Jira deferred, agent policy, usage, notifications)
+
+**Jira is deferred, not dropped.** The connector needs a Jira Cloud site (an
+email and an API token) and one project per product; the seeded products carry
+fictional keys. It is not built in this milestone — the rest of M5 was, and the
+Jira work is a self-contained follow-up: the same shape as the GitHub
+connector (a narrow client, a fake server in the tests, the credential in the
+keychain).
+
+**The per-agent policy (FR-AG-6).** The agent's `PATH` starts with a shim that
+refuses the operations an agent must not perform — `git push`,
+`remote add|set-url`, `update-ref`, `gc --prune`, `reflog expire`,
+`filter-branch`, `worktree` and any `-c core.*` — and the catastrophic `rm`
+forms, with an explanatory message and a refusal line in the job's log. The
+shim is **accident prevention and telemetry, not isolation**: the real bounds
+are the sandbox and the server never reusing the agent's refs, and the code
+says so where it matters. An agent may also declare the roots it may work in;
+the adapter refuses to start outside them.
+
+**The usage (FR-AG-7).** The tokens, the cost and the wall time are
+aggregated per product — job → step run → run → item → project → product —
+over a window, with the per-job rows behind it. A chat job belongs to no
+product and is not attributed to one.
+
+**The two out-of-band channels (FR-NT-2, FR-NT-3).** Browser push for a
+pending checkpoint (the payload is encrypted and VAPID-signed; the private key
+is generated into the OS keychain on first use and never reaches the
+database) and the user-defined command channel, where the event's fields
+become *arguments* of an argument vector — never part of a command string —
+with a scrubbed environment, a timeout and a process group killed on it. Only
+an administrator may configure a command.
+
+**The model ranking pass.** The ready set is sent as a sanitised, delimited
+data payload; the answer is validated against the contract (an unknown item, a
+duplicated item, a score out of range, a missing item and a malformed body are
+all refused) and the ranker returns either a complete ordering or an error —
+never a partial one. The credential is the one the pm agent already uses (the
+keychain first, the environment as the fallback); with no key the ranking
+stays on the base score and the run is recorded as **degraded** rather than
+hidden.
+
+**The dogfood.** All three products now have a real repository: FazGiro and
+Vendamatica are new private repositories with a small Go project and a CI
+workflow each, and ProntaLoja points at the real project repository. A second
+user joined the tenant through an invitation and decided a checkpoint of the
+owner's run; the owner's later attempt was refused with `already_decided` and
+the winning decision attached. That is the "one week of real work with a
+second user sharing the checkpoints" shape, proved on one item.
+
 ## Agent security notes
 
 - The runtime role is a member of `aic_app`, not the schema owner and not
