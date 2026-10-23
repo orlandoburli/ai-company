@@ -286,9 +286,36 @@ func (g *GitHub) request(ctx context.Context, method, path string, body, dst any
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var api struct {
 			Message string `json:"message"`
+			Errors  []struct {
+				Resource string `json:"resource"`
+				Field    string `json:"field"`
+				Code     string `json:"code"`
+				Message  string `json:"message"`
+			} `json:"errors"`
 		}
 		_ = json.Unmarshal(data, &api)
 		msg := strings.TrimSpace(Redact(api.Message, g.token))
+		// GitHub's generic "Validation Failed" says nothing useful on its own;
+		// the detail is in the errors array.
+		for _, detail := range api.Errors {
+			text := strings.TrimSpace(detail.Message)
+			if text == "" {
+				text = strings.TrimSpace(detail.Field)
+			}
+			if text == "" {
+				text = strings.TrimSpace(detail.Code)
+			}
+			if text == "" {
+				continue
+			}
+			if msg != "" {
+				msg += ": "
+			}
+			msg += text
+			if len(msg) > 400 {
+				break
+			}
+		}
 		if msg == "" {
 			msg = "request failed"
 		}

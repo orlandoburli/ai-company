@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -169,8 +170,25 @@ func run() error {
 
 	// The ranking run: hourly, and once at startup. The base score decides;
 	// the model pass is optional and its absence is recorded as a degraded
-	// run rather than hidden.
-	go dispatch.NewScheduler(ranking.NewRunner(ranking.NewStore(db), nil, nil), dispatch.Config{
+	// run rather than hidden. The model credential is the same one the pm
+	// agent uses — the keychain first, the environment as the fallback.
+	var llmRanker ranking.LLMRanker
+	if key, err := rankingKey(ctx); err != nil {
+		log.Info("the ranking stays on the base score: no model credential", "error", err)
+	} else {
+		ranker, err := ranking.NewOpenAIRanker(ranking.OpenAIRankerOptions{
+			BaseURL: "https://api.openai.com",
+			Model:   "gpt-4o-mini",
+			APIKey:  key,
+		})
+		if err != nil {
+			log.Warn("the model ranking pass is unavailable", "error", err)
+		} else {
+			llmRanker = ranking.RunnerAdapter(ranker)
+			log.Info("the ranking uses the model pass, with the base score as its fallback")
+		}
+	}
+	go dispatch.NewScheduler(ranking.NewRunner(ranking.NewStore(db), nil, llmRanker), dispatch.Config{
 		Tenants: tenantSource,
 		Logger:  log,
 	}).Run(ctx)
@@ -237,6 +255,20 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// rankingKey resolves the model credential for the ranking pass: the login
+// keychain first (the service "ai-company", the account "openai:default"),
+// then the environment variable the pm agent already uses. The secret is
+// never written to the database or to a log line.
+func rankingKey(ctx context.Context) (string, error) {
+	if key, err := (integration.Credentials{}).Resolve(ctx, "ai-company/openai:default"); err == nil && key != "" {
+		return key, nil
+	}
+	if key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); key != "" {
+		return key, nil
+	}
+	return "", errors.New("no model credential in the keychain or the environment")
 }
 
 func envOr(key, fallback string) string {
