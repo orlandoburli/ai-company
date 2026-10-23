@@ -41,7 +41,7 @@ export default function RunnersSettingsPage() {
             {runners.map((runner) => <tr key={runner.id}>
               <td><strong className="mono">{runner.name}</strong><div className="tiny muted"><span className="badge-outline">{runner.kind}</span></div></td>
               <td className="runner-transport">{transportSummary(runner)}</td>
-              <td><code className="runner-credential">{runner.credential_ref || "Not linked"}</code><div className="tiny muted">Secret lives in the OS keychain</div></td>
+              <td><code className="runner-credential">{runner.credential_ref || "Not linked"}</code>{runner.credential_ref ? <><div className="tiny muted">{githubAccount(runner.credential_ref) ? `GitHub account · ${githubAccount(runner.credential_ref)}` : "Resolved from the OS keychain when used"}</div></> : <div className="tiny muted">Secret lives in the OS keychain</div>}</td>
               <td className="tiny runner-budget">{runner.budget_tokens ? `${runner.budget_tokens.toLocaleString()} tokens` : "Unlimited tokens"}<br />{runner.budget_cost_usd ? `$${runner.budget_cost_usd.toFixed(2)} cost` : "Unlimited cost"}</td>
               <td>{manager ? <input type="checkbox" className="row-check" checked={runner.enabled} aria-label={`Enable or disable ${runner.name}`} onChange={() => void toggle(runner)} /> : <span className="badge-outline">{runner.enabled ? "on" : "off"}</span>}</td>
               <td className="tiny muted">{formatDate(runner.updated_at || runner.created_at)}</td>
@@ -66,10 +66,14 @@ function transportSummary(runner: Runner) {
   return <><strong>{String(config.provider ?? "provider not set")}</strong><div className="tiny muted mono">{String(config.model ?? "model not set")}</div></>;
 }
 
-type RunnerForm = { name: string; kind: RunnerKind; bin: string; args: string; env: string; outputFormat: string; timeout: string; provider: string; model: string; baseUrl: string; keyEnv: string; maxTokens: string; budgetTokens: string; budgetCost: string; enabled: boolean };
+function githubAccount(reference: string) {
+  return reference.match(/(?:^|\/)github:([^/]+)$/i)?.[1] ?? "";
+}
+
+type RunnerForm = { name: string; kind: RunnerKind; bin: string; args: string; env: string; outputFormat: string; timeout: string; provider: string; model: string; baseUrl: string; keyEnv: string; maxTokens: string; credentialRef: string; budgetTokens: string; budgetCost: string; enabled: boolean };
 function runnerForm(runner: Runner | null): RunnerForm {
   const c = runner?.config ?? {};
-  return { name: runner?.name ?? "", kind: runner?.kind ?? "cli", bin: String(c.bin ?? ""), args: Array.isArray(c.args) ? c.args.map(String).join("\n") : "", env: JSON.stringify(c.env ?? {}, null, 2), outputFormat: String(c.output_format ?? "stream-json"), timeout: String(c.timeout_sec ?? ""), provider: String(c.provider ?? "openai"), model: String(c.model ?? ""), baseUrl: String(c.base_url ?? ""), keyEnv: String(c.key_env ?? "OPENAI_API_KEY"), maxTokens: String(c.max_tokens ?? ""), budgetTokens: String(runner?.budget_tokens ?? 0), budgetCost: String(runner?.budget_cost_usd ?? 0), enabled: runner?.enabled ?? true };
+  return { name: runner?.name ?? "", kind: runner?.kind ?? "cli", bin: String(c.bin ?? ""), args: Array.isArray(c.args) ? c.args.map(String).join("\n") : "", env: JSON.stringify(c.env ?? {}, null, 2), outputFormat: String(c.output_format ?? "stream-json"), timeout: String(c.timeout_sec ?? ""), provider: String(c.provider ?? "openai"), model: String(c.model ?? ""), baseUrl: String(c.base_url ?? ""), keyEnv: String(c.key_env ?? "OPENAI_API_KEY"), maxTokens: String(c.max_tokens ?? ""), credentialRef: runner?.credential_ref ?? "", budgetTokens: String(runner?.budget_tokens ?? 0), budgetCost: String(runner?.budget_cost_usd ?? 0), enabled: runner?.enabled ?? true };
 }
 function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onClose: () => void; onSaved: () => Promise<void> }) {
   const [f, setF] = useState(() => runnerForm(runner));
@@ -85,12 +89,12 @@ function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onC
       if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((value) => typeof value !== "string")) { setError("CLI env must be a JSON object with string values."); return; }
       config = { bin: f.bin.trim(), args: f.args.split("\n").map((value) => value.trim()).filter(Boolean), env, output_format: f.outputFormat, ...(f.timeout.trim() ? { timeout_sec: Number(f.timeout) } : {}) };
     } else config = { provider: f.provider, model: f.model.trim(), ...(f.baseUrl.trim() ? { base_url: f.baseUrl.trim() } : {}), key_env: f.keyEnv.trim(), ...(f.maxTokens.trim() ? { max_tokens: Number(f.maxTokens) } : {}) };
-    const body: RunnerInput = { name: f.name.trim().toLowerCase(), kind: f.kind, config, budget_tokens: Number(f.budgetTokens) || 0, budget_cost_usd: Number(f.budgetCost) || 0, enabled: f.enabled };
+    const body: RunnerInput = { name: f.name.trim().toLowerCase(), kind: f.kind, config, credential_ref: f.credentialRef.trim(), budget_tokens: Number(f.budgetTokens) || 0, budget_cost_usd: Number(f.budgetCost) || 0, enabled: f.enabled };
     setBusy(true); setError("");
     try { if (runner) await api.updateRunner(runner.id, body); else await api.createRunner(body); await onSaved(); }
     catch (err) { setError(errorMessage(err)); setBusy(false); }
   }
-  return <Dialog title={runner ? `Edit ${runner.name}` : "New runner"} description="Set up a transport and its tenant-wide spend limits. Never paste a secret here." onClose={onClose} width={660}>
+  return <Dialog title={runner ? `Edit ${runner.name}` : "New runner"} description="Set up a transport and its tenant-wide spend limits. The secret itself is never stored here." onClose={onClose} width={660}>
     <form onSubmit={submit} style={{ display: "grid", gap: 13 }}>
       {error ? <div className="error-note" role="alert">{error}</div> : null}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -106,7 +110,10 @@ function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onC
         <Field label="Base URL (optional)"><input className="input mono" type="url" value={f.baseUrl} onChange={(e) => set("baseUrl", e.target.value)} placeholder="https://api.example.com" /></Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Key environment variable"><input className="input mono" required pattern="[A-Z_][A-Z0-9_]*" value={f.keyEnv} onChange={(e) => set("keyEnv", e.target.value.toUpperCase())} placeholder="OPENAI_API_KEY" /><span className="tiny muted">Name of the variable only. Never enter the key itself.</span></Field><Field label="Max tokens"><input className="input" type="number" min={0} max={200000} value={f.maxTokens} onChange={(e) => set("maxTokens", e.target.value)} placeholder="0 · provider default" /></Field></div>
       </fieldset>}
-      <div className="runner-secret-note"><strong>Credential reference · read only</strong><span>{runner?.credential_ref || "Not linked"}</span><small>The secret lives in the OS keychain, not in this app. This field is never a place to paste a key.</small></div>
+      <Field label="Credential reference" hint="the name of a secret held outside the system — a reference, never the secret. Format: `<service>/<account>`, e.g. `ai-company/github:apiary-reviewer`. The value is resolved from the OS keychain at the moment the runner is used.">
+        <input className="input mono" aria-label="Credential reference" value={f.credentialRef} onChange={(e) => set("credentialRef", e.target.value)} placeholder="<service>/<account>" />
+      </Field>
+      <p className="tiny muted" style={{ margin: "-7px 0 0" }}>The secret itself is never stored here. Leave this blank if the runner uses no credential.</p>
       <div className="runner-form-budget"><div className="runner-form-budget__intro"><strong>Tenant budget</strong><span>The cumulative spend for this tenant. When it is reached, the engine takes the next runner in the agent’s chain. 0 means unlimited.</span></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Token budget · 0 = unlimited"><input className="input" type="number" min={0} value={f.budgetTokens} onChange={(e) => set("budgetTokens", e.target.value)} /></Field><Field label="Cost budget (USD) · 0 = unlimited"><input className="input" type="number" min={0} step="0.01" value={f.budgetCost} onChange={(e) => set("budgetCost", e.target.value)} /></Field></div>
       </div>

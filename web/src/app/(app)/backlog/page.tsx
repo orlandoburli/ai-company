@@ -550,7 +550,7 @@ function BacklogRow(props: {
             onChange={props.onStatus}
           />
         ) : (
-          <span className="tiny">{STATUS_LABELS[it.status]}</span>
+          <span className={`status-pill status-pill--${it.status}`}>{STATUS_LABELS[it.status]}</span>
         )}
       </td>
       <td>

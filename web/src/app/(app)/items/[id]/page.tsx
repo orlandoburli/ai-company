@@ -555,7 +555,7 @@ function HeaderRow(props: {
               onChange={props.onStatus}
             />
           ) : (
-            <span className="badge-outline">{STATUS_LABELS[it.status]}</span>
+            <span className={`status-pill status-pill--${it.status}`}>{STATUS_LABELS[it.status]}</span>
           )}
           {props.canWrite ? (
             <PrioritySelect value={it.priority} onChange={props.onPriority} />

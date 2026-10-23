@@ -216,6 +216,20 @@ function formatFieldValue(value: unknown): string {
   return String(value);
 }
 
+// briefHeadline turns a checkpoint's Markdown brief into one readable line —
+// the question it asks, or the item it is about. The activity feed is a list,
+// not a document: it must not print raw Markdown at the reader.
+function briefHeadline(brief?: string | null): string {
+  const text = (brief ?? "").trim();
+  if (!text) return "";
+  const question = text.match(/^\*\*The question:\*\*\s*(.+)$/m);
+  if (question) return question[1].trim();
+  const heading = text.match(/^#{1,3}\s*(.+)$/m);
+  if (heading) return heading[1].trim();
+  const line = text.split("\n").map((entry) => entry.trim()).find((entry) => entry.length > 0);
+  return (line ?? "").replace(/^[-*#>\s]+/, "").replace(/\*\*/g, "").slice(0, 160);
+}
+
 function Artifacts({ artifacts }: { artifacts: unknown[] }) {
   const rows = groupArtifacts(artifacts.map((artifact, index) => normalizeArtifact(artifact, index)).filter((row): row is NormalizedArtifact => Boolean(row)));
   return <section className="checkpoint-artifacts" aria-label="Checkpoint artifacts"><div className="checkpoint-section-label"><span>Artifacts</span><span className="tiny muted">Evidence to review</span></div>
@@ -540,7 +554,7 @@ export function RunMonitor({ runId }: { runId: string }) {
         {canWrite ? <div className="intervention-box"><h4>Interventions</h4><p className="tiny muted">Ordered per execution. A terminal step stays terminal; interventions never bring it back.</p><label className="field"><span>Instruction (optional for redo)</span><textarea className="input" rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} disabled={!canRunIntervention} placeholder={activeStep.state === "running" ? "Give the running step new direction…" : "Add context before redoing this node…"} /></label><div className="run-actions"><button className="btn btn--sm" disabled={!canWrite || !activeStep || activeStep.state !== "running" || busy || terminal} onClick={() => void intervention("inject")}>Inject instruction</button><button className="btn btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("redo")}>Redo node</button><button className="btn btn--danger btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("stop")}>Stop step</button></div></div> : <p className="tiny muted">Guest access is read-only.</p>}
       </> : <EmptyState title="Select a step" body="Choose a node in the graph to inspect its receipts and result." />}</div></section>
       <aside className="section intervention-history"><header className="section__head"><h2>Run activity</h2><span className="tiny muted">{checkpoints.length} checkpoint events</span></header><div className="section__body run-stack"><h4>Intervention order</h4>{interventions.length ? [...interventions].sort((a, b) => a.seq - b.seq).map((action) => <div className="intervention-row" key={action.id}><span className="mono">#{action.seq}</span><strong>{action.kind}</strong><span className="muted">{action.body_md || action.node_id || "run"}</span><span className="tiny muted">{action.delivered_at ? "delivered" : "queued"}</span></div>) : <p className="tiny muted">No interventions recorded.</p>}
-        <h4>Checkpoint events</h4>{checkpoints.map((cp) => <div className="intervention-row" key={cp.id}><span className="mono">lap {cp.lap}</span><StateChip state={cp.state} /><span>{cp.decision_md || cp.summary_md || cp.node_id}</span></div>)}<Link href="/checkpoints" className="rowlink tiny">Open checkpoint inbox →</Link>
+        <h4>Checkpoint events</h4>{checkpoints.map((cp) => <div className="intervention-row" key={cp.id}><span className="mono">lap {cp.lap}</span><StateChip state={cp.state} /><span>{cp.decision_md || briefHeadline(cp.summary_md) || cp.node_id}</span></div>)}<Link href="/checkpoints" className="rowlink tiny">Open checkpoint inbox →</Link>
       </div></aside>
     </div><Toasts toasts={toasts} />
   </div>;
