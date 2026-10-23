@@ -241,6 +241,19 @@ func (s *Store) Eligible(ctx context.Context, sc tenancy.Scope, itemID, workflow
 	return true, nil, nil
 }
 
+// SkipWait ends a backoff wait early. It is the start-now override: the
+// human says "now", the countdown ends, and the failure counter is NOT reset —
+// only a successful run or an explicit reset does that.
+func (s *Store) SkipWait(ctx context.Context, sc tenancy.Scope, itemID string) error {
+	return withTenant(ctx, s.db, sc, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE item_failures
+			   SET next_eligible_at = now()
+			 WHERE item_id = $1 AND state = 'backing_off' AND next_eligible_at > now()`, itemID)
+		return err
+	})
+}
+
 func (s *Store) Reset(ctx context.Context, sc tenancy.Scope, itemID, workflowID, actor string) (State, error) {
 	var out State
 	err := withTenant(ctx, s.db, sc, func(tx *sql.Tx) error {

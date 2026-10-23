@@ -129,6 +129,9 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 					result["outputs"] = parsedMarkers.Output
 				}
 			}
+			if parsedMarkers.Publish != "" {
+				result["publish_proposal"] = parsedMarkers.Publish
+			}
 		}
 		result["tokens_in"], result["tokens_out"], result["cost_usd"] = job.TokensIn, job.TokensOut, job.CostUSD
 		var contextInfo struct {
@@ -426,7 +429,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
 	bundle.DroppedMarkers = append(bundle.DroppedMarkers, issueMarkers...)
-	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs})
+	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "trimmed": bundle.Trimmed, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs})
 	key := fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex)
 	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, Workdir: workdir, CreatedBy: run.StartedBy})
 	if err != nil {
@@ -441,7 +444,7 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		// integration has something stable to talk about.
 		branch = fmt.Sprintf("aic/%s-%s-%d", item.ID, step.ID, maxInt(1, ready.Attempt))
 	}
-	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
+	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "trimmed": bundle.Trimmed, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
 	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk})
 	if err != nil {
 		return err
@@ -624,10 +627,15 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 		return e.failClaim(ctx, sc, run, t, claimed, string(kind), err.Error())
 	}
 	for _, artifact := range result.Artifacts {
-		_, _ = e.store.CreateArtifact(ctx, sc, NewArtifact{
+		if _, err := e.store.CreateArtifact(ctx, sc, NewArtifact{
 			RunID: run.ID, StepRunID: claimed.ID, ItemID: item.ID,
 			Kind: artifact.Kind, URI: artifact.URI, Meta: artifact.Meta,
-		})
+		}); err != nil {
+			e.logger.Warn("persist integration artifact", "run", run.ID, "step", claimed.ID, "kind", artifact.Kind, "error", err)
+			if artifact.Kind == "issue_body" {
+				return e.failClaim(ctx, sc, run, t, claimed, string(FailureTransient), "could not persist fetched issue artifact: "+err.Error())
+			}
+		}
 	}
 	return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, result.Result, result.OutputPorts, "")
 }

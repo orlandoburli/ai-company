@@ -302,9 +302,9 @@ func (s *Store) StartNow(ctx context.Context, sc tenancy.Scope, id, actor string
 				return err
 			}
 		}
-		if state == "backing_off" && next.Valid && next.Time.After(time.Now()) {
-			return ErrNotDispatchable
-		}
+		// A backing-off item is NOT refused: start-now is an explicit human
+		// choice to skip that wait (FR-QUE-5). The wait is ended by the
+		// caller; the failure counter is not reset.
 		_, err = tx.ExecContext(ctx, `INSERT INTO activity_log(id,tenant_id,item_id,actor_kind,actor_user_id,action,after_json) VALUES($1,$2,$3,'user',nullif($4,''),'item.start_now','{}'::jsonb)`, newID(), sc.TenantID, id, actor)
 		return err
 	})

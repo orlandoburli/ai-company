@@ -103,7 +103,11 @@ func (e *Engine) inspectAgentMarkers(ctx context.Context, sc tenancy.Scope, run 
 func (e *Engine) markerMemoryScope(ctx context.Context, sc tenancy.Scope, run Run, node Node, scopeName string) (memory.Scope, bool) {
 	switch scopeName {
 	case "agent":
-		return memory.Scope{Kind: memory.ScopeAgent, Ref: stringConfig(decodeConfig(node), "agent_id")}, true
+		ref := stringConfig(decodeConfig(node), "agent_id")
+		if ref == "" {
+			return memory.Scope{}, false
+		}
+		return memory.Scope{Kind: memory.ScopeAgent, Ref: ref}, true
 	case "workspace":
 		if e.work == nil || run.ItemID == "" {
 			return memory.Scope{}, false
@@ -123,7 +127,13 @@ func (e *Engine) markerMemoryScope(ctx context.Context, sc tenancy.Scope, run Ru
 }
 
 func (e *Engine) writeAgentMarkers(ctx context.Context, sc tenancy.Scope, run Run, step StepRun, node Node, markersOut agentMarkerResult) {
-	if e.memory == nil || markersOut.Failure != "" {
+	if markersOut.Failure != "" {
+		return
+	}
+	if e.memory == nil {
+		if markersOut.HasOutput || len(markersOut.Memories) > 0 {
+			e.logger.Warn("agent markers have no memory store", "run", run.ID, "node", node.ID)
+		}
 		return
 	}
 	if markersOut.HasOutput {

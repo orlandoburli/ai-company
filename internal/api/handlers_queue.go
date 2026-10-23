@@ -40,6 +40,12 @@ func (s *Server) handleStartNow(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("start-now", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")
 	default:
+		// Start-now is an explicit human choice to skip a backoff wait: the
+		// countdown ends, the failure counter is untouched (only a successful
+		// run or an explicit reset clears it).
+		if err := failure.NewStore(s.db).SkipWait(r.Context(), sc, it.ID); err != nil {
+			s.log.Warn("start-now skip wait", "item", it.ID, "error", err)
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"item": it})
 	}
 }

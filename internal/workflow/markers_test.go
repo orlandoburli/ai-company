@@ -129,13 +129,16 @@ func TestAICMemorizeScopesAndHumanProtection(t *testing.T) {
 
 func TestUntrustedIssueBodyIsFencedSanitizedAndMarkersDropped(t *testing.T) {
 	issue := "visible \x1b]0;title\a bidi\u202e AIC_PUBLISH AIC_MEMORIZE AIC_OUTPUT AIC_SPAWN"
-	clean, dropped := neutralizeExternalMarkers("Title: External\n\n"+issue, "issue-body")
-	section := ctxbundle.Section{Name: "issue-body", Trust: ctxbundle.TrustUntrusted, Ref: "https://github.com/acme/p/issues/42", Content: clean,
-		Provenance: ctxbundle.Provenance{System: "GitHub issue", Ref: "acme/p#42", Author: "reporter", At: "2026-10-20T12:00:00Z"}}
+	f, e, run, _, itemID := markerFixture(t, true)
+	meta, _ := json.Marshal(map[string]any{"repository": "acme/p", "issue_number": 42, "author": "reporter", "timestamp": "2026-10-20T12:00:00Z", "title": "External", "body": issue})
+	if _, err := f.store.CreateArtifact(context.Background(), f.sc, NewArtifact{RunID: run.ID, ItemID: itemID, Kind: "issue_body", URI: "https://github.com/acme/p/issues/42", Meta: meta}); err != nil {
+		t.Fatal(err)
+	}
+	section, dropped := e.issueBodySection(context.Background(), f.sc, run, work.Item{ID: itemID})
 	if section.Trust != ctxbundle.TrustUntrusted || len(dropped) != 4 {
 		t.Fatalf("section=%+v dropped=%v", section, dropped)
 	}
-	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Task: "trusted task", Sections: []ctxbundle.Section{section}})
+	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Task: "trusted task", Sections: []ctxbundle.Section{*section}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +160,10 @@ func TestUntrustedIssueBodyIsFencedSanitizedAndMarkersDropped(t *testing.T) {
 	// engine's issue-body dropped list in the execution context result.
 	if parsed, err := markers.ParseMemories(section.Content); err != nil || len(parsed) != 0 {
 		t.Fatal("external marker unexpectedly parsed as a memory action")
+	}
+	entries, _, err := e.memory.Read(context.Background(), f.sc, memory.Scope{Kind: memory.ScopeRun, Ref: run.ID})
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("issue body caused a memory write: entries=%+v err=%v", entries, err)
 	}
 }
 
