@@ -546,6 +546,51 @@ which step produced it. The buttons say *why* they are disabled instead of
 just being grey.
 
 
+## The credentials (M5)
+
+**The rule.** A secret never enters the database, a log line or the
+repository. A runner, an integration or a tenant names a secret — "the
+GitHub token", "the Slack bot" — and the server resolves it through the
+login keychain at the moment it needs it: `internal/integration/credentials.go`
+maps a reference `<service>/<account>` to the keychain item of that service
+and account, and the value lives in the process's memory only. The
+environment variable `AIC_SECRET_<REFERENCE>` is the override for CI.
+
+**What is registered.** The Apiary project (`../project-erp`) keeps its
+credentials in a `.env`; they were copied into the keychain under the
+`ai-company` service, so the AI Company can address them the same way it
+addresses its own:
+
+| reference | what it is | whose identity |
+| --- | --- | --- |
+| `ai-company/github:orlandoburli` | the account's GitHub token | orlandoburli |
+| `ai-company/github:apiary-default` | the general-purpose token | orlandoburli |
+| `ai-company/github:apiary-engineer` | the engineer persona's token | orlandoburli |
+| `ai-company/github:apiary-staff` | the staff persona's token | orlandodeveloper02 |
+| `ai-company/github:apiary-reviewer` | the reviewer's token | orlandodeveloper01 |
+| `ai-company/github:apiary-qa` | the QA persona's token | orlandoburliqa01 |
+| `ai-company/slack:bot` | the Slack bot token | the workspace *fazgiro* |
+| `ai-company/slack:channel`, `…:channel:integration`, `…:operator` | the Slack ids | — |
+| `ai-company/plane:api` | the Plane key | — |
+| `ai-company/hcloud:token` | the Hetzner token | — |
+| `ai-company/cloudflare:api-token`, `…:zone-id`, `…:account-id` | the Cloudflare credentials | — |
+
+**How.** `scripts/register-credentials.sh <source.env> [service]` reads the
+file and registers each credential under the service, piping the value into
+the keychain (it never appears in the process list) and leaving an account
+that already exists alone, so re-running cannot break a live integration.
+`--force` overwrites.
+
+**Five identities, one account.** The GitHub tokens are not interchangeable:
+each persona of the Apiary project pushes under its own account. That is
+the shape the AI Company's agent / runner split wants — an agent is a
+persona, a runner is a transport, and the credential belongs to the agent —
+but the wiring is not finished: a runner stores a `credential_ref` and
+**nothing resolves it yet** (the API adapter reads the key from an
+environment variable named by `key_env`). Giving each agent its own
+credential is the next piece of work, not a configuration.
+
+
 ## M5 decisions (Jira deferred, agent policy, usage, notifications)
 
 **Jira is deferred, not dropped.** The connector needs a Jira Cloud site (an
