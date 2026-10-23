@@ -109,8 +109,10 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 	}
 
 	return seedTemplate{
-		Name:           "Bugfix",
-		AppliesTo:      "bug",
+		Name: "Bugfix",
+		// Not the tenant's default: the designed flow needs the pm agent (an
+		// API agent), and the dispatcher picks a template by the item's kind.
+		AppliesTo:      "epic",
 		MaxConcurrency: 4,
 		Graph: workflow.Template{
 			SchemaVersion: 1,
@@ -245,7 +247,9 @@ func bugfixLocalTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	tpl.Name = "Bugfix (local)"
-	tpl.AppliesTo = ""
+	// The CLI-only variant is the one for a bug: the designed Bugfix needs
+	// the pm agent, which is an API agent.
+	tpl.AppliesTo = "bug"
 	for i := range tpl.Graph.Nodes {
 		node := &tpl.Graph.Nodes[i]
 		if node.ID != "n_pm" && node.ID != "n_close" {
@@ -280,8 +284,10 @@ func reviewTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	return seedTemplate{
-		Name:           "Review",
-		AppliesTo:      "",
+		Name: "Review",
+		// A manual template: the kind is its own, so the dispatcher never
+		// starts it on its own.
+		AppliesTo:      "review",
 		MaxConcurrency: 2,
 		Graph: workflow.Template{
 			SchemaVersion: 1,
@@ -322,8 +328,9 @@ func repairTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	return seedTemplate{
-		Name:           "Repair",
-		AppliesTo:      "",
+		Name: "Repair",
+		// A manual template, like Review: the kind is its own.
+		AppliesTo:      "repair",
 		MaxConcurrency: 2,
 		Graph: workflow.Template{
 			SchemaVersion: 1,

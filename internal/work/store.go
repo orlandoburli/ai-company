@@ -667,6 +667,27 @@ type Activity struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// RecordActivity appends an attributed entry to an item's history. The
+// dispatcher uses it to record that a run was started for an item: every
+// override and every automatic action is an activity entry, never a silent
+// change.
+func (s *Store) RecordActivity(ctx context.Context, sc tenancy.Scope, itemID, action, actorUserID string, after map[string]any) error {
+	if itemID == "" || action == "" {
+		return nil
+	}
+	payload, err := json.Marshal(after)
+	if err != nil {
+		payload = []byte("{}")
+	}
+	return s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO activity_log (id, tenant_id, item_id, actor_kind, actor_user_id, action, after_json)
+			VALUES ($1, $2, $3, 'user', nullif($4, ''), $5, $6::jsonb)`,
+			newID(), sc.TenantID, itemID, actorUserID, action, payload)
+		return err
+	})
+}
+
 // ListActivity returns an item's history, newest first.
 func (s *Store) ListActivity(ctx context.Context, sc tenancy.Scope, itemID string, limit int) ([]Activity, error) {
 	if limit <= 0 || limit > 500 {

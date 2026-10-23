@@ -24,10 +24,12 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/agent/adapters"
 	"github.com/orlandoburli/ai-company/internal/api"
+	"github.com/orlandoburli/ai-company/internal/dispatch"
 	"github.com/orlandoburli/ai-company/internal/failure"
 	"github.com/orlandoburli/ai-company/internal/integration"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/ranking"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 	"github.com/orlandoburli/ai-company/internal/store/retention"
@@ -124,12 +126,14 @@ func run() error {
 		},
 	}
 
+	workStore := work.NewStore(db)
+
 	engine := workflow.NewEngine(workflow.EngineDeps{
 		Store:         workflowStore,
 		Agents:        agentStore,
 		Memory:        memoryStore,
 		Skills:        skillStore,
-		Work:          work.NewStore(db),
+		Work:          workStore,
 		Workspaces:    workspace.NewProvider(),
 		Notifications: notifyStore,
 		Failures:      failure.NewStore(db),
@@ -137,6 +141,35 @@ func run() error {
 		Logger:        log,
 	})
 	engine.Start(ctx)
+
+	// The dispatcher: the part that actually starts the work. It walks the
+	// ranked queue, applies the eligibility gates before the order, and obeys
+	// the global worker pool and the per-agent concurrency.
+	tenantSource := dispatch.StoreTenants{DB: db}
+	capacitySource := dispatch.StoreCapacity{DB: db, Agents: agentStore}
+	dispatcher := dispatch.New(dispatch.Deps{
+		Work:      workStore,
+		Workflows: workflowStore,
+		Engine:    engine,
+		Agents:    agentStore,
+		Rankings:  ranking.NewStore(db),
+		Tenants:   tenantSource,
+		Capacity:  capacitySource,
+		Activity:  dispatch.WorkActivity{Work: workStore},
+	}, dispatch.Config{GlobalWorkers: 2, Logger: log, Tenants: tenantSource, Capacity: capacitySource})
+	if os.Getenv("AIC_AUTO_DISPATCH") == "off" {
+		log.Info("automatic dispatch is off; runs are started by hand")
+	} else {
+		go dispatcher.Run(ctx)
+	}
+
+	// The ranking run: hourly, and once at startup. The base score decides;
+	// the model pass is optional and its absence is recorded as a degraded
+	// run rather than hidden.
+	go dispatch.NewScheduler(ranking.NewRunner(ranking.NewStore(db), nil, nil), dispatch.Config{
+		Tenants: tenantSource,
+		Logger:  log,
+	}).Run(ctx)
 
 	// The log partitions are pruned once a day: a partition whose range ended
 	// before the retention window is detached and dropped, and nothing else is

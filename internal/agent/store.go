@@ -1018,6 +1018,24 @@ func (s *Store) GetJobByIdempotencyKey(ctx context.Context, sc tenancy.Scope, ke
 	return j, err
 }
 
+// RunningAgentJobs counts the jobs an agent is running right now in this
+// tenant. The dispatcher uses it to respect the agent's concurrency limit
+// before it starts a run.
+func (s *Store) RunningAgentJobs(ctx context.Context, sc tenancy.Scope, agentID string) (int, error) {
+	if agentID == "" {
+		return 0, nil
+	}
+	var count int
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM agent_jobs WHERE agent_id = $1 AND state = 'running'`, agentID).Scan(&count)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // GetJob returns one job by id.
 func (s *Store) GetJob(ctx context.Context, sc tenancy.Scope, id string) (Job, error) {
 	var j Job

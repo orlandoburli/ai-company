@@ -70,8 +70,8 @@ func TestBugfixTemplateShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bugfix template: %v", err)
 	}
-	if tpl.Name != "Bugfix" || tpl.AppliesTo != "bug" {
-		t.Fatalf("unexpected template identity: %+v", tpl)
+	if tpl.Name != "Bugfix" || tpl.AppliesTo != "epic" {
+		t.Fatalf("unexpected template identity: %v / %q", tpl.Name, tpl.AppliesTo)
 	}
 
 	var checkpoints, merges int
@@ -220,6 +220,31 @@ func TestBugfixGitHubTemplateShape(t *testing.T) {
 	}
 	if impl.Workspace != workflow.WorkspaceWorktree {
 		t.Fatalf("the implementation must run in a worktree, got %q", impl.Workspace)
+	}
+}
+
+// The dispatcher picks a template by the item's kind, and a tenant has exactly
+// one default (the one with an empty kind) — two defaults would make the
+// choice arbitrary.
+func TestSeedTemplatesHaveExactlyOneDefault(t *testing.T) {
+	templates, err := seedTemplates(testAgents())
+	if err != nil {
+		t.Fatalf("seed templates: %v", err)
+	}
+	defaults := 0
+	kinds := map[string]bool{}
+	for _, tpl := range templates {
+		if tpl.AppliesTo == "" {
+			defaults++
+			continue
+		}
+		if kinds[tpl.AppliesTo] {
+			t.Fatalf("two templates claim the kind %q", tpl.AppliesTo)
+		}
+		kinds[tpl.AppliesTo] = true
+	}
+	if defaults != 1 {
+		t.Fatalf("defaults = %d, want exactly 1", defaults)
 	}
 }
 

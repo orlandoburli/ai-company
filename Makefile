@@ -19,7 +19,7 @@ dev: migrate seed
 	  echo "$(WEB_DIR)/node_modules is missing: run 'make web-install' first"; exit 1; }
 	@echo "API on http://localhost$(ADDR)  —  web on http://localhost:3000"
 	@trap 'kill 0' INT TERM EXIT; \
-	  DATABASE_URL="$(DATABASE_URL)" AIC_ADDR="$(ADDR)" go run ./cmd/server & \
+	  DATABASE_URL="$(DATABASE_URL)" AIC_ADDR="$(ADDR)" AIC_AUTO_DISPATCH=off go run ./cmd/server & \
 	  (cd $(WEB_DIR) && npm run dev) & \
 	  wait
 
