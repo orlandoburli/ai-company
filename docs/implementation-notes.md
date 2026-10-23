@@ -479,6 +479,38 @@ version is immutable. In the context bundle the skills tier sits after the
 soul and before the memory, and it is the first thing trimmed when the budget
 is over.
 
+## The agent / runner split (M5)
+
+**The model.** An *agent* is the **WHAT**: its name, role, soul, skills
+policy, capabilities and concurrency. A *runner* is the **HOW**: the transport
+— a CLI binary with its arguments, or an API model with its provider — plus
+the credential *reference* and an optional budget. An agent is **not** a runner
+any more: it holds an ordered chain of the runners it may use, and a workflow
+node says which runner a step should use.
+
+**Why.** The transport was the wrong thing to hang on the persona. With the
+split, the same `dev` agent can run on Claude Code or on OpenCode, a node can
+name the runner it wants, and a run can **switch runners** when the current one
+runs out of tokens — the fallback chain is the agent's runner chain, and the
+switch is recorded in the run's variables so the rest of the run follows.
+
+**The decisions.**
+- A runner's **budget is per tenant and cumulative**: the tokens and the cost
+  it has spent across the tenant's runs. When it is spent, the engine takes
+  the next runner in the agent's chain.
+- The **variables are per run**, with the tenant's settings holding the
+  defaults for new runs. A node reads `$NAME`; an unset variable falls back to
+  the tenant's default, then to the agent's first runner.
+- A node **references** a runner; it does not define one inline. One place
+  configures a runner, one place rotates its credential.
+
+**The conversion.** Every existing agent became an agent plus a runner
+carrying its old `kind` and `config_json`, bound 1:1 — so the `dev` (Claude
+CLI) and `pm` (OpenAI API) agents keep behaving exactly as they did. The
+agents' old `kind`/`config_json`/`fallbacks_json` columns stay for this
+release; nothing reads them, and a later migration drops them.
+
+
 ## M5 decisions (Jira deferred, agent policy, usage, notifications)
 
 **Jira is deferred, not dropped.** The connector needs a Jira Cloud site (an
