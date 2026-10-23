@@ -132,6 +132,61 @@ func TestAssembleHonorsMemoryScopeCap(t *testing.T) {
 	}
 }
 
+func TestSkillsTierManifestTrimFirstAndWhole(t *testing.T) {
+	in := AssembleInput{
+		Soul: "SOUL", SoulRevision: 2,
+		Skills: []Skill{
+			{Slug: "large", Version: 3, Content: "SKILL-CONTENT-DO-NOT-SPLIT", Source: "description match"},
+			{Slug: "small", Version: 1, Content: "SECOND-SKILL"},
+		},
+		Memory: []MemoryEntry{{Scope: "run", Key: "k", Content: "MEMORY-CONTENT"}},
+		Task:   "TASK-CONTENT", Budget: 8,
+	}
+	one, err := Assemble(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := Assemble(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.Prompt != two.Prompt || len(one.Manifest) != len(two.Manifest) || len(one.Trimmed) != len(two.Trimmed) {
+		t.Fatal("identical skills input produced nondeterministic bundle")
+	}
+	if strings.Contains(one.Prompt, "SKILL-CONTENT-DO-NOT-SPLIT") || strings.Contains(one.Prompt, "SECOND-SKILL") {
+		t.Fatalf("skills should be trimmed whole before other tiers:\n%s", one.Prompt)
+	}
+	if !strings.Contains(one.Prompt, "MEMORY-CONTENT") || !strings.Contains(one.Prompt, "TASK-CONTENT") {
+		t.Fatalf("bundle trimmed a lower-precedence tier while skills could be dropped:\n%s", one.Prompt)
+	}
+	if len(one.Trimmed) < 2 || one.Trimmed[0].Kind != "skill" || one.Trimmed[0].Ref != "skill:small@1" || one.Trimmed[1].Kind != "skill" || one.Trimmed[1].Ref != "skill:large@3" {
+		t.Fatalf("skill trim notes missing or out of order: %#v", one.Trimmed)
+	}
+	if strings.Contains(one.Prompt, "SKILL-CONTENT-") {
+		t.Fatalf("skill was included partially:\n%s", one.Prompt)
+	}
+}
+
+func TestSkillsManifestContainsTrustedVersionReference(t *testing.T) {
+	bundle, err := Assemble(AssembleInput{
+		Soul: "soul", Skills: []Skill{{Slug: "go", Version: 4, Content: "procedure", Source: "explicit selector"}},
+		Memory: []MemoryEntry{{Scope: "item", Ref: "memory:1", Key: "fact", Revision: 2, Content: "memory"}}, Task: "task",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Manifest) < 2 {
+		t.Fatalf("manifest omitted skill: %#v", bundle.Manifest)
+	}
+	entry := bundle.Manifest[1]
+	if entry.Kind != "skill" || entry.Ref != "skill:go@4" || entry.Revision != 4 || entry.Trust != TrustTrusted || entry.Tokens != estimateTokens("procedure") {
+		t.Fatalf("skill manifest = %#v", entry)
+	}
+	if !strings.Contains(bundle.Prompt, "Source: explicit selector") {
+		t.Fatalf("skill source was omitted from prompt:\n%s", bundle.Prompt)
+	}
+}
+
 func TestTaskFileJSONTrustOrderAndPreamble(t *testing.T) {
 	bytes, err := TaskFileJSON([]Section{
 		{Name: "external", Trust: TrustUntrusted, Content: "data"},

@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/ctxbundle"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workspace"
@@ -422,7 +425,13 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 			fmt.Fprintf(&task, "\n\nAdditional operator instruction (seq %d):\n%s", in.Seq, in.BodyMD)
 		}
 	}
-	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Soul: a.SoulMD, Memory: memEntries, Task: task.String(), Sections: sections})
+	skills, err := e.selectSkills(ctx, sc, item, a, node, task.String())
+	if err != nil {
+		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
+	}
+	// The soul is a column, not a versioned row, so its fingerprint is its
+	// content hash: the manifest then says exactly which persona was used.
+	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Soul: a.SoulMD, SoulFingerprint: fingerprint(a.SoulMD), Memory: memEntries, Task: task.String(), Sections: sections, Skills: skills})
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
@@ -490,6 +499,59 @@ func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work
 		}
 	}
 	return "", ""
+}
+
+// fingerprint is a short, stable identifier of a piece of text.
+func fingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// selectSkills picks the skills that belong in the node's context bundle.
+//
+// The selection is made from trusted fields only — the skill's own description
+// and slug, never the task text — and an agent's skills policy decides whether
+// the selection is automatic or explicit. A skill that no human approved is
+// never attached.
+func (e *Engine) selectSkills(ctx context.Context, sc tenancy.Scope, item work.Item, a agent.Agent, node Node, task string) ([]ctxbundle.Skill, error) {
+	if e.skills == nil {
+		return nil, nil
+	}
+	policy := struct {
+		Auto      bool     `json:"auto"`
+		MaxAttach int      `json:"max_attach"`
+		Keys      []string `json:"keys"`
+	}{Auto: true, MaxAttach: ctxbundle.DefaultMaxSkills}
+	if len(a.SkillsPolicy) > 0 {
+		_ = json.Unmarshal(a.SkillsPolicy, &policy)
+	}
+	keys := policy.Keys
+	if len(keys) == 0 {
+		// A node may name the skills it wants explicitly.
+		var cfg map[string]json.RawMessage
+		if len(node.Config) > 0 {
+			_ = json.Unmarshal(node.Config, &cfg)
+		}
+		if raw, ok := cfg["skills"]; ok {
+			_ = json.Unmarshal(raw, &keys)
+		}
+	}
+	if !policy.Auto && len(keys) == 0 {
+		return nil, nil
+	}
+	opts := skill.SelectOptions{Task: task, MaxAttach: policy.MaxAttach, Keys: keys}
+	if productID, _ := e.productForItem(ctx, sc, item); productID != "" {
+		opts.ProductID = &productID
+	}
+	selected, err := skill.Select(ctx, sc, e.skills, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ctxbundle.Skill, 0, len(selected))
+	for _, pick := range selected {
+		out = append(out, ctxbundle.Skill{Slug: pick.Skill.Slug, Version: pick.Version.Version, Content: pick.Version.ContentMD, Source: pick.Ref})
+	}
+	return out, nil
 }
 
 func (e *Engine) readNodeMemory(ctx context.Context, sc tenancy.Scope, run Run, item work.Item, a agent.Agent, node Node) ([]ctxbundle.MemoryEntry, error) {

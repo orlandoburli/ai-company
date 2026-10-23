@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/priority"
@@ -100,11 +101,15 @@ func (s *Store) UnpinItem(ctx context.Context, sc tenancy.Scope, id, actor strin
 
 // QueueEntry is one scored, eligible queue item with the item attached.
 type QueueEntry struct {
-	Item     Item           `json:"item"`
-	Score    priority.Score `json:"score"`
-	Pinned   bool           `json:"pinned"`
-	PinnedAt *time.Time     `json:"pinned_at,omitempty"`
-	Paused   bool           `json:"paused"`
+	Item           Item           `json:"item"`
+	Score          priority.Score `json:"score"`
+	Pinned         bool           `json:"pinned"`
+	PinnedAt       *time.Time     `json:"pinned_at,omitempty"`
+	Paused         bool           `json:"paused"`
+	Rank           *int           `json:"rank,omitempty"`
+	FailureState   string         `json:"failure_state,omitempty"`
+	NextEligibleAt *time.Time     `json:"next_eligible_at,omitempty"`
+	StartNowAt     *time.Time     `json:"start_now_at,omitempty"`
 }
 
 // Queue returns eligible items in dispatch order: pinned first (most recent
@@ -145,19 +150,165 @@ func (s *Store) Queue(ctx context.Context, sc tenancy.Scope, f ItemFilter) ([]Qu
 		}
 
 		entries := priority.Queue(inputs, time.Now())
+		ranks := map[string]int{}
+		var runID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM priority_rankings WHERE state='ready' AND expires_at>now() ORDER BY computed_at DESC LIMIT 1`).Scan(&runID); err == nil {
+			rows, err := tx.QueryContext(ctx, `SELECT item_id,rank FROM priority_ranking_entries WHERE ranking_id=$1`, runID)
+			if err != nil {
+				return err
+			}
+			for rows.Next() {
+				var id string
+				var rank int
+				if err := rows.Scan(&id, &rank); err != nil {
+					rows.Close()
+					return err
+				}
+				ranks[id] = rank
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				return err
+			}
+			rows.Close()
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		fails := map[string]struct {
+			state string
+			until *time.Time
+		}{}
+		rows, err := tx.QueryContext(ctx, `SELECT item_id, CASE WHEN bool_or(state='exhausted') THEN 'exhausted' WHEN bool_or(state='backing_off') THEN 'backing_off' ELSE 'ok' END, max(next_eligible_at) FILTER (WHERE state='backing_off') FROM item_failures GROUP BY item_id`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id, state string
+			var until *time.Time
+			if err := rows.Scan(&id, &state, &until); err != nil {
+				rows.Close()
+				return err
+			}
+			fails[id] = struct {
+				state string
+				until *time.Time
+			}{state, until}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		startNow := map[string]*time.Time{}
+		rows, err = tx.QueryContext(ctx, `SELECT DISTINCT ON (item_id) item_id,created_at FROM activity_log WHERE action='item.start_now' ORDER BY item_id,created_at DESC`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			var at time.Time
+			if err := rows.Scan(&id, &at); err != nil {
+				rows.Close()
+				return err
+			}
+			startNow[id] = &at
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
 		out = make([]QueueEntry, 0, len(entries))
 		for _, e := range entries {
-			out = append(out, QueueEntry{
-				Item:     byID[e.ItemID],
-				Score:    e.Score,
-				Pinned:   e.Pinned,
-				PinnedAt: e.PinnedAt,
-				Paused:   e.Paused,
-			})
+			f := fails[e.ItemID]
+			if f.state == "exhausted" || (f.state == "backing_off" && f.until != nil && f.until.After(time.Now())) {
+				continue
+			}
+			entry := QueueEntry{Item: byID[e.ItemID], Score: e.Score, Pinned: e.Pinned, PinnedAt: e.PinnedAt, Paused: e.Paused, StartNowAt: startNow[e.ItemID]}
+			if rank, ok := ranks[e.ItemID]; ok {
+				entry.Rank = &rank
+			}
+			if f.state != "" {
+				entry.FailureState = f.state
+			}
+			entry.NextEligibleAt = f.until
+			out = append(out, entry)
 		}
+		sort.SliceStable(out, func(i, j int) bool {
+			a, b := out[i], out[j]
+			if (a.StartNowAt != nil) != (b.StartNowAt != nil) {
+				return a.StartNowAt != nil
+			}
+			if a.StartNowAt != nil && !a.StartNowAt.Equal(*b.StartNowAt) {
+				return a.StartNowAt.After(*b.StartNowAt)
+			}
+			if (a.PinnedAt != nil) != (b.PinnedAt != nil) {
+				return a.PinnedAt != nil
+			}
+			if a.PinnedAt != nil && !a.PinnedAt.Equal(*b.PinnedAt) {
+				return a.PinnedAt.After(*b.PinnedAt)
+			}
+			if a.Rank != nil && b.Rank != nil && *a.Rank != *b.Rank {
+				return *a.Rank < *b.Rank
+			}
+			if (a.Rank != nil) != (b.Rank != nil) {
+				return a.Rank != nil
+			}
+			if a.Score.Value != b.Score.Value {
+				return a.Score.Value > b.Score.Value
+			}
+			if a.Item.Number != b.Item.Number {
+				return a.Item.Number < b.Item.Number
+			}
+			return a.Item.ID < b.Item.ID
+		})
 		return nil
 	})
 	return out, err
+}
+
+var (
+	ErrNotDispatchable = errors.New("work: item is not dispatchable")
+	ErrExhausted       = errors.New("work: item is exhausted")
+)
+
+// StartNow records a human ordering override after checking the same eligibility
+// gate as the normal queue. It never changes the failure counter or item fields.
+func (s *Store) StartNow(ctx context.Context, sc tenancy.Scope, id, actor string) (Item, error) {
+	var item Item
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		item, err = scanItem(tx.QueryRowContext(ctx, `SELECT `+itemColumns+itemComputed+` FROM items i WHERE i.id=$1`, id))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if item.Status == "done" || item.Status == "cancelled" || item.Paused || item.Blocked || item.IsEpic {
+			return ErrNotDispatchable
+		}
+		var state string
+		err = tx.QueryRowContext(ctx, `SELECT CASE WHEN bool_or(state='exhausted') THEN 'exhausted' WHEN bool_or(state='backing_off') THEN 'backing_off' ELSE 'ok' END FROM item_failures WHERE item_id=$1`, id).Scan(&state)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if state == "exhausted" {
+			return ErrExhausted
+		}
+		var next sql.NullTime
+		if state == "backing_off" {
+			if err := tx.QueryRowContext(ctx, `SELECT max(next_eligible_at) FROM item_failures WHERE item_id=$1 AND state='backing_off'`, id).Scan(&next); err != nil {
+				return err
+			}
+		}
+		if state == "backing_off" && next.Valid && next.Time.After(time.Now()) {
+			return ErrNotDispatchable
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO activity_log(id,tenant_id,item_id,actor_kind,actor_user_id,action,after_json) VALUES($1,$2,$3,'user',nullif($4,''),'item.start_now','{}'::jsonb)`, newID(), sc.TenantID, id, actor)
+		return err
+	})
+	return item, mapPGError(err)
 }
 
 // ScoreItem computes an item's base score and breakdown without requiring it to

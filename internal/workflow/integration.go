@@ -1,0 +1,296 @@
+package workflow
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/orlandoburli/ai-company/internal/integration"
+)
+
+// GitHubService is the small API surface used by integration nodes. Finder
+// methods make check-then-act replay safe without coupling the engine to HTTP.
+type GitHubService interface {
+	GetPullRequest(context.Context, int) (integration.PullRequest, error)
+	ListChecks(context.Context, int) ([]integration.Check, error)
+	CreatePullRequest(context.Context, integration.PullRequestInput) (integration.PullRequest, error)
+	AddComment(context.Context, int, string) (integration.Comment, error)
+	GetRef(context.Context, string) (integration.Ref, error)
+	FindOpenPullRequest(context.Context, string) (integration.PullRequest, bool, error)
+	FindComment(context.Context, int, string) (integration.Comment, bool, error)
+}
+
+type GitService interface {
+	PushBranch(context.Context, string, string, string) (integration.Commit, error)
+	HeadCommit(context.Context, string) (integration.Commit, error)
+	Status(context.Context, string) (integration.Status, error)
+}
+
+type TokenSource interface {
+	Resolve(context.Context, string) (string, error)
+}
+
+type GitHubFactory func(token, owner, repo string) GitHubService
+
+// Services are injected by the engine/runtime. GitHubFactory constructs a
+// repo-scoped authenticated client when credentials are available; GitHub is a
+// ready-to-use implementation for tests and installations with a shared client.
+type Services struct {
+	GitHub        GitHubService
+	Git           GitService
+	Tokens        TokenSource
+	GitHubFactory GitHubFactory
+}
+
+type IntegrationRequest struct {
+	Type, RunID, StepRunID, NodeID, IterationPath string
+	Workdir, Branch, RepoURL, ProductID, ItemID   string
+	RunIndex                                      int
+	Config                                        json.RawMessage
+	IdempotencyKey                                string
+}
+
+type IntegrationArtifact struct {
+	Kind string          `json:"kind"`
+	URI  string          `json:"uri"`
+	Meta json.RawMessage `json:"meta"`
+}
+
+type IntegrationResult struct {
+	Result      json.RawMessage
+	OutputPorts map[string]json.RawMessage
+	Artifacts   []IntegrationArtifact
+}
+
+type IntegrationError struct {
+	Kind    FailureKind
+	Message string
+}
+
+func (e *IntegrationError) Error() string            { return e.Message }
+func (e *IntegrationError) FailureKind() FailureKind { return e.Kind }
+
+type integrationConfig struct {
+	Repo          string `json:"repo"`
+	Remote        string `json:"remote"`
+	SecretRef     string `json:"secret_ref"`
+	Base          string `json:"base"`
+	Head          string `json:"head"`
+	Title         string `json:"title"`
+	Body          string `json:"body"`
+	Draft         bool   `json:"draft"`
+	PR            int    `json:"pr"`
+	TimeoutS      int    `json:"timeout_s"`
+	PollIntervalS int    `json:"poll_interval_s"`
+}
+
+func RunIntegration(ctx context.Context, svc Services, in IntegrationRequest) (IntegrationResult, error) {
+	var cfg integrationConfig
+	if err := json.Unmarshal(in.Config, &cfg); err != nil {
+		return IntegrationResult{}, integrationFailure(FailureCapability, "invalid integration config")
+	}
+	if cfg.Repo == "" && in.RepoURL != "" {
+		cfg.Repo = githubRepoFromURL(in.RepoURL)
+	}
+	if in.IdempotencyKey == "" {
+		in.IdempotencyKey = fmt.Sprintf("run:%s:node:%s:%s:%d", in.RunID, in.NodeID, in.IterationPath, in.RunIndex)
+	}
+	if in.Type != "github.open_pr" && in.Type != "github.wait_ci" && in.Type != "github.comment" {
+		return IntegrationResult{}, integrationFailure(FailureCapability, fmt.Sprintf("unknown integration type %q", in.Type))
+	}
+	client, err := integrationClient(ctx, svc, cfg)
+	if err != nil {
+		return IntegrationResult{}, err
+	}
+	switch in.Type {
+	case "github.open_pr":
+		return integrationOpenPR(ctx, svc, client, cfg, in)
+	case "github.wait_ci":
+		return integrationWaitCI(ctx, client, cfg, in)
+	case "github.comment":
+		return integrationComment(ctx, client, cfg, in)
+	default:
+		return IntegrationResult{}, integrationFailure(FailureCapability, "unsupported integration type")
+	}
+}
+
+func integrationClient(ctx context.Context, svc Services, cfg integrationConfig) (GitHubService, error) {
+	owner, repo, ok := strings.Cut(cfg.Repo, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return nil, integrationFailure(FailureCapability, "repo must be owner/name")
+	}
+	if cfg.SecretRef != "" {
+		if svc.Tokens == nil {
+			return nil, integrationFailure(FailureDependency, "GitHub credential source is not configured")
+		}
+		token, err := svc.Tokens.Resolve(ctx, cfg.SecretRef)
+		if err != nil {
+			return nil, integrationFailure(FailureDependency, err.Error())
+		}
+		if svc.GitHubFactory != nil {
+			return svc.GitHubFactory(token, owner, repo), nil
+		}
+	}
+	if svc.GitHub == nil {
+		return nil, integrationFailure(FailureDependency, "GitHub service is not configured")
+	}
+	return svc.GitHub, nil
+}
+
+func integrationOpenPR(ctx context.Context, svc Services, gh GitHubService, cfg integrationConfig, in IntegrationRequest) (IntegrationResult, error) {
+	if cfg.Head == "" {
+		cfg.Head = in.Branch
+	}
+	if cfg.Head == "" || cfg.Base == "" || cfg.Title == "" {
+		return IntegrationResult{}, integrationFailure(FailureCapability, "github.open_pr requires head, base, and title")
+	}
+	pr, found, err := gh.FindOpenPullRequest(ctx, cfg.Head)
+	if err != nil {
+		return IntegrationResult{}, integrationFailure(FailureTransient, "could not look up existing pull request")
+	}
+	if !found {
+		if svc.Git != nil && in.Workdir != "" {
+			remote := cfg.Remote
+			if remote == "" {
+				remote = "origin"
+			}
+			if _, err := svc.Git.PushBranch(ctx, in.Workdir, remote, cfg.Head); err != nil {
+				return IntegrationResult{}, integrationFailure(FailureTransient, "could not push integration branch")
+			}
+		}
+		pr, err = gh.CreatePullRequest(ctx, integration.PullRequestInput{Base: cfg.Base, Head: cfg.Head, Title: cfg.Title, Body: cfg.Body, Draft: cfg.Draft})
+		if err != nil {
+			// A concurrent retry may have created the same branch PR after our
+			// lookup. Re-check before surfacing the API failure.
+			if existing, yes, lookupErr := gh.FindOpenPullRequest(ctx, cfg.Head); lookupErr == nil && yes {
+				pr, found = existing, true
+			} else {
+				return IntegrationResult{}, integrationFailure(FailureTransient, "could not create pull request")
+			}
+		}
+	}
+	if pr.URL == "" {
+		pr.URL = pr.HTMLURL
+	}
+	meta, _ := json.Marshal(map[string]any{"number": pr.Number, "url": pr.URL, "head": cfg.Head, "idempotency_key": in.IdempotencyKey, "reused": found})
+	result := map[string]any{"number": pr.Number, "url": pr.URL, "reused": found}
+	return successIntegration(result, map[string]any{"number": pr.Number, "url": pr.URL}, []IntegrationArtifact{{Kind: "pr", URI: pr.URL, Meta: meta}})
+}
+
+func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationConfig, in IntegrationRequest) (IntegrationResult, error) {
+	if cfg.PR <= 0 {
+		if in.Branch == "" {
+			return IntegrationResult{}, integrationFailure(FailureCapability, "github.wait_ci requires pr or an execution branch")
+		}
+		pr, found, err := gh.FindOpenPullRequest(ctx, in.Branch)
+		if err != nil {
+			return IntegrationResult{}, integrationFailure(FailureTransient, "could not find the run's open pull request")
+		}
+		if !found {
+			return IntegrationResult{}, integrationFailure(FailureTransient, "no open pull request found for execution branch")
+		}
+		cfg.PR = pr.Number
+	}
+	timeout := time.Duration(cfg.TimeoutS) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	interval := time.Duration(cfg.PollIntervalS) * time.Second
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		checks, err := gh.ListChecks(ctx, cfg.PR)
+		if err != nil {
+			return IntegrationResult{}, integrationFailure(FailureTransient, "could not read pull request checks")
+		}
+		allSuccess := len(checks) > 0
+		for _, check := range checks {
+			if check.Status == "failure" {
+				return IntegrationResult{}, integrationFailure(FailureTransient, "CI check failed: "+check.Name)
+			}
+			if check.Status != "success" {
+				allSuccess = false
+			}
+		}
+		if allSuccess {
+			return successIntegration(map[string]any{"pr": cfg.PR, "checks": checks}, map[string]any{"pr": cfg.PR, "checks": checks}, nil)
+		}
+		wait := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return IntegrationResult{}, integrationFailure(FailureTransient, "waiting for CI was canceled")
+		case <-deadline.C:
+			wait.Stop()
+			return IntegrationResult{}, integrationFailure(FailureTransient, fmt.Sprintf("timed out waiting for CI checks on pull request #%d", cfg.PR))
+		case <-wait.C:
+		}
+	}
+}
+
+// githubRepoFromURL maps a product's git remote to the API's owner/name form.
+// Example: git@github.com:orlandoburli/fazgiro.git becomes
+// orlandoburli/fazgiro; the SSH URL is never passed to a process here.
+func githubRepoFromURL(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	var path string
+	if at := strings.LastIndex(value, "@"); at >= 0 {
+		if colon := strings.Index(value[at+1:], ":"); colon >= 0 {
+			path = value[at+1+colon+1:]
+		}
+	} else if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		path = strings.TrimPrefix(parsed.Path, "/")
+	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
+}
+
+func integrationComment(ctx context.Context, gh GitHubService, cfg integrationConfig, in IntegrationRequest) (IntegrationResult, error) {
+	if cfg.PR <= 0 || strings.TrimSpace(cfg.Body) == "" {
+		return IntegrationResult{}, integrationFailure(FailureCapability, "github.comment requires pr and body")
+	}
+	digest := sha256.Sum256([]byte(in.IdempotencyKey))
+	marker := "<!-- aic-idempotency:" + hex.EncodeToString(digest[:]) + " -->"
+	comment, found, err := gh.FindComment(ctx, cfg.PR, marker)
+	if err != nil {
+		return IntegrationResult{}, integrationFailure(FailureTransient, "could not check existing pull request comments")
+	}
+	if !found {
+		comment, err = gh.AddComment(ctx, cfg.PR, strings.TrimSpace(cfg.Body)+"\n\n"+marker)
+		if err != nil {
+			return IntegrationResult{}, integrationFailure(FailureTransient, "could not post pull request comment")
+		}
+	}
+	return successIntegration(map[string]any{"pr": cfg.PR, "comment_url": comment.URL, "reused": found}, map[string]any{"comment_url": comment.URL}, nil)
+}
+
+func successIntegration(result, output any, artifacts []IntegrationArtifact) (IntegrationResult, error) {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return IntegrationResult{}, err
+	}
+	port, err := json.Marshal(output)
+	if err != nil {
+		return IntegrationResult{}, err
+	}
+	return IntegrationResult{Result: raw, OutputPorts: map[string]json.RawMessage{"main": port}, Artifacts: artifacts}, nil
+}
+
+func integrationFailure(kind FailureKind, message string) error {
+	return &IntegrationError{Kind: kind, Message: message}
+}

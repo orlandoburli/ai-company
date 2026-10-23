@@ -26,6 +26,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/api"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workflow"
@@ -102,6 +103,7 @@ func run() error {
 	workflowStore := workflow.NewStore(db)
 	memoryStore := memory.NewStore(db)
 	notifyStore := notification.NewStore(db)
+	skillStore := skill.NewStore(db)
 
 	// The engine is the scheduler: a stateless tick that recomputes the ready
 	// set from the persisted state and dispatches the ready nodes. It shares
@@ -111,6 +113,7 @@ func run() error {
 		Store:         workflowStore,
 		Agents:        agentStore,
 		Memory:        memoryStore,
+		Skills:        skillStore,
 		Work:          work.NewStore(db),
 		Workspaces:    workspace.NewProvider(),
 		Notifications: notifyStore,

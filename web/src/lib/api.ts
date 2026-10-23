@@ -236,6 +236,34 @@ export const api = {
 
   deleteAgent: (id: string) => del(`/api/agents/${id}`),
 
+  // --- trusted skill registry ----------------------------------------------
+  listSkills: (productId?: string) =>
+    get<{ skills: Skill[] }>("/api/skills" + query({ product_id: productId })),
+
+  createSkill: (b: SkillInput) => post<{ skill: Skill }>("/api/skills", b),
+
+  getSkill: (id: string) =>
+    get<{ skill: Skill; versions: SkillVersion[] }>(`/api/skills/${encodeURIComponent(id)}`),
+
+  updateSkill: (id: string, b: SkillInput) =>
+    patch<{ skill: Skill }>(`/api/skills/${encodeURIComponent(id)}`, b),
+
+  deleteSkill: (id: string) => del(`/api/skills/${encodeURIComponent(id)}`),
+
+  createSkillVersion: (id: string, content_md: string) =>
+    post<{ version: SkillVersion }>(
+      `/api/skills/${encodeURIComponent(id)}/versions`,
+      { content_md },
+    ),
+
+  approveSkillVersion: (id: string, version: number) =>
+    post<{ version: SkillVersion }>(
+      `/api/skills/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/approve`,
+    ),
+
+  enableSkill: (id: string) =>
+    post<{ skill: Skill }>(`/api/skills/${encodeURIComponent(id)}/enable`),
+
   /** Get-or-create the one thread attached to an item. */
   itemThread: (itemId: string) =>
     post<{ thread: Thread }>(`/api/items/${itemId}/thread`),
@@ -373,6 +401,45 @@ export interface AgentInput {
   soul_md?: string;
   skills_policy?: AgentConfig;
   fallbacks?: string[];
+}
+
+/** A trusted procedure in the tenant skill registry. A null product_id means
+ * the skill is available across the tenant; current_version is a version number. */
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  product_id: string | null;
+  description: string;
+  enabled: boolean;
+  current_version: number | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Version content is immutable after approval. `version` is its number and
+ * `content_sha` is the server-computed content fingerprint. */
+export interface SkillVersion {
+  id: string;
+  skill_id: string;
+  version: number;
+  content_md: string;
+  content_sha: string;
+  author_kind: string;
+  author_id?: string | null;
+  approved_by?: string | null;
+  approved_by_user_id?: string | null;
+  approved_at?: string | null;
+  created_at?: string;
+}
+
+/** PATCH callers send only changed fields; empty product_id clears the scope. */
+export interface SkillInput {
+  name?: string;
+  slug?: string;
+  product_id?: string;
+  description?: string;
+  enabled?: boolean;
 }
 
 export interface Thread {

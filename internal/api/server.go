@@ -109,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerNotificationRoutes(mux)
 	s.registerWorkflowRunRoutes(mux)
 	s.registerCheckpointRoutes(mux)
+	s.registerSkillRoutes(mux)
 
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)

@@ -32,7 +32,7 @@ CREATE TABLE skill_versions (
     content_sha TEXT        NOT NULL CHECK (content_sha ~ '^[0-9a-f]{64}$'),
     author_kind TEXT        NOT NULL CHECK (author_kind IN ('human', 'agent_draft')),
     author_id   TEXT,
-    approved_by TEXT        REFERENCES users (id) ON DELETE SET NULL,
+    approved_by TEXT        REFERENCES users (id) ON DELETE RESTRICT,
     approved_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 

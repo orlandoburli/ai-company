@@ -12,6 +12,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 	"github.com/orlandoburli/ai-company/internal/workspace"
@@ -22,6 +23,7 @@ type EngineDeps struct {
 	Store         *Store
 	Agents        *agent.Store
 	Memory        *memory.Store
+	Skills        *skill.Store
 	Work          *work.Store
 	Workspaces    *workspace.Provider
 	Notifications *notification.Store
@@ -35,6 +37,7 @@ type Engine struct {
 	store         *Store
 	agents        *agent.Store
 	memory        *memory.Store
+	skills        *skill.Store
 	work          *work.Store
 	workspaces    *workspace.Provider
 	notifications *notification.Store
@@ -56,7 +59,7 @@ func NewEngine(deps EngineDeps) *Engine {
 	if deps.Lease <= 0 {
 		deps.Lease = 2 * time.Minute
 	}
-	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, work: deps.Work,
+	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work,
 		workspaces: deps.Workspaces, notifications: deps.Notifications, logger: logger,
 		tickInterval: deps.TickInterval, lease: deps.Lease}
 }

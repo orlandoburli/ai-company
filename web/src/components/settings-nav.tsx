@@ -5,8 +5,9 @@ import { usePathname } from "next/navigation";
 import { useSession } from "@/lib/session";
 
 /**
- * Sub-navigation for the settings area. "Agents" is owner/admin only and is
- * hidden for other roles, matching the edit gating inside the settings pages.
+ * Sub-navigation for the settings area. Skills are visible to every role, but
+ * the registry itself gates writes to owners and admins. Agents remain
+ * owner/admin-only.
  */
 export function SettingsNav() {
   const { me } = useSession();
@@ -17,6 +18,7 @@ export function SettingsNav() {
   const links = [
     { href: "/settings", label: "Company" },
     ...(isManager ? [{ href: "/settings/agents", label: "Agents" }] : []),
+    { href: "/settings/skills", label: "Skills" },
   ];
 
   return (

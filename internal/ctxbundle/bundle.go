@@ -62,6 +62,7 @@ type Skill struct {
 	Slug    string
 	Version int
 	Content string
+	Source  string
 }
 
 // MemoryEntry is a source-annotated memory record selected for injection.
@@ -79,13 +80,16 @@ type MemoryEntry struct {
 type AssembleInput struct {
 	Soul         string
 	SoulRevision int
-	Skills       []Skill
-	Memory       []MemoryEntry
-	Task         string
-	Sections     []Section
-	Budget       int
-	Caps         map[string]int
-	MaxSkills    int
+	// SoulFingerprint is the content hash of the soul, for the personas that
+	// are a column rather than a versioned row.
+	SoulFingerprint string
+	Skills          []Skill
+	Memory          []MemoryEntry
+	Task            string
+	Sections        []Section
+	Budget          int
+	Caps            map[string]int
+	MaxSkills       int
 }
 
 // ManifestEntry records one attached context component.
@@ -93,10 +97,14 @@ type ManifestEntry struct {
 	Kind     string `json:"kind"`
 	Ref      string `json:"ref,omitempty"`
 	Revision int    `json:"revision,omitempty"`
-	Trust    Trust  `json:"trust,omitempty"`
-	Key      string `json:"key,omitempty"`
-	Scope    string `json:"scope,omitempty"`
-	Tokens   int    `json:"tokens"`
+	// Fingerprint identifies a piece of content that has no version of its
+	// own — the agent's soul is a column, so the manifest carries its content
+	// hash instead of a version number.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Trust       Trust  `json:"trust,omitempty"`
+	Key         string `json:"key,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	Tokens      int    `json:"tokens"`
 }
 
 // TrimNote explains why a whole component was omitted from the bundle.
@@ -258,7 +266,7 @@ func Assemble(in AssembleInput) (Bundle, error) {
 	}
 
 	manifest := make([]ManifestEntry, 0, 1+len(skills)+len(memory)+len(sections))
-	manifest = append(manifest, ManifestEntry{Kind: "soul", Ref: "soul", Revision: in.SoulRevision, Trust: TrustTrusted, Tokens: soulTokens})
+	manifest = append(manifest, ManifestEntry{Kind: "soul", Ref: "soul", Revision: in.SoulRevision, Fingerprint: in.SoulFingerprint, Trust: TrustTrusted, Tokens: soulTokens})
 	var prompt strings.Builder
 	prompt.WriteString("# Soul\n\n")
 	prompt.WriteString(in.Soul)
@@ -272,6 +280,9 @@ func Assemble(in AssembleInput) (Bundle, error) {
 		ref := skillRef(part.skill)
 		manifest = append(manifest, ManifestEntry{Kind: "skill", Ref: ref, Revision: part.skill.Version, Trust: TrustTrusted, Tokens: part.token})
 		fmt.Fprintf(&prompt, "\n# Skill %s\n\n%s", part.skill.Slug, part.skill.Content)
+		if part.skill.Source != "" {
+			fmt.Fprintf(&prompt, "\nSource: %s", part.skill.Source)
+		}
 		if part.skill.Content != "" && !strings.HasSuffix(part.skill.Content, "\n") {
 			prompt.WriteByte('\n')
 		}
