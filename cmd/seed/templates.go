@@ -67,7 +67,7 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	gate, err := checkpointNode("n_gate", "approve spec", "checkpoint.approval", 1,
-		map[string]any{"policy": "retry_step", "max_cycles": 2})
+		map[string]any{"question": "Does this specification match what you want? Approve it, or send it back with what to change.", "policy": "retry_step", "max_cycles": 2})
 	if err != nil {
 		return seedTemplate{}, err
 	}
@@ -97,7 +97,7 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	gate2, err := checkpointNode("n_gate2", "accept result", "checkpoint.approval", 1,
-		map[string]any{"policy": "retry_step", "max_cycles": 1})
+		map[string]any{"question": "The implementation is done and the checks passed. Accept the work, or send it back with what to change.", "policy": "retry_step", "max_cycles": 1})
 	if err != nil {
 		return seedTemplate{}, err
 	}
@@ -150,7 +150,7 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	gate, err := checkpointNode("n_gate", "approve spec", "checkpoint.approval", 1,
-		map[string]any{"policy": "retry_step", "max_cycles": 2})
+		map[string]any{"question": "Does this specification match what you want? Approve it, or send it back with what to change.", "policy": "retry_step", "max_cycles": 2})
 	if err != nil {
 		return seedTemplate{}, err
 	}
@@ -191,7 +191,7 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	gate2, err := checkpointNode("n_gate2", "accept the pull request", "checkpoint.approval", 1,
-		map[string]any{"policy": "abort"})
+		map[string]any{"question": "The pull request is open and its checks are green. Merge it, or send it back with what to fix.", "policy": "abort"})
 	if err != nil {
 		return seedTemplate{}, err
 	}
@@ -279,7 +279,7 @@ func reviewTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	gate, err := checkpointNode("n_gate", "accept findings", "checkpoint.approval", 1,
-		map[string]any{"policy": "abort"})
+		map[string]any{"question": "Here are the review findings. Accept them, or ask for a different look.", "policy": "abort"})
 	if err != nil {
 		return seedTemplate{}, err
 	}
