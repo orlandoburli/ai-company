@@ -355,6 +355,50 @@ centre, the worktree (an agent that ran inside
 (the run scope holds a node's output and every checkpoint decision, and a later
 node reads them back).
 
+## M4 decisions (GitHub, ranking, skills)
+
+**The GitHub target.** The seeded `FazGiro` product points at a real
+repository (`git@github.com:orlandoburli/fazgiro.git`, private) with a small
+Go project and a CI workflow, so the flow "branch → agent → pull request →
+checks → human" runs against the real API. The other two seeded products have
+no repository: a node that needs one falls back to a scratch workspace and
+says so. The SSH URL is deliberate — the token never appears in a process
+argument, a URL or a log line.
+
+**The credential.** A GitHub token lives in the login keychain under the
+service `ai-company` and the account `github:orlandoburli`, and the database
+stores only the *reference* (`integration_credentials.secret_ref`), never the
+secret. The resolver reads the keychain through `security` (a trusted
+application, so no prompt) with an environment-variable override for the
+tests. The scope of this milestone is "real pull requests, no merge": the
+system opens and watches pull requests; a human merges them.
+
+**The ranking is deterministic first.** The ranking run computes the base
+score (the existing `pri-base-1` factors) and orders the ready set with a
+reason per item. The LLM pass is a second, optional layer: when it is absent,
+fails, is over budget or answers something that does not validate, the run
+is marked degraded (`llm_failed | invalid_output | over_budget`) and the base
+score decides. A run only becomes `ready` after a validation query proves the
+score never rises as the rank grows and every ready item appears once; an
+inconsistent run is `failed`, never `ready`. An expired run is not used: the
+dispatch falls back to the base score.
+
+**Backoff is eligibility, not order.** A failed item's `item_failures` row
+carries the curve, the parameter snapshot and the version, so a configuration
+change never re-times a wait that is already running. At `max_failures` the
+item parks as `exhausted` — a human un-arms it. A *pause* still never touches
+this state: pausing is not a failure. Start-now changes the order only; it
+obeys the eligibility gate, the caps, the leases and `exhausted`, and a pinned
+item in `backing_off` keeps its countdown.
+
+**Skills are trusted text with a version.** A skill's content is operator
+text; the selection uses the *trusted* fields only (name, slug, description,
+tags) — never the task text, and never an untrusted section. A version
+written by an agent is inert until a human approves it, and an approved
+version is immutable. In the context bundle the skills tier sits after the
+soul and before the memory, and it is the first thing trimmed when the budget
+is over.
+
 ## Agent security notes
 
 - The runtime role is a member of `aic_app`, not the schema owner and not

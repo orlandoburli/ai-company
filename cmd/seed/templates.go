@@ -38,6 +38,7 @@ func seedTemplates(agents map[string]string) ([]seedTemplate, error) {
 	builders := []func(map[string]string) (seedTemplate, error){
 		bugfixTemplate,
 		bugfixLocalTemplate,
+		bugfixGitHubTemplate,
 		reviewTemplate,
 		repairTemplate,
 	}
@@ -125,6 +126,95 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 				edge("e6", "n_qa", "main", "n_join", "in"),
 				edge("e7", "n_join", "main", "n_gate2", "in"),
 				edge("e8", "n_gate2", "approved", "n_close", "in"),
+			},
+		},
+	}, nil
+}
+
+// bugfixGitHubTemplate is the designed Bugfix flow against a real repository:
+// the implementation runs in a worktree, the server opens a pull request, the
+// CI is watched, a reviewer looks at the diff, and a human decides whether the
+// pull request is merged.
+//
+// The integration nodes carry the repository in their config; the branch comes
+// from the execution (the worktree the implementation ran in) and the title
+// and body may use the {{item.title}} placeholder.
+func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
+	spec, err := agentNode("n_pm", "spec", "agent.pm", 2, agents["dev"],
+		"Read the item and write what has to change, in two or three sentences. Do not write code yet.",
+		map[string]string{"spec_md": "string"})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	gate, err := checkpointNode("n_gate", "approve spec", "checkpoint.approval", 1,
+		map[string]any{"policy": "retry_step", "max_cycles": 2})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	impl, err := agentNode("n_code", "implement", "agent.coder", 3, agents["dev"],
+		"Implement the approved specification. Work in the directory you are in (it is a worktree cut for this step). Keep the change small; do not commit, do not push.",
+		map[string]string{"summary_md": "string", "changed_files": "array"})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	impl.Workspace = workflow.WorkspaceWorktree
+	pr, err := integrationNode("n_pr", "open pull request", "github.open_pr", 1, map[string]any{
+		"repo":  "orlandoburli/fazgiro",
+		"base":  "main",
+		"title": "{{item.title}}",
+		"body":  "Opened by AI Company for item {{item.id}}.\n\n{{item.description}}",
+	})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	ci, err := integrationNode("n_ci", "wait for ci", "github.wait_ci", 1, map[string]any{
+		"repo":      "orlandoburli/fazgiro",
+		"timeout_s": 900,
+	})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	review, err := agentNode("n_review", "review the diff", "agent.reviewer", 1, agents["reviewer"],
+		"Review the change that was just made in the pull request. List what is wrong with it; do not change anything.",
+		map[string]string{"findings_md": "string"})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	join, err := mergeNode("n_join", "reconcile", "merge.all", 1, "all")
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	gate2, err := checkpointNode("n_gate2", "accept the pull request", "checkpoint.approval", 1,
+		map[string]any{"policy": "abort"})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+	closeNode, err := agentNode("n_close", "summarise", "agent.pm", 2, agents["dev"],
+		"Summarise for the item: what changed, what the checks said, and what a human must do next (the pull request is not merged by the system).",
+		map[string]string{"summary_md": "string"})
+	if err != nil {
+		return seedTemplate{}, err
+	}
+
+	return seedTemplate{
+		Name:           "Bugfix (GitHub)",
+		AppliesTo:      "",
+		MaxConcurrency: 4,
+		Graph: workflow.Template{
+			SchemaVersion: 1,
+			Nodes: []workflow.Node{
+				spec, gate, impl, pr, ci, review, join, gate2, closeNode,
+			},
+			Edges: []workflow.Edge{
+				edge("e1", "n_pm", "main", "n_gate", "in"),
+				edge("e2", "n_gate", "approved", "n_code", "in"),
+				edge("e3", "n_code", "main", "n_pr", "in"),
+				edge("e4", "n_pr", "main", "n_ci", "in"),
+				edge("e5", "n_pr", "main", "n_review", "in"),
+				edge("e6", "n_ci", "main", "n_join", "in"),
+				edge("e7", "n_review", "main", "n_join", "in"),
+				edge("e8", "n_join", "main", "n_gate2", "in"),
+				edge("e9", "n_gate2", "approved", "n_close", "in"),
 			},
 		},
 	}, nil
@@ -303,6 +393,26 @@ func mergeNode(id, name, nodeType string, typeVersion int, mode string) (workflo
 		// A merge reconciles branches, so it lives in the run's integration
 		// workspace rather than a throwaway one.
 		Workspace: workflow.WorkspaceWorktree,
+	}, nil
+}
+
+// integrationNode builds an `integration` node: a deterministic, idempotent
+// action of the platform (github.open_pr, github.wait_ci, …). The type
+// version pins the implementation.
+func integrationNode(id, name, nodeType string, typeVersion int, config map[string]any) (workflow.Node, error) {
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return workflow.Node{}, err
+	}
+	return workflow.Node{
+		ID:          id,
+		Kind:        workflow.NodeIntegration,
+		Name:        name,
+		Type:        nodeType,
+		TypeVersion: typeVersion,
+		Config:      raw,
+		OnError:     workflow.OnErrorStop,
+		Workspace:   workflow.WorkspaceScratch,
 	}, nil
 }
 

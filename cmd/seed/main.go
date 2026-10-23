@@ -297,7 +297,10 @@ func products() []productSeed {
 	return []productSeed{
 		{
 			name: "FazGiro", slug: "fazgiro",
-			repo: "https://github.com/orlandoburli/fazgiro", jira: "FG",
+			// The one product with a real repository: the GitHub wave opens
+			// pull requests against it. The SSH URL keeps the token out of
+			// the process arguments.
+			repo: "git@github.com:orlandoburli/fazgiro.git", jira: "FG",
 			projects: []projectSeed{
 				{
 					name: "Plataforma", key: "FG",
@@ -364,7 +367,9 @@ func products() []productSeed {
 		},
 		{
 			name: "Vendamatica", slug: "vendamatica",
-			repo: "https://github.com/orlandoburli/vendamatica", jira: "VM",
+			// No repository yet: a node that needs one falls back to a
+			// scratch workspace and says so.
+			repo: "", jira: "VM",
 			projects: []projectSeed{
 				{
 					name: "CRM", key: "VM",
@@ -416,7 +421,7 @@ func products() []productSeed {
 		},
 		{
 			name: "ProntaLoja", slug: "prontaloja",
-			repo: "https://github.com/orlandoburli/prontaloja", jira: "PL",
+			repo: "", jira: "PL",
 			projects: []projectSeed{
 				{
 					name: "Storefront", key: "PL",

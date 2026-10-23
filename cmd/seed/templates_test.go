@@ -26,8 +26,8 @@ func TestSeedTemplatesAreValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed templates: %v", err)
 	}
-	if len(templates) != 4 {
-		t.Fatalf("templates = %d, want 4", len(templates))
+	if len(templates) != 5 {
+		t.Fatalf("templates = %d, want 5", len(templates))
 	}
 	for _, tpl := range templates {
 		if err := tpl.Graph.Validate(); err != nil {
@@ -174,6 +174,43 @@ func TestBugfixLocalTemplateUsesCLIAgents(t *testing.T) {
 		if cfg["agent_id"] != testAgents()["dev"] {
 			t.Fatalf("node %s uses agent %v, want the CLI agent", node.ID, cfg["agent_id"])
 		}
+	}
+}
+
+// The GitHub variant is the designed flow: the implementation runs in a
+// worktree, the server opens a pull request, the CI is watched, a reviewer
+// looks at the diff, and a human decides.
+func TestBugfixGitHubTemplateShape(t *testing.T) {
+	tpl, err := bugfixGitHubTemplate(testAgents())
+	if err != nil {
+		t.Fatalf("bugfix github template: %v", err)
+	}
+	if tpl.Name != "Bugfix (GitHub)" {
+		t.Fatalf("name = %q", tpl.Name)
+	}
+	if err := tpl.Graph.Validate(); err != nil {
+		t.Fatalf("template invalid: %v", err)
+	}
+	var integrations, checkpoints, merges int
+	for _, node := range tpl.Graph.Nodes {
+		switch node.Kind {
+		case workflow.NodeIntegration:
+			integrations++
+		case workflow.NodeCheckpoint:
+			checkpoints++
+		case workflow.NodeMerge:
+			merges++
+		}
+	}
+	if integrations != 2 || checkpoints != 2 || merges != 1 {
+		t.Fatalf("integrations=%d checkpoints=%d merges=%d, want 2/2/1", integrations, checkpoints, merges)
+	}
+	impl, ok := tpl.Graph.Node("n_code")
+	if !ok {
+		t.Fatal("n_code missing")
+	}
+	if impl.Workspace != workflow.WorkspaceWorktree {
+		t.Fatalf("the implementation must run in a worktree, got %q", impl.Workspace)
 	}
 }
 
