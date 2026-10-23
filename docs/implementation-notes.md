@@ -413,6 +413,18 @@ under RLS. The ranking run is hourly, and once at startup.
 surprise agent run per item is not what a developer wants. The server turns it
 on by default.
 
+**The GitHub column, completed.** The pull-request half was already working
+(open the PR, watch the checks, the reviewer reads the diff). The issue half
+is now built: a tenant-scoped mapping table links a repository's issue to an
+item, the import is idempotent (an already-linked issue updates its item, a
+new one becomes an item), a pull request is never imported, and the title and
+the state stay in step **in both directions** — the poll follows the issue,
+and saving an item pushes its title back to the issue. A closed issue
+completes the item; an open one never reopens anything. A merged pull
+request completes the item *and* the run that opened it (the item id is in
+the branch name), and the poll runs every two minutes for every tenant that
+has a credential.
+
 **The history note.** The marker flow and the issue-body artifact landed in
 the same commits as the retention work and the start-now fix (they were in the
 working tree when those commits were made). The code is where it belongs —
