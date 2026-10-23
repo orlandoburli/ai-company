@@ -32,6 +32,94 @@ type setRoleRequest struct {
 	Role string `json:"role"`
 }
 
+// The tenant's default variables.
+//
+// They are what every run of this tenant inherits: the run's own variables
+// win, and a variable nobody set is simply absent. Reading them is open to
+// every role — a default is configuration everybody may need to see;
+// changing them is a settings surface, so owner/admin only.
+type tenantVariablesRequest struct {
+	Variables map[string]string `json:"variables"`
+}
+
+// registerTenantVariableRoutes mounts the tenant's default variables.
+func (s *Server) registerTenantVariableRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /api/tenant/variables", s.authenticated(s.handleGetTenantVariables))
+	mux.Handle("PUT /api/tenant/variables",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handlePutTenantVariables)))
+}
+
+func (s *Server) handleGetTenantVariables(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if s.variables == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "The variable store is not configured.")
+		return
+	}
+	vars, err := s.variables.TenantVariables(r.Context(), sc)
+	if err != nil {
+		s.internal(w, "read tenant variables", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"variables": vars})
+}
+
+func (s *Server) handlePutTenantVariables(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if s.variables == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "The variable store is not configured.")
+		return
+	}
+	var req tenantVariablesRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Variables == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "A variables object is required.")
+		return
+	}
+	clean := make(map[string]string, len(req.Variables))
+	for name, value := range req.Variables {
+		name = strings.TrimSpace(name)
+		if !validVariableName(name) {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_request",
+				"A variable name starts with a letter or an underscore and holds letters, digits and underscores only (64 characters at most).")
+			return
+		}
+		clean[name] = value
+	}
+	if err := s.variables.SetTenantVariables(r.Context(), sc, clean); err != nil {
+		s.internal(w, "write tenant variables", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"variables": clean})
+}
+
+// validVariableName matches the CHECK on tenant_variables.name: the name is
+// referenced from a template's config as $NAME, so it is a plain identifier.
+func validVariableName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 	id, ok := tenancy.IdentityFrom(r.Context())
 	if !ok {

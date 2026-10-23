@@ -32,14 +32,17 @@ const SessionCookie = "aic_session"
 
 // Server holds the dependencies of the HTTP surface.
 type Server struct {
-	db           *sql.DB
-	tenancy      *tenancy.Store
-	work         *work.Store
-	agents       *agent.Store
-	agentHub     *agent.Hub
-	agentWorker  jobCanceller
-	runners      *runner.Store
-	workflows    *workflow.Store
+	db          *sql.DB
+	tenancy     *tenancy.Store
+	work        *work.Store
+	agents      *agent.Store
+	agentHub    *agent.Hub
+	agentWorker jobCanceller
+	runners     *runner.Store
+	workflows   *workflow.Store
+	// variables is the tenant's default variables: the values every run of
+	// the tenant inherits.
+	variables    *workflow.Store
 	memory       *memory.Store
 	notify       *notification.Store
 	engine       *workflow.Engine
@@ -87,6 +90,7 @@ func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
 		agents:     agent.NewStore(db),
 		agentHub:   agent.NewHub(),
 		runners:    runner.NewStore(db),
+		variables:  workflow.NewStore(db),
 		log:        log,
 		limits:     newRateLimiter(defaultRateLimits()),
 		sessionTTL: 30 * 24 * time.Hour,
@@ -134,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/tenant",
 		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleUpdateTenant)))
 	mux.Handle("GET /api/tenant/members", s.authenticated(s.handleListMembers))
+	s.registerTenantVariableRoutes(mux)
 	mux.Handle("GET /api/invites", s.authenticated(s.handleListInvites))
 	mux.Handle("POST /api/invites",
 		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleCreateInvite)))

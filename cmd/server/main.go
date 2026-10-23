@@ -34,6 +34,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/push"
 	"github.com/orlandoburli/ai-company/internal/ranking"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
 	"github.com/orlandoburli/ai-company/internal/store/retention"
@@ -133,6 +134,11 @@ func run() error {
 
 	workStore := work.NewStore(db)
 
+	// The runner registry: the HOW half of the agent registry. The engine
+	// resolves the runner of every node from it, and the agent's chain is
+	// the fallback order.
+	runnerStore := runner.NewStore(db)
+
 	engine := workflow.NewEngine(workflow.EngineDeps{
 		Store:         workflowStore,
 		Agents:        agentStore,
@@ -141,6 +147,7 @@ func run() error {
 		Work:          workStore,
 		Workspaces:    workspace.NewProvider(),
 		Notifications: notifyStore,
+		Runners:       runnerStore,
 		Failures:      failure.NewStore(db),
 		Integrations:  integrations,
 		Push:          push.NewSender(push.NewStore(db), log),

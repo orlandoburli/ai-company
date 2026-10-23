@@ -217,7 +217,16 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 		w.mu.Unlock()
 	}()
 
+	// The job decides the transport: the runner it was queued with carries
+	// the kind and the config. A LEGACY job — one queued before the
+	// agent/runner split — has no runner, so it falls back to the agent's own
+	// kind and config, exactly as it did before the split.
 	adapterID := string(agentRow.Kind)
+	config := agentRow.Config
+	if job.RunnerID != nil && job.RunnerKind != "" {
+		adapterID = job.RunnerKind
+		config = job.RunnerConfig
+	}
 	adapter := w.adapters[adapterID]
 	if adapter == nil {
 		_ = w.store.FinishJob(ctx, sc, jobID, w.workerID, JobFailed, nil, FailureCapability, "no adapter registered for kind "+adapterID)
@@ -227,7 +236,7 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 
 	job.AgentName = agentRow.Name
 	job.AgentRole = agentRow.Role
-	job.Config = agentRow.Config
+	job.Config = config
 	job.Capabilities = agentRow.Capabilities
 
 	jobCtx, cancel := context.WithCancel(ctx)

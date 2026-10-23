@@ -14,17 +14,19 @@ import (
 
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/memory"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/store/postgres/pgtest"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
 )
 
 type engineFixture struct {
-	db     *sql.DB
-	sc     tenancy.Scope
-	store  *Store
-	agents *agent.Store
-	work   *work.Store
+	db      *sql.DB
+	sc      tenancy.Scope
+	store   *Store
+	agents  *agent.Store
+	runners *runner.Store
+	work    *work.Store
 }
 
 func newEngineFixture(t *testing.T) *engineFixture {
@@ -34,13 +36,22 @@ func newEngineFixture(t *testing.T) *engineFixture {
 	if _, err := db.Exec(`SELECT auth_register_tenant($1,$2,$3,$4,$5,$6,$7,$8)`, "ENG-T1", "Engine tenant", "eng-t1", "ENG-U1", "engine@example.com", "x", "Engine owner", "ENG-M1"); err != nil {
 		t.Fatal(err)
 	}
-	return &engineFixture{db: db, sc: tenancy.Scope{TenantID: "ENG-T1", UserID: "ENG-U1", Role: tenancy.RoleOwner}, store: NewStore(db), agents: agent.NewStore(db), work: work.NewStore(db)}
+	return &engineFixture{db: db, sc: tenancy.Scope{TenantID: "ENG-T1", UserID: "ENG-U1", Role: tenancy.RoleOwner}, store: NewStore(db), agents: agent.NewStore(db), runners: runner.NewStore(db), work: work.NewStore(db)}
 }
 
 func (f *engineFixture) createAgent(t *testing.T) agent.Agent {
 	t.Helper()
 	a, err := f.agents.CreateAgent(context.Background(), f.sc, agent.Agent{Name: "engine-agent", Role: agent.RoleDev, Kind: agent.KindCLI, Config: json.RawMessage(`{"bin":"unused"}`), Enabled: true, SoulMD: "Always be helpful.", CreatedBy: &f.sc.UserID})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The agent is the WHAT; the runner is the HOW. Every agent carries the
+	// runner it runs on, and the chain is the fallback order.
+	r, err := f.runners.Create(context.Background(), f.sc, runner.NewRunner{Name: "engine-runner", Kind: runner.KindCLI, Config: json.RawMessage(`{"bin":"unused"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.runners.SetChain(context.Background(), f.sc, a.ID, []string{r.ID}); err != nil {
 		t.Fatal(err)
 	}
 	return a
@@ -52,7 +63,7 @@ func (f *engineFixture) createRun(t *testing.T, graph Template) Run {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Memory: memory.NewStore(f.db), Work: f.work, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	run, err := e.StartRun(context.Background(), f.sc, tpl.ID, "", f.sc.UserID)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +121,7 @@ func TestEngineLinearRunReplayAndIdempotency(t *testing.T) {
 	ctx := context.Background()
 	a := f.createAgent(t)
 	run := f.createRun(t, agentGraph(a))
-	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Memory: memory.NewStore(f.db), Work: f.work})
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work})
 	if err := e.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +212,7 @@ func TestEngineCheckpointCASDecision(t *testing.T) {
 	ctx := context.Background()
 	graph := Template{SchemaVersion: 1, Nodes: []Node{{ID: "gate", Kind: NodeCheckpoint, Name: "review", Type: "human.review", TypeVersion: 1, Config: json.RawMessage(`{"policy":"retry_step","max_cycles":3,"fields":[{"key":"decision","type":"choice","label":"Decision","required":true,"options":["accept","revise"]}]}`), OnError: OnErrorStop, Workspace: WorkspaceScratch}}, Edges: []Edge{}}
 	run := f.createRun(t, graph)
-	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Memory: memory.NewStore(f.db)})
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db)})
 	if err := e.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +313,7 @@ func TestEngineDiamondDispatchAndMergeReceipts(t *testing.T) {
 			wctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			worker.Start(wctx)
-			e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Memory: memory.NewStore(f.db), Work: f.work})
+			e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work})
 			if err := e.Tick(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -377,7 +388,7 @@ func TestEngineCancelWaitingRun(t *testing.T) {
 	ctx := context.Background()
 	graph := Template{SchemaVersion: 1, Nodes: []Node{{ID: "gate", Kind: NodeCheckpoint, Name: "review", Type: "human.review", TypeVersion: 1, Config: json.RawMessage(`{"policy":"retry_step"}`), OnError: OnErrorStop, Workspace: WorkspaceScratch}}, Edges: []Edge{}}
 	run := f.createRun(t, graph)
-	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents})
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners})
 	if err := e.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -149,10 +149,21 @@ type Job struct {
 	AgentID  string `json:"agent_id"`
 	// AgentName, AgentRole, Config and Capabilities are filled in by the worker
 	// from the registry row; they are not columns on agent_jobs.
-	AgentName      string          `json:"-"`
-	AgentRole      Role            `json:"-"`
-	Config         json.RawMessage `json:"-"`
-	Capabilities   json.RawMessage `json:"-"`
+	AgentName    string          `json:"-"`
+	AgentRole    Role            `json:"-"`
+	Config       json.RawMessage `json:"-"`
+	Capabilities json.RawMessage `json:"-"`
+	// RunnerID, RunnerKind and RunnerConfig are the SNAPSHOT of the runner
+	// the job was queued with: the id of the runner, its transport kind and
+	// its config. A queued job never changes when somebody edits the runner,
+	// and the worker never has to read the runner to know how to run.
+	//
+	// They are empty for a LEGACY job — one queued before the agent/runner
+	// split. The worker falls back to the agent's own kind and config for
+	// those, so nothing that is already in flight breaks.
+	RunnerID       *string         `json:"runner_id"`
+	RunnerKind     string          `json:"runner_kind"`
+	RunnerConfig   json.RawMessage `json:"runner_config"`
 	ThreadID       *string         `json:"thread_id"`
 	MessageID      *string         `json:"message_id"`
 	ItemID         *string         `json:"item_id"`

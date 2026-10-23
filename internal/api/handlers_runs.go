@@ -32,6 +32,10 @@ func (s *Server) registerWorkflowRunRoutes(mux *http.ServeMux) {
 type startRunRequest struct {
 	TemplateID      string `json:"template_id"`
 	TemplateVersion *int   `json:"template_version"`
+	// Variables are the run's own inputs: the values the run's templates are
+	// filled with, and the values a node's `config.runner` may resolve
+	// ($NAME). They win over the tenant's defaults.
+	Variables map[string]string `json:"variables"`
 }
 
 type runWire struct {
@@ -39,6 +43,7 @@ type runWire struct {
 	ItemID                 string            `json:"item_id"`
 	TemplateID             string            `json:"template_id"`
 	TemplateVersion        int               `json:"template_version"`
+	Variables              map[string]string `json:"variables"`
 	State                  workflow.RunState `json:"state"`
 	MaxConcurrency         int               `json:"max_concurrency"`
 	StartedBy              string            `json:"started_by"`
@@ -60,8 +65,12 @@ func runResponse(run workflow.Run) runWire {
 	if run.FailureKind != "" {
 		failure = &run.FailureKind
 	}
+	variables := run.Variables
+	if variables == nil {
+		variables = map[string]string{}
+	}
 	return runWire{ID: run.ID, ItemID: run.ItemID, TemplateID: run.TemplateID,
-		TemplateVersion: run.TemplateVersion, State: run.State, MaxConcurrency: run.MaxConcurrency,
+		TemplateVersion: run.TemplateVersion, Variables: variables, State: run.State, MaxConcurrency: run.MaxConcurrency,
 		StartedBy: run.StartedBy, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
 		Error: errText, FailureKind: failure, Branch: run.Branch, WorktreePath: run.WorktreePath,
 		DefinitionSnapshotJSON: run.DefinitionSnapshot, CreatedAt: run.CreatedAt}
@@ -207,7 +216,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "template_not_published", "No matching published template version exists.")
 		return
 	}
-	run, err := s.engine.StartRun(r.Context(), sc, chosen.ID, r.PathValue("id"), sc.UserID)
+	run, err := s.engine.StartRun(r.Context(), sc, chosen.ID, r.PathValue("id"), sc.UserID, workflow.WithRunVariables(req.Variables))
 	if err != nil {
 		if errors.Is(err, workflow.ErrNotFound) {
 			writeError(w, http.StatusUnprocessableEntity, "template_not_published", "The selected template is no longer published.")

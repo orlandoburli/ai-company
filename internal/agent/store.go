@@ -837,6 +837,7 @@ func (s *Store) ListMessages(ctx context.Context, sc tenancy.Scope, threadID str
 const jobColumns = `
 	j.id, j.tenant_id, j.agent_id, j.thread_id, j.message_id, j.item_id,
 	j.step_run_id, j.idempotency_key,
+	j.runner_id, j.runner_kind, j.runner_config_json,
 	j.state, j.attempt, j.max_attempts, j.prompt, j.context_json, j.workdir,
 	j.tokens_in, j.tokens_out, j.cost_usd, j.result_json, j.failure_kind,
 	j.error_text, j.created_by, j.created_at, j.started_at, j.finished_at`
@@ -846,11 +847,14 @@ func scanJob(r rowScanner) (Job, error) {
 		j              Job
 		context        []byte
 		result         []byte
+		runnerConfig   []byte
 		threadID       sql.NullString
 		messageID      sql.NullString
 		itemID         sql.NullString
 		stepRunID      sql.NullString
 		idempotencyKey sql.NullString
+		runnerID       sql.NullString
+		runnerKind     sql.NullString
 		workdir        sql.NullString
 		cost           sql.NullFloat64
 		failureKind    sql.NullString
@@ -860,6 +864,7 @@ func scanJob(r rowScanner) (Job, error) {
 		finishedAt     sql.NullTime
 	)
 	err := r.Scan(&j.ID, &j.TenantID, &j.AgentID, &threadID, &messageID, &itemID, &stepRunID, &idempotencyKey,
+		&runnerID, &runnerKind, &runnerConfig,
 		&j.State, &j.Attempt, &j.MaxAttempts, &j.Prompt, &context, &workdir,
 		&j.TokensIn, &j.TokensOut, &cost, &result, &failureKind, &errText,
 		&createdBy, &j.CreatedAt, &startedAt, &finishedAt)
@@ -868,6 +873,7 @@ func scanJob(r rowScanner) (Job, error) {
 	}
 	j.Context = json.RawMessage(context)
 	j.Result = json.RawMessage(result)
+	j.RunnerConfig = json.RawMessage(runnerConfig)
 	if threadID.Valid {
 		j.ThreadID = &threadID.String
 	}
@@ -883,6 +889,10 @@ func scanJob(r rowScanner) (Job, error) {
 	if idempotencyKey.Valid {
 		j.IdempotencyKey = &idempotencyKey.String
 	}
+	if runnerID.Valid {
+		j.RunnerID = &runnerID.String
+	}
+	j.RunnerKind = runnerKind.String
 	if workdir.Valid {
 		j.Workdir = &workdir.String
 	}
@@ -927,6 +937,13 @@ type NewJob struct {
 	// directory of its own.
 	Workdir   string
 	CreatedBy string
+	// RunnerID, RunnerKind and RunnerConfig are the runner's snapshot: the
+	// job runs on that transport, with that config, whatever happens to the
+	// runner afterwards. All three empty means a legacy job, which falls
+	// back to the agent's own kind and config.
+	RunnerID     string
+	RunnerKind   string
+	RunnerConfig json.RawMessage
 }
 
 // CreateJob queues one adapter execution.
@@ -988,12 +1005,16 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 
 		created, err := scanJob(tx.QueryRowContext(ctx, `
 			INSERT INTO agent_jobs AS j (id, tenant_id, agent_id, thread_id, message_id,
-			                    item_id, step_run_id, idempotency_key, prompt, context_json, workdir, created_by)
+			                    item_id, step_run_id, idempotency_key,
+			                    runner_id, runner_kind, runner_config_json,
+			                    prompt, context_json, workdir, created_by)
 			VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''),
-			        $9, $10::jsonb, nullif($11, ''), nullif($12, ''))
+			        nullif($9, ''), nullif($10, ''), $11::jsonb,
+			        $12, $13::jsonb, nullif($14, ''), nullif($15, ''))
 			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			RETURNING`+jobColumns,
 			newID(), sc.TenantID, in.AgentID, in.ThreadID, in.MessageID, in.ItemID, in.StepRunID, in.IdempotencyKey,
+			in.RunnerID, in.RunnerKind, orJSON(in.RunnerConfig, "{}"),
 			in.Prompt, orJSON(in.Context, "{}"), in.Workdir, in.CreatedBy))
 		if errors.Is(err, sql.ErrNoRows) && in.IdempotencyKey != "" {
 			// A replay attaches to the same job row instead of enqueuing a

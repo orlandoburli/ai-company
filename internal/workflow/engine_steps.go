@@ -17,6 +17,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/ctxbundle"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
@@ -89,6 +90,23 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			if job.ErrorText != nil {
 				message = *job.ErrorText
 			}
+			// The design's own rule: a capability failure tries the agent's
+			// fallback chain — which is the runner chain now — and only then
+			// fails the node.
+			if failure == string(FailureCapability) {
+				next, ok, fallbackErr := e.fallbackRunner(ctx, sc, node, step)
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				if ok {
+					if fallbackErr = e.redispatchWithRunner(ctx, sc, run, t, node, step, next); fallbackErr != nil {
+						return fallbackErr
+					}
+					e.logger.Info("workflow runner fallback",
+						"run_id", run.ID, "node_id", node.ID, "step_id", step.ID, "runner", next.Name)
+					continue
+				}
+			}
 			result = map[string]any{"status": "failed", "exit_reason": message, "failure_kind": failure, "summary": message}
 		} else {
 			var decoded map[string]json.RawMessage
@@ -135,6 +153,13 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			}
 		}
 		result["tokens_in"], result["tokens_out"], result["cost_usd"] = job.TokensIn, job.TokensOut, job.CostUSD
+		// The step says which runner ran it: the transport is part of the
+		// result, not only of the job.
+		if trace := readRunnerTrace(step); trace.Runner != "" {
+			result["runner"] = trace.Runner
+			result["runner_attempt"] = trace.Attempt
+			result["runners_tried"] = trace.Tried
+		}
 		var contextInfo struct {
 			WorkspaceNote string   `json:"workspace_note"`
 			Dropped       []string `json:"dropped_markers"`
@@ -329,6 +354,21 @@ func (e *Engine) failClaim(ctx context.Context, sc tenancy.Scope, run Run, t *Te
 }
 
 func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t *Template, node Node, step StepRun, ready ReadyNode) error {
+	return e.dispatchAgentOn(ctx, sc, run, t, node, step, ready, nil, 1)
+}
+
+// dispatchAgentOn queues the node's job.
+//
+// The transport is nil for an ordinary dispatch: the engine then resolves one
+// from the node's config, the agent's chain and the runner's budget. It is
+// set for a fallback, where the chain has already chosen the runner the step
+// is re-dispatched on.
+//
+// The attempt counts the runner attempts of this step: the first dispatch is
+// attempt 1, and every fallback advances it. The attempt is part of the
+// job's idempotency key, so a fallback queues a NEW job instead of
+// re-attaching to the failed one.
+func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run, t *Template, node Node, step StepRun, ready ReadyNode, transport *runner.Runner, attempt int) error {
 	if e.agents == nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", "agent store is not configured")
 	}
@@ -337,6 +377,13 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	a, err := e.agents.GetAgent(ctx, sc, agentID)
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
+	}
+	if transport == nil {
+		resolved, resolveErr := e.ResolveRunner(ctx, sc, run, node, a.ID)
+		if resolveErr != nil {
+			return e.failClaim(ctx, sc, run, t, step, "capability", resolveErr.Error())
+		}
+		transport = &resolved
 	}
 	var item work.Item
 	if run.ItemID != "" && e.work != nil {
@@ -349,20 +396,27 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	branch := ""
 	scratchReason := ""
 	if node.Workspace == WorkspaceWorktree {
-		productID, repoURL := e.productForItem(ctx, sc, item)
-		if e.workspaces == nil || productID == "" || repoURL == "" {
-			scratchReason = "No repository mirror is configured; this execution uses a scratch workspace."
+		if step.Workdir != "" {
+			// The step already has a workspace from an earlier attempt: the
+			// fallback continues in it rather than preparing a second one.
+			workdir = step.Workdir
+			branch = stepBranch(step)
 		} else {
-			ws, prepErr := e.workspaces.Prepare(ctx, workspace.Request{ProductID: productID, SourceURL: repoURL, RunID: run.ID, StepRunID: step.ID, ItemID: item.ID, Attempt: maxInt(1, ready.Attempt)})
-			if prepErr != nil {
-				// A repository that cannot be mirrored (missing, unreachable,
-				// private) must not fail the run: the execution falls back to a
-				// scratch directory and says so in its result. Failing the node
-				// would turn an environment problem into a broken workflow.
-				scratchReason = "No repository mirror could be prepared (" + prepErr.Error() + "); this execution uses a scratch workspace."
+			productID, repoURL := e.productForItem(ctx, sc, item)
+			if e.workspaces == nil || productID == "" || repoURL == "" {
+				scratchReason = "No repository mirror is configured; this execution uses a scratch workspace."
 			} else {
-				workdir = ws.Dir
-				branch = ws.Branch
+				ws, prepErr := e.workspaces.Prepare(ctx, workspace.Request{ProductID: productID, SourceURL: repoURL, RunID: run.ID, StepRunID: step.ID, ItemID: item.ID, Attempt: maxInt(1, ready.Attempt)})
+				if prepErr != nil {
+					// A repository that cannot be mirrored (missing, unreachable,
+					// private) must not fail the run: the execution falls back to a
+					// scratch directory and says so in its result. Failing the node
+					// would turn an environment problem into a broken workflow.
+					scratchReason = "No repository mirror could be prepared (" + prepErr.Error() + "); this execution uses a scratch workspace."
+				} else {
+					workdir = ws.Dir
+					branch = ws.Branch
+				}
 			}
 		}
 	}
@@ -382,6 +436,9 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	promptTmpl = strings.ReplaceAll(promptTmpl, "{{item.description}}", item.DescriptionMD)
 	var task strings.Builder
 	task.WriteString(promptTmpl)
+	// The persona and the transport are separate now: the model is told which
+	// runner it is running on, so it knows what it is.
+	fmt.Fprintf(&task, "\n\nYou are running as the `%s` runner.", transport.Name)
 	if item.ID != "" {
 		fmt.Fprintf(&task, "\n\nWork item: %s\nStatus: %s\n\n%s", item.Title, item.Status, item.DescriptionMD)
 	}
@@ -431,8 +488,12 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 	}
 	bundle.DroppedMarkers = append(bundle.DroppedMarkers, issueMarkers...)
 	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "trimmed": bundle.Trimmed, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs})
-	key := fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex)
-	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, Workdir: workdir, CreatedBy: run.StartedBy})
+	key := jobKey(run.ID, node.ID, ready.IterationPath, ready.RunIndex, attempt)
+	// The job carries a SNAPSHOT of the runner: its id, its kind and its
+	// config. A queued job never changes when somebody edits the runner, and
+	// the worker never has to read the runner to know how to run.
+	job, err := e.agents.CreateJob(ctx, sc, agent.NewJob{AgentID: a.ID, ThreadID: thread.ID, ItemID: item.ID, StepRunID: step.ID, IdempotencyKey: key, Prompt: bundle.Prompt, Context: contextJSON, Workdir: workdir, CreatedBy: run.StartedBy,
+		RunnerID: transport.ID, RunnerKind: string(transport.Kind), RunnerConfig: transport.Config})
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
@@ -446,7 +507,11 @@ func (e *Engine) dispatchAgent(ctx context.Context, sc tenancy.Scope, run Run, t
 		branch = fmt.Sprintf("aic/%s-%s-%d", item.ID, step.ID, maxInt(1, ready.Attempt))
 	}
 	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "trimmed": bundle.Trimmed, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
-	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk})
+	// The step remembers which runner it is on: the result says what ran, and
+	// the tried list is what keeps a fallback from retrying the same runner.
+	trace := readRunnerTrace(step).with(transport.Name, attempt)
+	stepResult := rawJSON(map[string]any{"status": "running", "runner": trace.Runner, "runner_attempt": trace.Attempt, "runners_tried": trace.Tried})
+	_, err = e.store.UpdateStepRun(ctx, sc, step.ID, StepRunPatch{State: &state, AgentJobID: &jobID, MemoryManifest: ptrRaw(rawJSON(bundle.MemoryManifest)), ContextManifest: ptrRaw(contextManifest), TaskFileSHA: &bundle.TaskFileSHA, Workdir: &wd, WorkspaceKind: &wk, Result: ptrRaw(stepResult)})
 	if err != nil {
 		return err
 	}
@@ -521,6 +586,120 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// jobKey is the idempotency key of a node's job.
+//
+// The runner attempt is part of the key: a fallback queues a NEW job instead
+// of re-attaching to the job that failed.
+func jobKey(runID, nodeID, path string, runIndex, attempt int) string {
+	key := fmt.Sprintf("run:%s:%s:%s:%d", runID, nodeID, path, runIndex)
+	if attempt > 1 {
+		key = fmt.Sprintf("%s:runner:%d", key, attempt)
+	}
+	return key
+}
+
+// runnerTrace is what a step remembers about the runners it has tried.
+type runnerTrace struct {
+	// Attempt counts the runner attempts of this step; the first one is 1.
+	Attempt int `json:"runner_attempt"`
+	// Runner is the name of the runner the step is on.
+	Runner string `json:"runner"`
+	// Tried lists the runners the step has tried, in order.
+	Tried []string `json:"runners_tried"`
+}
+
+// readRunnerTrace reads the runner trace out of a step's result.
+func readRunnerTrace(step StepRun) runnerTrace {
+	var trace runnerTrace
+	if len(step.Result) > 0 {
+		_ = json.Unmarshal(step.Result, &trace)
+	}
+	if trace.Tried == nil {
+		trace.Tried = []string{}
+	}
+	return trace
+}
+
+// with records a runner attempt: the runner the step is on, and the list of
+// runners the step has tried.
+func (t runnerTrace) with(name string, attempt int) runnerTrace {
+	t.Runner = name
+	if attempt > t.Attempt {
+		t.Attempt = attempt
+	}
+	for _, tried := range t.Tried {
+		if strings.EqualFold(tried, name) {
+			return t
+		}
+	}
+	t.Tried = append(t.Tried, name)
+	return t
+}
+
+// stepBranch reads the branch an execution reported on its context manifest.
+func stepBranch(step StepRun) string {
+	var info struct {
+		Branch string `json:"branch"`
+	}
+	_ = json.Unmarshal(step.ContextManifest, &info)
+	return info.Branch
+}
+
+// fallbackRunner returns the next runner of the agent's chain for a step
+// whose job failed with a capability failure.
+//
+// The chain is walked in priority order and a runner is tried at most once per
+// step execution: the runners the step already tried are skipped, and so are
+// the disabled ones and the ones whose budget is spent — a fallback onto a
+// runner that cannot run would fail the node anyway.
+//
+// The second result is false when the chain is exhausted: the node then fails
+// as it does today.
+func (e *Engine) fallbackRunner(ctx context.Context, sc tenancy.Scope, node Node, step StepRun) (runner.Runner, bool, error) {
+	if e.runners == nil {
+		return runner.Runner{}, false, nil
+	}
+	cfg := decodeConfig(node)
+	agentID := stringConfig(cfg, "agent_id")
+	if agentID == "" {
+		return runner.Runner{}, false, nil
+	}
+	chain, err := e.runners.Chain(ctx, sc, agentID)
+	if err != nil {
+		return runner.Runner{}, false, err
+	}
+	if len(chain) == 0 {
+		return runner.Runner{}, false, nil
+	}
+	trace := readRunnerTrace(step)
+	tried := map[string]bool{}
+	for _, r := range chain {
+		for _, name := range trace.Tried {
+			if strings.EqualFold(name, r.Name) {
+				tried[r.ID] = true
+			}
+		}
+	}
+	next, ok, err := WalkChain(chain, nil, e.spendFor(ctx, sc), tried)
+	if err != nil {
+		return runner.Runner{}, false, err
+	}
+	return next, ok, nil
+}
+
+// redispatchWithRunner queues the step again on another runner of the chain.
+//
+// The old job stays for the audit trail — the step moves to the new job and
+// the failed one is still there to be read. The step's attempt advances, so
+// the fallback cannot loop, and the step keeps its workspace: the second
+// attempt continues where the first one stopped.
+func (e *Engine) redispatchWithRunner(ctx context.Context, sc tenancy.Scope, run Run, t *Template, node Node, step StepRun, transport runner.Runner) error {
+	attempt := readRunnerTrace(step).Attempt + 1
+	ready := ReadyNode{NodeID: node.ID, IterationPath: step.IterationPath, RunIndex: step.RunIndex,
+		Kind: node.Kind, Inputs: step.InputEdges, Attempt: attempt}
+	return e.dispatchAgentOn(ctx, sc, run, t, node, step, ready, &transport, attempt)
 }
 
 func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work.Item) (string, string) {

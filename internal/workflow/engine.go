@@ -15,6 +15,7 @@ import (
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/push"
+	"github.com/orlandoburli/ai-company/internal/runner"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
@@ -30,6 +31,11 @@ type EngineDeps struct {
 	Work          *work.Store
 	Workspaces    *workspace.Provider
 	Notifications *notification.Store
+	// Runners is the registry of runners — the HOW half of an agent. A node
+	// resolves its runner from the agent's chain and the tenant's runners, so
+	// a nil registry leaves the agent nodes failing with a capability failure
+	// instead of running on a transport nobody chose.
+	Runners *runner.Store
 	// Failures carries the per-item retry state: the backoff curve and the
 	// exhausted marker.
 	Failures *failure.Store
@@ -54,6 +60,7 @@ type Engine struct {
 	work          *work.Store
 	workspaces    *workspace.Provider
 	notifications *notification.Store
+	runners       *runner.Store
 	failures      *failure.Store
 	integrations  *Services
 	push          *push.Sender
@@ -77,7 +84,7 @@ func NewEngine(deps EngineDeps) *Engine {
 		deps.Lease = 2 * time.Minute
 	}
 	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work, integrations: deps.Integrations, failures: deps.Failures, push: deps.Push, commands: deps.Commands,
-		workspaces: deps.Workspaces, notifications: deps.Notifications, logger: logger,
+		workspaces: deps.Workspaces, notifications: deps.Notifications, runners: deps.Runners, logger: logger,
 		tickInterval: deps.TickInterval, lease: deps.Lease}
 }
 
@@ -140,8 +147,23 @@ func (e *Engine) Tick(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// RunOption tunes a run at creation.
+type RunOption func(*NewRun)
+
+// WithRunVariables sets the run's own variables — the values the run's
+// templates are filled with, and the values a node's `config.runner` may
+// resolve ($NAME). The run's variables win over the tenant's defaults.
+func WithRunVariables(vars map[string]string) RunOption {
+	return func(in *NewRun) {
+		if len(vars) == 0 {
+			return
+		}
+		in.Variables = vars
+	}
+}
+
 // StartRun snapshots the chosen template and queues a run for its first tick.
-func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, itemID, actorUserID string) (Run, error) {
+func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, itemID, actorUserID string, opts ...RunOption) (Run, error) {
 	tpl, err := e.store.GetTemplate(ctx, sc, templateID)
 	if err != nil {
 		return Run{}, err
@@ -154,8 +176,14 @@ func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, ite
 			return Run{}, err
 		}
 	}
-	run, err := e.store.CreateRun(ctx, sc, NewRun{TemplateID: tpl.ID, TemplateVersion: tpl.Version,
-		ItemID: itemID, DefinitionSnapshot: tpl.GraphJSON, MaxConcurrency: tpl.MaxConcurrency, StartedBy: actorUserID})
+	in := NewRun{TemplateID: tpl.ID, TemplateVersion: tpl.Version,
+		ItemID: itemID, DefinitionSnapshot: tpl.GraphJSON, MaxConcurrency: tpl.MaxConcurrency, StartedBy: actorUserID}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&in)
+		}
+	}
+	run, err := e.store.CreateRun(ctx, sc, in)
 	if err != nil {
 		return Run{}, err
 	}

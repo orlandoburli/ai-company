@@ -310,21 +310,31 @@ type Run struct {
 	TemplateVersion          int
 	ItemID                   string
 	DefinitionSnapshot       json.RawMessage
-	State                    RunState
-	MaxConcurrency           int
-	StartedBy                string
-	WorktreePath, Branch     string
-	StartedAt, FinishedAt    *time.Time
-	ErrorText, FailureKind   string
-	CreatedAt                time.Time
+	// Variables are the run's inputs: the values a template's placeholders
+	// are filled with and the values a node's `config.runner` may resolve
+	// ($NAME). They win over the tenant's defaults.
+	Variables      map[string]string
+	State          RunState
+	MaxConcurrency int
+	StartedBy      string
+	WorktreePath   string
+	Branch         string
+	StartedAt      *time.Time
+	FinishedAt     *time.Time
+	ErrorText      string
+	FailureKind    string
+	CreatedAt      time.Time
 }
 type NewRun struct {
 	TemplateID         string
 	TemplateVersion    int
 	ItemID             string
 	DefinitionSnapshot json.RawMessage
-	MaxConcurrency     int
-	StartedBy          string
+	// Variables are the run's own inputs. Empty means the run inherits the
+	// tenant's defaults.
+	Variables      map[string]string
+	MaxConcurrency int
+	StartedBy      string
 }
 type RunFilter struct {
 	ItemID string
@@ -332,19 +342,20 @@ type RunFilter struct {
 	Limit  int
 }
 
-const runCols = `id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,state,max_concurrency,started_by,worktree_path,branch,started_at,finished_at,error,failure_kind,created_at`
+const runCols = `id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,state,max_concurrency,started_by,worktree_path,branch,started_at,finished_at,error,failure_kind,created_at`
 
 func scanRun(r rowScanner) (Run, error) {
 	var x Run
 	var item, by, worktree, branch, errText, failure sql.NullString
-	var snap []byte
+	var snap, variables []byte
 	var started, finished sql.NullTime
-	e := r.Scan(&x.ID, &x.TenantID, &x.TemplateID, &x.TemplateVersion, &item, &snap, &x.State, &x.MaxConcurrency, &by, &worktree, &branch, &started, &finished, &errText, &failure, &x.CreatedAt)
+	e := r.Scan(&x.ID, &x.TenantID, &x.TemplateID, &x.TemplateVersion, &item, &snap, &variables, &x.State, &x.MaxConcurrency, &by, &worktree, &branch, &started, &finished, &errText, &failure, &x.CreatedAt)
 	if e != nil {
 		return x, e
 	}
 	x.ItemID = nullString(item)
 	x.DefinitionSnapshot = snap
+	x.Variables = decodeVariables(variables)
 	x.StartedBy = nullString(by)
 	x.WorktreePath = nullString(worktree)
 	x.Branch = nullString(branch)
@@ -354,6 +365,34 @@ func scanRun(r rowScanner) (Run, error) {
 	x.FailureKind = nullString(failure)
 	return x, nil
 }
+
+// decodeVariables reads a variables_json document into a map. A missing or
+// malformed document is an empty map: the run still runs, it just has no
+// variables of its own.
+func decodeVariables(raw []byte) map[string]string {
+	out := map[string]string{}
+	if len(raw) == 0 {
+		return out
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]string{}
+	}
+	return out
+}
+
+// encodeVariables renders a variable map as the JSON document the columns
+// carry.
+func encodeVariables(vars map[string]string) (json.RawMessage, error) {
+	if vars == nil {
+		return json.RawMessage(`{}`), nil
+	}
+	b, err := json.Marshal(vars)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 func (s *Store) CreateRun(ctx context.Context, sc tenancy.Scope, in NewRun) (Run, error) {
 	if len(in.DefinitionSnapshot) == 0 {
 		in.DefinitionSnapshot = json.RawMessage(`{}`)
@@ -361,10 +400,14 @@ func (s *Store) CreateRun(ctx context.Context, sc tenancy.Scope, in NewRun) (Run
 	if in.MaxConcurrency == 0 {
 		in.MaxConcurrency = 4
 	}
+	variables, err := encodeVariables(in.Variables)
+	if err != nil {
+		return Run{}, err
+	}
 	var out Run
-	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+	err = s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		var e error
-		out, e = scanRun(tx.QueryRowContext(ctx, `INSERT INTO workflow_runs (id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,max_concurrency,started_by) VALUES ($1,$2,$3,$4,nullif($5,''),$6::jsonb,$7,nullif($8,'')) RETURNING `+runCols, newID(), sc.TenantID, in.TemplateID, in.TemplateVersion, in.ItemID, in.DefinitionSnapshot, in.MaxConcurrency, in.StartedBy))
+		out, e = scanRun(tx.QueryRowContext(ctx, `INSERT INTO workflow_runs (id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,max_concurrency,started_by) VALUES ($1,$2,$3,$4,nullif($5,''),$6::jsonb,$7::jsonb,$8,nullif($9,'')) RETURNING `+runCols, newID(), sc.TenantID, in.TemplateID, in.TemplateVersion, in.ItemID, in.DefinitionSnapshot, variables, in.MaxConcurrency, in.StartedBy))
 		return e
 	})
 	if err != nil {
