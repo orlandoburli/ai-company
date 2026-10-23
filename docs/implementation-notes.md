@@ -372,6 +372,53 @@ node reads them back).
 
 ## M4 decisions (GitHub, ranking, skills)
 
+**What was checked against.** A real run of the seeded *Bugfix (GitHub)*
+template against `orlandoburli/fazgiro`: the specification, the first
+checkpoint, the implementation in a worktree, the pull request (opened by the
+server on the branch the server created), the CI watched to `success`, the
+reviewer's read of the diff, the merge of the two branches, the second
+checkpoint, the summary — and the item's status ended at `done`. The merge
+itself is a human action by decision: the system opens and watches pull
+requests, a person merges.
+
+**The marker flow.** `AIC_OUTPUT` writes the *declared* keys of a node's
+output to the run scope (an undeclared key is dropped, a wrong type is
+dropped, a malformed block is a `capability` failure); `AIC_MEMORIZE` writes
+only to the agent's own scope or the current workspace, never to another
+scope, and never over a human-authored entry; `AIC_PUBLISH` is a proposal,
+never an action. The markers are parsed as *data* — a marker in an agent's
+output is untrusted input that the server checks, not an instruction it obeys.
+
+**The untrusted issue body.** A fetched issue body is attached to the next
+node's task file as an **untrusted section**: sanitised (ANSI/OSC, NULs, bidi
+overrides, instruction-shaped lines), fenced with delimiters the content
+cannot forge, labelled with its provenance, and it grants nothing — no skill
+loads from it, no memory is written from it, no scope widens, and the markers
+inside it are dropped and logged.
+
+**The dispatcher.** The part that actually starts the work: it walks the
+tenants, takes the ranked queue, applies the eligibility gates *before* the
+order, matches the item's kind to a published template (there is exactly one
+default template per tenant — two would make the choice arbitrary), and obeys
+the global worker pool and the per-agent concurrency. A run it starts is
+attributed in the activity log, and an item that already has a run is never
+started twice. The two questions that cross a tenant boundary — which tenants
+are there, and how busy is the shared worker pool — are answered by two narrow
+`SECURITY DEFINER` functions owned by `aic_auth` (`0017_dispatch.sql`),
+exactly like the job claimer before them; everything else is tenant-scoped
+under RLS. The ranking run is hourly, and once at startup.
+
+**The automatic dispatch is off in the development harness**
+(`AIC_AUTO_DISPATCH=off`): the seeded tenant has two dozen items, and a
+surprise agent run per item is not what a developer wants. The server turns it
+on by default.
+
+**The history note.** The marker flow and the issue-body artifact landed in
+the same commits as the retention work and the start-now fix (they were in the
+working tree when those commits were made). The code is where it belongs —
+`internal/markers`, `internal/workflow/markers.go`, migration `0016` — but the
+commit messages do not describe it.
+
 **The GitHub target.** The seeded `FazGiro` product points at a real
 repository (`git@github.com:orlandoburli/fazgiro.git`, private) with a small
 Go project and a CI workflow, so the flow "branch → agent → pull request →
