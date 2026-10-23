@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/command"
 	"github.com/orlandoburli/ai-company/internal/ctxbundle"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
@@ -942,9 +943,36 @@ func (e *Engine) notifyCheckpoint(ctx context.Context, sc tenancy.Scope, run Run
 		return
 	}
 	payload := rawJSON(map[string]string{"run_id": run.ID, "checkpoint_id": cp.ID})
-	_, err := e.notifications.CreateMany(ctx, sc, notification.New{Kind: notification.KindCheckpointPending, TitleMD: "Workflow checkpoint needs review", BodyMD: cp.SummaryMD, Link: "/checkpoints/" + cp.ID, Payload: payload}, []string{run.StartedBy})
+	title := "Workflow checkpoint needs review"
+	link := "/checkpoints/" + cp.ID
+	_, err := e.notifications.CreateMany(ctx, sc, notification.New{Kind: notification.KindCheckpointPending, TitleMD: title, BodyMD: cp.SummaryMD, Link: link, Payload: payload}, []string{run.StartedBy})
 	if err != nil {
 		e.logger.Warn("notify pending workflow checkpoint", "checkpoint_id", cp.ID, "error", err)
+	}
+	e.notifyChannels(ctx, sc, "checkpoint_pending", run, title, cp.SummaryMD, link)
+}
+
+// notifyChannels delivers the event to the out-of-band channels: the browser
+// push and the user's own commands. A channel that fails never fails the run.
+func (e *Engine) notifyChannels(ctx context.Context, sc tenancy.Scope, kind string, run Run, title, body, link string) {
+	if e.push != nil {
+		if err := e.push.Notify(ctx, sc, title, body, link); err != nil {
+			e.logger.Warn("push notification", "kind", kind, "error", err)
+		}
+	}
+	if e.commands != nil {
+		for _, result := range e.commands.Run(ctx, sc, command.Event{
+			Kind:   kind,
+			RunID:  run.ID,
+			ItemID: run.ItemID,
+			Title:  title,
+			Body:   body,
+			Link:   link,
+		}) {
+			if result.Err != "" {
+				e.logger.Warn("notification command failed", "channel", result.ChannelID, "error", result.Err)
+			}
+		}
 	}
 }
 

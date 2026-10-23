@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/agent/policy"
 )
 
 // allowEnvKeys is the fixed environment allowlist for CLI children. Per §10
@@ -192,11 +193,11 @@ func (c *CLI) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 		return classify(agent.FailurePermanent,
 			fmt.Errorf("%w: cli adapter: %s", agent.ErrInvalid, fmt.Sprintf(format, a...)))
 	}
-	var cfg agent.CLIConfig
 	if len(job.Config) == 0 {
 		return nil, invalid("missing config")
 	}
-	if err := json.Unmarshal(job.Config, &cfg); err != nil {
+	cfg, policyCfg, err := decodeCLIConfig(job.Config)
+	if err != nil {
 		return nil, classify(agent.FailurePermanent,
 			fmt.Errorf("%w: cli adapter: bad config: %v", agent.ErrInvalid, err))
 	}
@@ -211,6 +212,21 @@ func (c *CLI) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 			return nil, invalid("args contain NUL")
 		}
 	}
+	if policyCfg != nil {
+		if denied := deniedInvocation(cfg.Bin, cfg.Args, policyCfg.DeniedCommands); denied != "" {
+			msg := "policy: refused configured command " + denied
+			sink.Emit(agent.Event{Stream: "policy", Level: "warn", Kind: "policy_refusal", Message: msg})
+			return nil, classify(agent.FailureCapability, errors.New(msg))
+		}
+	}
+
+	var allowedRoots []string
+	if policyCfg != nil && len(policyCfg.AllowedRoots) > 0 {
+		allowedRoots, err = canonicalAllowedRoots(policyCfg.AllowedRoots)
+		if err != nil {
+			return nil, classify(agent.FailureCapability, fmt.Errorf("cli agent %s: %w", job.ID, err))
+		}
+	}
 
 	// Workdir: the worker normally provisions one (§6 worktrees, and §10:
 	// ".." from an agent cwd must not land in the operator's checkout). When
@@ -221,13 +237,28 @@ func (c *CLI) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 	if job.Workdir != nil && strings.TrimSpace(*job.Workdir) != "" {
 		workdir = *job.Workdir
 	} else {
-		d, err := os.MkdirTemp("", "aic-chat-*")
+		base := ""
+		if len(allowedRoots) > 0 {
+			base = allowedRoots[0]
+		}
+		d, err := os.MkdirTemp(base, "aic-chat-*")
 		if err != nil {
 			return nil, classify(agent.FailureTransient,
 				fmt.Errorf("cli agent %s: workdir: %w", job.ID, err))
 		}
 		tempDir = d
 		workdir = d
+	}
+	if len(allowedRoots) > 0 {
+		var resolved string
+		resolved, err = checkAllowedWorkdir(workdir, allowedRoots)
+		if err != nil {
+			if tempDir != "" {
+				_ = os.RemoveAll(tempDir)
+			}
+			return nil, classify(agent.FailureCapability, fmt.Errorf("cli agent %s: %w", job.ID, err))
+		}
+		workdir = resolved
 	}
 	defer func() {
 		if tempDir != "" {
@@ -248,8 +279,50 @@ func (c *CLI) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 	args := append(append([]string{}, cfg.Args...), job.Prompt) // prompt is always the final argument
 	cmd := exec.CommandContext(runCtx, cfg.Bin, args...)
 	cmd.Dir = workdir
-	cmd.Env = buildEnv(cfg)
+	env := buildEnv(cfg)
+	childPath := os.Getenv("PATH")
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			childPath = strings.TrimPrefix(entry, "PATH=")
+			break
+		}
+	}
+	denied := []string(nil)
+	if policyCfg != nil {
+		denied = policyCfg.DeniedCommands
+	}
+	shimDir, err := os.MkdirTemp("", "aic-policy-")
+	if err != nil {
+		return nil, classify(agent.FailureTransient, fmt.Errorf("cli agent %s: policy shim: %w", job.ID, err))
+	}
+	shim, err := policy.New(shimDir, func(format string, a ...any) {
+		msg := Redact(fmt.Sprintf(format, a...))
+		sink.Emit(agent.Event{Stream: "policy", Level: "warn", Kind: "policy_refusal", Message: msg})
+	}, denied)
+	if err != nil {
+		_ = os.RemoveAll(shimDir)
+		return nil, classify(agent.FailureTransient, fmt.Errorf("cli agent %s: policy shim: %w", job.ID, err))
+	}
+	defer shim.Close()
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			env[i] = "PATH=" + shim.PathWith(childPath)
+			break
+		}
+	}
+	if !containsEnvKey(env, "PATH") {
+		env = append(env, "PATH="+shim.PathWith(childPath))
+	}
+	env = setEnvValue(env, "AIC_POLICY_WORK_ROOT", workdir)
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own process group; kill goes to -pgid
+	if policyCfg != nil {
+		data, _ := json.Marshal(struct {
+			AllowNetwork bool `json:"allow_network"`
+		}{AllowNetwork: policyCfg.AllowNetwork})
+		sink.Emit(agent.Event{Stream: "policy", Level: "info", Kind: "policy_context",
+			Message: "agent policy context; network access is a sandbox responsibility", Data: data})
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

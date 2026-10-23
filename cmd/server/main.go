@@ -24,11 +24,13 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/agent/adapters"
 	"github.com/orlandoburli/ai-company/internal/api"
+	"github.com/orlandoburli/ai-company/internal/command"
 	"github.com/orlandoburli/ai-company/internal/dispatch"
 	"github.com/orlandoburli/ai-company/internal/failure"
 	"github.com/orlandoburli/ai-company/internal/integration"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/push"
 	"github.com/orlandoburli/ai-company/internal/ranking"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
@@ -138,6 +140,8 @@ func run() error {
 		Notifications: notifyStore,
 		Failures:      failure.NewStore(db),
 		Integrations:  integrations,
+		Push:          push.NewSender(push.NewStore(db), log),
+		Commands:      command.NewRunner(db, log),
 		Logger:        log,
 	})
 	engine.Start(ctx)

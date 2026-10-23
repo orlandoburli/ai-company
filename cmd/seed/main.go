@@ -367,9 +367,7 @@ func products() []productSeed {
 		},
 		{
 			name: "Vendamatica", slug: "vendamatica",
-			// No repository yet: a node that needs one falls back to a
-			// scratch workspace and says so.
-			repo: "", jira: "VM",
+			repo: "git@github.com:orlandoburli/vendamatica.git", jira: "VM",
 			projects: []projectSeed{
 				{
 					name: "CRM", key: "VM",
@@ -420,8 +418,10 @@ func products() []productSeed {
 			},
 		},
 		{
-			name: "ProntaLoja", slug: "prontaloja",
-			repo: "", jira: "PL",
+			name: "ProntaLoja", slug: "prQIUAT",
+			// The real repository of this product: the dogfood runs against
+			// the actual project, not a demo copy.
+			repo: "git@github.com:orlandoburli/prQIUAT.git", jira: "PL",
 			projects: []projectSeed{
 				{
 					name: "Storefront", key: "PL",

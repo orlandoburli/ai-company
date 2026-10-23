@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/orlandoburli/ai-company/internal/agent"
+	"github.com/orlandoburli/ai-company/internal/command"
 	"github.com/orlandoburli/ai-company/internal/failure"
 	"github.com/orlandoburli/ai-company/internal/memory"
 	"github.com/orlandoburli/ai-company/internal/notification"
+	"github.com/orlandoburli/ai-company/internal/push"
 	"github.com/orlandoburli/ai-company/internal/skill"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
@@ -34,6 +36,10 @@ type EngineDeps struct {
 	// Integrations carries the platform connectors (GitHub, git). Nil means
 	// integration nodes fail with a capability failure instead of pretending.
 	Integrations *Services
+	// Push and Commands are the two out-of-band notification channels: the
+	// browser push and the user-defined command. Both are optional.
+	Push         *push.Sender
+	Commands     *command.Runner
 	Logger       *slog.Logger
 	TickInterval time.Duration
 	Lease        time.Duration
@@ -50,6 +56,8 @@ type Engine struct {
 	notifications *notification.Store
 	failures      *failure.Store
 	integrations  *Services
+	push          *push.Sender
+	commands      *command.Runner
 	logger        *slog.Logger
 	tickInterval  time.Duration
 	lease         time.Duration
@@ -68,7 +76,7 @@ func NewEngine(deps EngineDeps) *Engine {
 	if deps.Lease <= 0 {
 		deps.Lease = 2 * time.Minute
 	}
-	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work, integrations: deps.Integrations, failures: deps.Failures,
+	return &Engine{store: deps.Store, agents: deps.Agents, memory: deps.Memory, skills: deps.Skills, work: deps.Work, integrations: deps.Integrations, failures: deps.Failures, push: deps.Push, commands: deps.Commands,
 		workspaces: deps.Workspaces, notifications: deps.Notifications, logger: logger,
 		tickInterval: deps.TickInterval, lease: deps.Lease}
 }
