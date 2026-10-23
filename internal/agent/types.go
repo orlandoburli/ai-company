@@ -76,6 +76,7 @@ const (
 	ContextItem    = "item"
 	ContextProduct = "product"
 	ContextFree    = "free"
+	ContextRun     = "run"
 )
 
 // Author kinds for messages.
@@ -111,6 +112,7 @@ type Thread struct {
 	ContextKind string    `json:"context_kind"`
 	ItemID      *string   `json:"item_id"`
 	ProductID   *string   `json:"product_id"`
+	RunID       *string   `json:"run_id"`
 	Title       string    `json:"title"`
 	CreatedBy   *string   `json:"created_by"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -138,29 +140,31 @@ type Job struct {
 	AgentID  string `json:"agent_id"`
 	// AgentName, AgentRole, Config and Capabilities are filled in by the worker
 	// from the registry row; they are not columns on agent_jobs.
-	AgentName    string          `json:"-"`
-	AgentRole    Role            `json:"-"`
-	Config       json.RawMessage `json:"-"`
-	Capabilities json.RawMessage `json:"-"`
-	ThreadID     *string         `json:"thread_id"`
-	MessageID    *string         `json:"message_id"`
-	ItemID       *string         `json:"item_id"`
-	State        JobState        `json:"state"`
-	Attempt      int             `json:"attempt"`
-	MaxAttempts  int             `json:"max_attempts"`
-	Prompt       string          `json:"-"`
-	Context      json.RawMessage `json:"context"`
-	Workdir      *string         `json:"workdir"`
-	TokensIn     int             `json:"tokens_in"`
-	TokensOut    int             `json:"tokens_out"`
-	CostUSD      *float64        `json:"cost_usd"`
-	Result       json.RawMessage `json:"result"`
-	FailureKind  *string         `json:"failure_kind"`
-	ErrorText    *string         `json:"error"`
-	CreatedBy    *string         `json:"created_by"`
-	CreatedAt    time.Time       `json:"created_at"`
-	StartedAt    *time.Time      `json:"started_at"`
-	FinishedAt   *time.Time      `json:"finished_at"`
+	AgentName      string          `json:"-"`
+	AgentRole      Role            `json:"-"`
+	Config         json.RawMessage `json:"-"`
+	Capabilities   json.RawMessage `json:"-"`
+	ThreadID       *string         `json:"thread_id"`
+	MessageID      *string         `json:"message_id"`
+	ItemID         *string         `json:"item_id"`
+	StepRunID      *string         `json:"step_run_id"`
+	IdempotencyKey *string         `json:"idempotency_key"`
+	State          JobState        `json:"state"`
+	Attempt        int             `json:"attempt"`
+	MaxAttempts    int             `json:"max_attempts"`
+	Prompt         string          `json:"-"`
+	Context        json.RawMessage `json:"context"`
+	Workdir        *string         `json:"workdir"`
+	TokensIn       int             `json:"tokens_in"`
+	TokensOut      int             `json:"tokens_out"`
+	CostUSD        *float64        `json:"cost_usd"`
+	Result         json.RawMessage `json:"result"`
+	FailureKind    *string         `json:"failure_kind"`
+	ErrorText      *string         `json:"error"`
+	CreatedBy      *string         `json:"created_by"`
+	CreatedAt      time.Time       `json:"created_at"`
+	StartedAt      *time.Time      `json:"started_at"`
+	FinishedAt     *time.Time      `json:"finished_at"`
 }
 
 // LogEntry is one append-only job event, ordered by the global Seq cursor.

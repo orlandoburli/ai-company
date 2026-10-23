@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, type Notification } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { Product, ProjectNode } from "@/lib/types";
 import { Menu, MenuItem, ProgressBar } from "./primitives";
@@ -19,6 +19,8 @@ const NAV = [
   { href: "/board", label: "Board" },
   { href: "/backlog", label: "Backlog" },
   { href: "/queue", label: "Queue" },
+  { href: "/runs", label: "Runs" },
+  { href: "/checkpoints", label: "Checkpoints" },
   { href: "/settings", label: "Settings" },
 ];
 
@@ -61,20 +63,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={n.href}
                 href={n.href}
-                aria-current={pathname === n.href ? "page" : undefined}
+                aria-current={pathname === n.href || pathname.startsWith(`${n.href}/`) ? "page" : undefined}
               >
-                {n.label}
+                {n.label}{n.href === "/checkpoints" ? <CheckpointBadge /> : null}
               </Link>
             ))}
           </nav>
           <span style={{ marginLeft: "auto" }} />
           <TenantSwitcher />
+          <NotificationCentre />
           <UserMenu />
         </header>
         <main className="content">{children}</main>
       </div>
     </div>
   );
+}
+
+function CheckpointBadge() {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => void api.listCheckpoints("pending", 50).then((r) => { if (alive) setCount(r.checkpoints.length); }).catch(() => { if (alive) setCount(null); });
+    refresh();
+    const timer = window.setInterval(refresh, 15000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
+  return count ? <span className="nav-badge" aria-label={`${count} pending checkpoints`}>{count > 99 ? "99+" : count}</span> : null;
+}
+
+function NotificationCentre() {
+  const router = useRouter();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => void api.listNotifications(true, 50).then((r) => { if (alive) { setNotifications(r.notifications); setUnavailable(false); } }).catch(() => { if (alive) setUnavailable(true); });
+    refresh();
+    const timer = window.setInterval(refresh, 15000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
+  async function openNotification(notification: Notification) {
+    try {
+      await api.markNotificationRead(notification.id);
+      setNotifications((current) => current.filter((row) => row.id !== notification.id));
+    } catch { /* keep the unread badge honest when the server cannot mark it */ }
+    router.push(notification.run_id ? `/runs/${notification.run_id}` : "/checkpoints");
+  }
+  return <Menu trigger={<button type="button" className="btn btn--ghost btn--sm notification-trigger" aria-label={`Notifications${notifications.length ? `, ${notifications.length} unread` : ""}`}><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 11.5h10l-1.2-1.7V6.7a3.8 3.8 0 0 0-7.6 0v3.1L3 11.5Z"/><path d="M6.3 13.2a1.8 1.8 0 0 0 3.4 0"/></svg>{notifications.length ? <span className="nav-badge nav-badge--bell">{notifications.length > 99 ? "99+" : notifications.length}</span> : null}</button>}>
+    <div className="notification-menu-head"><strong>Notifications</strong><span className="tiny muted">{notifications.length} unread</span></div>
+    {unavailable ? <div className="notification-empty">Notifications are not available yet.</div> : notifications.length ? notifications.slice(0, 10).map((notification) => <MenuItem key={notification.id} onSelect={() => void openNotification(notification)}><span className="notification-kind">{notification.kind.replaceAll("_", " ")}</span><span className="notification-copy">{notification.body ?? notification.title ?? notification.kind.replaceAll("_", " ")}</span></MenuItem>) : <div className="notification-empty">All caught up.</div>}
+    <div className="menu__sep" /><MenuItem onSelect={() => router.push("/checkpoints")}>Open checkpoint inbox</MenuItem>
+  </Menu>;
 }
 
 /* --- Sidebar: product → project tree -------------------------------------- */

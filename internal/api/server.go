@@ -18,8 +18,11 @@ import (
 
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/auth"
+	"github.com/orlandoburli/ai-company/internal/memory"
+	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 	"github.com/orlandoburli/ai-company/internal/work"
+	"github.com/orlandoburli/ai-company/internal/workflow"
 )
 
 // SessionCookie carries the opaque session token. It is HttpOnly so script
@@ -34,6 +37,10 @@ type Server struct {
 	agents       *agent.Store
 	agentHub     *agent.Hub
 	agentWorker  jobCanceller
+	workflows    *workflow.Store
+	memory       *memory.Store
+	notify       *notification.Store
+	engine       *workflow.Engine
 	log          *slog.Logger
 	limits       *rateLimiter
 	secureCookie bool
@@ -50,6 +57,21 @@ func WithSecureCookies(v bool) Option { return func(s *Server) { s.secureCookie 
 
 // WithSessionTTL sets how long a session stays valid.
 func WithSessionTTL(d time.Duration) Option { return func(s *Server) { s.sessionTTL = d } }
+
+// WithWorkflowEngine wires the workflow engine, which starts and drives the
+// runs. A nil engine leaves the run endpoints unavailable (they answer 503).
+func WithWorkflowEngine(e *workflow.Engine) Option { return func(s *Server) { s.engine = e } }
+
+// WithWorkflowStores wires the M3 stores: the workflow persistence, the memory
+// tiers and the notification centre. A nil store leaves that surface
+// unavailable (the handlers answer 503) rather than panicking.
+func WithWorkflowStores(workflows *workflow.Store, mem *memory.Store, notify *notification.Store) Option {
+	return func(s *Server) {
+		s.workflows = workflows
+		s.memory = mem
+		s.notify = notify
+	}
+}
 
 // New builds a server. A nil logger falls back to slog.Default.
 func New(db *sql.DB, log *slog.Logger, opts ...Option) *Server {
@@ -80,6 +102,13 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, "ok\n") //nolint:errcheck
 	})
+
+	// M3: workflow templates, the memory tiers and the notification centre.
+	s.registerWorkflowTemplateRoutes(mux)
+	s.registerMemoryRoutes(mux)
+	s.registerNotificationRoutes(mux)
+	s.registerWorkflowRunRoutes(mux)
+	s.registerCheckpointRoutes(mux)
 
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)

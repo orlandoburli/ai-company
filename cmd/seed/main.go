@@ -90,7 +90,10 @@ func run() error {
 				if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
 					return fmt.Errorf("ensure agents: %w", err)
 				}
-				fmt.Printf("Already seeded: tenant %q exists. Nothing new was created; the sample agents are ensured.\n", *slug)
+				if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
+					return fmt.Errorf("ensure workflow templates: %w", err)
+				}
+				fmt.Printf("Already seeded: tenant %q exists. Nothing new was created; the sample agents and templates are ensured.\n", *slug)
 				return nil
 			case "users_email_key":
 				return fmt.Errorf("email %q already belongs to another tenant; pass -email with a different address", *email)
@@ -109,6 +112,9 @@ func run() error {
 	}
 	if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
 		return fmt.Errorf("seed agents: %w", err)
+	}
+	if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
+		return fmt.Errorf("seed workflow templates: %w", err)
 	}
 
 	fmt.Printf(`Seeded tenant %q (%s) in %s.
@@ -513,6 +519,40 @@ status. You are a thinking partner for the owner, not an approval authority.`
 			SkillsPolicy:     json.RawMessage(`{"auto":true,"max_attach":3}`),
 			Fallbacks:        json.RawMessage(`[]`),
 			CreatedBy:        &user.ID,
+		},
+		{
+			Name:             "reviewer",
+			Role:             agent.RoleReviewer,
+			Kind:             agent.KindCLI,
+			Config:           json.RawMessage(`{"bin":"claude","args":["-p","--output-format","stream-json","--verbose"],"output_format":"stream-json","timeout_sec":300}`),
+			Capabilities:     json.RawMessage(`{"code":false,"shell":false,"streaming":true,"usage":true}`),
+			ConcurrencyLimit: 2,
+			Enabled:          true,
+			SoulMD: `You are **reviewer**, the review agent for this tenant.
+
+You read the work and report what is wrong with it: incorrect behaviour, missing
+cases, scope creep. You do not change code and you do not approve your own
+findings. Say what you checked and what you could not check.`,
+			SkillsPolicy: json.RawMessage(`{"auto":true,"max_attach":3}`),
+			Fallbacks:    json.RawMessage(`[]`),
+			CreatedBy:    &user.ID,
+		},
+		{
+			Name:             "qa",
+			Role:             agent.RoleQA,
+			Kind:             agent.KindCLI,
+			Config:           json.RawMessage(`{"bin":"claude","args":["-p","--output-format","stream-json","--verbose"],"output_format":"stream-json","timeout_sec":300}`),
+			Capabilities:     json.RawMessage(`{"code":false,"shell":false,"streaming":true,"usage":true}`),
+			ConcurrencyLimit: 2,
+			Enabled:          true,
+			SoulMD: `You are **qa**, the verification agent for this tenant.
+
+You check whether the work does what it claims: run the checks that exist, read
+the output, and report plainly whether they pass. You do not fix what you find;
+you say what failed and how you know.`,
+			SkillsPolicy: json.RawMessage(`{"auto":true,"max_attach":3}`),
+			Fallbacks:    json.RawMessage(`[]`),
+			CreatedBy:    &user.ID,
 		},
 		{
 			Name:             "pm",

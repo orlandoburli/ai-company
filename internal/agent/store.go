@@ -497,7 +497,7 @@ func (s *Store) DeleteAgent(ctx context.Context, sc tenancy.Scope, id string) er
 // --- threads ---------------------------------------------------------------
 
 const threadColumns = `
-	t.id, t.tenant_id, t.context_kind, t.item_id, t.product_id, t.title,
+	t.id, t.tenant_id, t.context_kind, t.item_id, t.product_id, t.run_id, t.title,
 	t.created_by, t.created_at`
 
 func scanThread(r rowScanner) (Thread, error) {
@@ -505,7 +505,7 @@ func scanThread(r rowScanner) (Thread, error) {
 		t         Thread
 		createdBy sql.NullString
 	)
-	err := r.Scan(&t.ID, &t.TenantID, &t.ContextKind, &t.ItemID, &t.ProductID, &t.Title,
+	err := r.Scan(&t.ID, &t.TenantID, &t.ContextKind, &t.ItemID, &t.ProductID, &t.RunID, &t.Title,
 		&createdBy, &t.CreatedAt)
 	if err != nil {
 		return Thread{}, err
@@ -574,7 +574,7 @@ func (s *Store) EnsureItemThread(ctx context.Context, sc tenancy.Scope, itemID, 
 			SELECT`+threadColumns+`
 			  FROM threads t
 			 WHERE t.context_kind = 'item' AND t.item_id = $1`, itemID).
-			Scan(&th.ID, &th.TenantID, &th.ContextKind, &th.ItemID, &th.ProductID, &th.Title,
+			Scan(&th.ID, &th.TenantID, &th.ContextKind, &th.ItemID, &th.ProductID, &th.RunID, &th.Title,
 				&th.CreatedBy, &th.CreatedAt); err == nil {
 			return nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -595,6 +595,53 @@ func (s *Store) EnsureItemThread(ctx context.Context, sc tenancy.Scope, itemID, 
 			SELECT`+threadColumns+`
 			  FROM threads t
 			 WHERE t.context_kind = 'item' AND t.item_id = $1`, itemID))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		th = t
+		return nil
+	})
+	if err != nil {
+		return Thread{}, mapPGError(err)
+	}
+	return th, nil
+}
+
+// EnsureRunThread returns the run's one thread, creating it on first use.
+// The partial unique index on (tenant_id, run_id) makes the get-or-create
+// idempotent: a concurrent creation loses the race and the re-select below
+// returns the winner's row.
+func (s *Store) EnsureRunThread(ctx context.Context, sc tenancy.Scope, runID, title, createdBy string) (Thread, error) {
+	if runID == "" {
+		return Thread{}, fmt.Errorf("%w: run thread needs a run", ErrInvalid)
+	}
+	var th Thread
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT`+threadColumns+`
+			  FROM threads t
+			 WHERE t.context_kind = 'run' AND t.run_id = $1`, runID).
+			Scan(&th.ID, &th.TenantID, &th.ContextKind, &th.ItemID, &th.ProductID, &th.RunID, &th.Title,
+				&th.CreatedBy, &th.CreatedAt); err == nil {
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO threads (id, tenant_id, context_kind, run_id, title, created_by)
+			VALUES ($1, $2, 'run', $3, $4, nullif($5, ''))
+			ON CONFLICT (tenant_id, run_id) WHERE context_kind = 'run'
+			DO NOTHING`, newID(), sc.TenantID, runID, title, createdBy); err != nil {
+			return err
+		}
+		t, err := scanThread(tx.QueryRowContext(ctx, `
+			SELECT`+threadColumns+`
+			  FROM threads t
+			 WHERE t.context_kind = 'run' AND t.run_id = $1`, runID))
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
@@ -703,14 +750,7 @@ func (s *Store) AddMessage(ctx context.Context, sc tenancy.Scope, in NewMessage)
 
 	var m Message
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
-		created, err := scanMessage(tx.QueryRowContext(ctx, `
-			INSERT INTO messages AS m (id, tenant_id, thread_id, author_kind,
-			                  author_user_id, author_agent_id, body_md, artifacts_json)
-			VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8::jsonb)
-			RETURNING`+messageColumns,
-			newID(), sc.TenantID, in.ThreadID, in.AuthorKind,
-			in.AuthorUserID, in.AuthorAgentID, in.BodyMD,
-			orJSON(in.Artifacts, "[]")))
+		created, err := insertMessage(ctx, tx, sc, in)
 		if err != nil {
 			return err
 		}
@@ -721,6 +761,18 @@ func (s *Store) AddMessage(ctx context.Context, sc tenancy.Scope, in NewMessage)
 		return Message{}, mapPGError(err)
 	}
 	return m, nil
+}
+
+// insertMessage writes one message inside an existing transaction.
+func insertMessage(ctx context.Context, tx *sql.Tx, sc tenancy.Scope, in NewMessage) (Message, error) {
+	return scanMessage(tx.QueryRowContext(ctx, `
+		INSERT INTO messages AS m (id, tenant_id, thread_id, author_kind,
+		                          author_user_id, author_agent_id, body_md, artifacts_json)
+		VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8::jsonb)
+		RETURNING`+messageColumns,
+		newID(), sc.TenantID, in.ThreadID, in.AuthorKind,
+		in.AuthorUserID, in.AuthorAgentID, in.BodyMD,
+		orJSON(in.Artifacts, "[]")))
 }
 
 // ListMessages returns a thread's timeline ascending by seq, starting after
@@ -760,27 +812,30 @@ func (s *Store) ListMessages(ctx context.Context, sc tenancy.Scope, threadID str
 
 const jobColumns = `
 	j.id, j.tenant_id, j.agent_id, j.thread_id, j.message_id, j.item_id,
+	j.step_run_id, j.idempotency_key,
 	j.state, j.attempt, j.max_attempts, j.prompt, j.context_json, j.workdir,
 	j.tokens_in, j.tokens_out, j.cost_usd, j.result_json, j.failure_kind,
 	j.error_text, j.created_by, j.created_at, j.started_at, j.finished_at`
 
 func scanJob(r rowScanner) (Job, error) {
 	var (
-		j           Job
-		context     []byte
-		result      []byte
-		threadID    sql.NullString
-		messageID   sql.NullString
-		itemID      sql.NullString
-		workdir     sql.NullString
-		cost        sql.NullFloat64
-		failureKind sql.NullString
-		errText     sql.NullString
-		createdBy   sql.NullString
-		startedAt   sql.NullTime
-		finishedAt  sql.NullTime
+		j              Job
+		context        []byte
+		result         []byte
+		threadID       sql.NullString
+		messageID      sql.NullString
+		itemID         sql.NullString
+		stepRunID      sql.NullString
+		idempotencyKey sql.NullString
+		workdir        sql.NullString
+		cost           sql.NullFloat64
+		failureKind    sql.NullString
+		errText        sql.NullString
+		createdBy      sql.NullString
+		startedAt      sql.NullTime
+		finishedAt     sql.NullTime
 	)
-	err := r.Scan(&j.ID, &j.TenantID, &j.AgentID, &threadID, &messageID, &itemID,
+	err := r.Scan(&j.ID, &j.TenantID, &j.AgentID, &threadID, &messageID, &itemID, &stepRunID, &idempotencyKey,
 		&j.State, &j.Attempt, &j.MaxAttempts, &j.Prompt, &context, &workdir,
 		&j.TokensIn, &j.TokensOut, &cost, &result, &failureKind, &errText,
 		&createdBy, &j.CreatedAt, &startedAt, &finishedAt)
@@ -797,6 +852,12 @@ func scanJob(r rowScanner) (Job, error) {
 	}
 	if itemID.Valid {
 		j.ItemID = &itemID.String
+	}
+	if stepRunID.Valid {
+		j.StepRunID = &stepRunID.String
+	}
+	if idempotencyKey.Valid {
+		j.IdempotencyKey = &idempotencyKey.String
 	}
 	if workdir.Valid {
 		j.Workdir = &workdir.String
@@ -829,13 +890,15 @@ func scanJob(r rowScanner) (Job, error) {
 // optional: a job may belong to a chat thread, an item, or neither (a bare
 // run,FR-AG-4).
 type NewJob struct {
-	AgentID   string
-	ThreadID  string
-	MessageID string
-	ItemID    string
-	Prompt    string
-	Context   json.RawMessage
-	CreatedBy string
+	AgentID        string
+	ThreadID       string
+	MessageID      string
+	ItemID         string
+	StepRunID      string
+	IdempotencyKey string
+	Prompt         string
+	Context        json.RawMessage
+	CreatedBy      string
 }
 
 // CreateJob queues one adapter execution.
@@ -859,6 +922,16 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 
 	var j Job
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if in.IdempotencyKey != "" {
+			existing, err := scanJob(tx.QueryRowContext(ctx, `SELECT`+jobColumns+` FROM agent_jobs j WHERE j.idempotency_key=$1`, in.IdempotencyKey))
+			if err == nil {
+				j = existing
+				return nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
 		var enabled bool
 		err := tx.QueryRowContext(ctx,
 			`SELECT enabled FROM agents WHERE id = $1`, in.AgentID).Scan(&enabled)
@@ -887,12 +960,16 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 
 		created, err := scanJob(tx.QueryRowContext(ctx, `
 			INSERT INTO agent_jobs AS j (id, tenant_id, agent_id, thread_id, message_id,
-			                    item_id, prompt, context_json, created_by)
-			VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''),
-			        $7, $8::jsonb, nullif($9, ''))
+			                    item_id, step_run_id, idempotency_key, prompt, context_json, created_by)
+			VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, ''),
+			        $9, $10::jsonb, nullif($11, ''))
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			RETURNING`+jobColumns,
-			newID(), sc.TenantID, in.AgentID, in.ThreadID, in.MessageID, in.ItemID,
+			newID(), sc.TenantID, in.AgentID, in.ThreadID, in.MessageID, in.ItemID, in.StepRunID, in.IdempotencyKey,
 			in.Prompt, orJSON(in.Context, "{}"), in.CreatedBy))
+		if errors.Is(err, sql.ErrNoRows) && in.IdempotencyKey != "" {
+			created, err = scanJob(tx.QueryRowContext(ctx, `SELECT`+jobColumns+` FROM agent_jobs j WHERE j.idempotency_key=$1`, in.IdempotencyKey))
+		}
 		if err != nil {
 			return err
 		}
@@ -903,6 +980,20 @@ func (s *Store) CreateJob(ctx context.Context, sc tenancy.Scope, in NewJob) (Job
 		return Job{}, mapPGError(err)
 	}
 	return j, nil
+}
+
+// GetJobByIdempotencyKey returns the existing tenant-owned job for a replay key.
+func (s *Store) GetJobByIdempotencyKey(ctx context.Context, sc tenancy.Scope, key string) (Job, error) {
+	var j Job
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var err error
+		j, err = scanJob(tx.QueryRowContext(ctx, `SELECT`+jobColumns+` FROM agent_jobs j WHERE j.idempotency_key=$1`, key))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	})
+	return j, err
 }
 
 // GetJob returns one job by id.
@@ -1043,6 +1134,65 @@ func (s *Store) FinishJob(ctx context.Context, sc tenancy.Scope, jobID, workerID
 		return fmt.Errorf("%w: finish requires a terminal state, got %q", ErrInvalid, state)
 	}
 	return s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		tag, err := tx.ExecContext(ctx, `
+			UPDATE agent_jobs
+			   SET state = $2,
+			       tokens_in = $3,
+			       tokens_out = $4,
+			       cost_usd = $5,
+			       result_json = $6::jsonb,
+			       failure_kind = nullif($7, ''),
+			       error_text = nullif($8, ''),
+			       finished_at = now(),
+			       next_attempt_at = NULL,
+			       claim_lock = NULL,
+			       claim_expires_at = NULL,
+			       heartbeat_at = NULL
+			 WHERE id = $1 AND state = 'running' AND claim_lock = $9`,
+			jobID, state, tokenCount(res, true), tokenCount(res, false),
+			costPtr(res), raw(ResultJSON(res)), failureKind, errText, workerID)
+		if err != nil {
+			return err
+		}
+		n, err := tag.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrNotRunning
+		}
+		return nil
+	})
+}
+
+// FinishJobWithMessage transitions the job to a terminal state and appends the
+// thread message in the SAME transaction.
+//
+// The worker posts the agent's reply (or the failure notice) together with the
+// terminal state, so an observer that sees "succeeded" or "failed" always
+// finds the explanation next to it, and a job that was cancelled meanwhile
+// never gets a reply: the message insert is rolled back with the job update.
+func (s *Store) FinishJobWithMessage(ctx context.Context, sc tenancy.Scope, jobID, workerID string, state JobState, res *Result, msg *NewMessage, failureKind, errText string) error {
+	if !state.Terminal() {
+		return fmt.Errorf("%w: finish requires a terminal state, got %q", ErrInvalid, state)
+	}
+	if msg != nil {
+		if err := validAuthor(msg.AuthorKind, msg.AuthorUserID, msg.AuthorAgentID); err != nil {
+			return err
+		}
+		if len(msg.BodyMD) == 0 {
+			return fmt.Errorf("%w: body_md is empty", ErrInvalid)
+		}
+		if len(msg.BodyMD) > maxBodyBytes {
+			return fmt.Errorf("%w: body_md is over 64 KB", ErrInvalid)
+		}
+	}
+	return s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if msg != nil {
+			if _, err := insertMessage(ctx, tx, sc, *msg); err != nil {
+				return err
+			}
+		}
 		tag, err := tx.ExecContext(ctx, `
 			UPDATE agent_jobs
 			   SET state = $2,

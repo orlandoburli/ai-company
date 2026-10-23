@@ -105,6 +105,30 @@ process group on cancel. Limits: 100 queued jobs per tenant, two workers, two
 concurrent runs per agent by default, a two-minute lease and three attempts
 (10s·2^(n-1) backoff capped at 5m). See `docs/m2-contract.md` for the payloads.
 
+### Workflows and checkpoints (M3)
+
+A workflow template is a real graph: nodes (`agent`, `integration`, `checkpoint`,
+`loop`, `merge`) joined by edges that name their ports, validated on write and
+again on run start (unique ids, known endpoints, no unreachable node, every
+cycle through a `loop` with `max_iterations`). Starting a run snapshots the
+published graph, so editing a template never changes a run in flight.
+
+The scheduler is a stateless tick: it recomputes the ready set from the
+persisted state, claims ready nodes with a lease, and dispatches them. Two
+branches under one node run concurrently and are joined by a `merge` node,
+which waits for the edge receipts (`delivered` / `skipped` / `dead`) — never
+for a completion order. A `checkpoint` node parks its branch and waits for a
+human: approve, approve with edits, reject with feedback or abort. The
+decision is a conditional update, so a second person deciding the same lap
+gets `409 already_decided` with the winning decision attached.
+
+The seed publishes three templates: **Bugfix** (spec → checkpoint → implement →
+review ∥ check → merge → checkpoint), **Review** (review → checkpoint) and
+**Repair** (a bounded cycle with `max_iterations: 3`). The interface adds
+`/runs`, `/runs/{id}` (the monitor: graph, timeline, step inspector, decision
+and intervention controls) and `/checkpoints` (the inbox). The contract is in
+`docs/m3-contract.md`.
+
 ### Smoke check
 
 `make smoke` end-to-end checks a **running, seeded** server: `/healthz`,
@@ -250,6 +274,16 @@ curl -b cookies.txt localhost:8080/api/auth/me
 | `POST /api/threads/{id}/jobs` | manual run, with optional instructions recorded as a message |
 | `GET /api/jobs/{id}`, `/logs`, `/events` | job state, append-only logs and an SSE stream |
 | `POST /api/jobs/{id}/cancel` | cancel a queued or running job |
+| `GET/POST /api/workflow-templates`, `GET/PATCH/DELETE /api/workflow-templates/{id}` | graph templates; writes are owner/admin only |
+| `POST /api/workflow-templates/{id}/publish`, `/versions` | publish a draft, cut a new version |
+| `POST /api/items/{id}/runs` | start a run of a published template on an item |
+| `GET /api/runs`, `GET /api/runs/{id}` | runs of the tenant, and one run with its steps |
+| `POST /api/runs/{id}/cancel`, `/intervene` | cancel a run, inject into it, redo a node, stop a step |
+| `GET /api/runs/{id}/events`, `/logs`, `/interventions` | the monitor stream, the run's log tail, the steering log |
+| `GET /api/checkpoints`, `GET /api/checkpoints/{id}` | the pending inbox and the decided laps |
+| `POST /api/checkpoints/{id}/decision`, `/remind` | approve / approve with edits / reject / abort; push the reminder out |
+| `GET/POST /api/memory`, `GET /api/memory/manifest` | the four memory scopes, the human writes, the injection manifest |
+| `GET /api/notifications`, `POST /api/notifications/{id}/read` | the notification centre |
 
 Invitations have no mailer in the MVP: creating one returns the single-use token
 (and an `accept_url`) exactly once, to be passed to the invitee out of band. Only

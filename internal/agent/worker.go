@@ -290,10 +290,12 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 		}
 
 		_, _ = w.store.AppendLog(ctx, sc, job.ID, Event{Stream: "engine", Level: "error", Kind: "error", Message: text})
-		if err := w.store.FinishJob(ctx, sc, job.ID, w.workerID, JobFailed, nil, kind, text); err != nil {
+		// The failure notice and the terminal state land together, so a reader
+		// that sees "failed" always finds the explanation next to it.
+		notice := w.systemMessage(sc, job, "Agent run failed: "+text)
+		if err := w.store.FinishJobWithMessage(ctx, sc, job.ID, w.workerID, JobFailed, nil, notice, kind, text); err != nil {
 			w.log.Warn("finish failed job", "job", job.ID, "error", err)
 		}
-		w.postSystemMessage(sc, job, "Agent run failed: "+text)
 		w.publishState(sc, job.ID)
 		return
 	}
@@ -301,27 +303,28 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 	if res == nil {
 		res = &Result{}
 	}
-	if err := w.store.FinishJob(ctx, sc, job.ID, w.workerID, JobSucceeded, res, "", ""); err != nil {
-		if !errors.Is(err, ErrNotRunning) {
-			w.log.Warn("finish job", "job", job.ID, "error", err)
-		}
-		w.publishState(sc, job.ID)
-		return
-	}
-
+	// The reply and the terminal state land together: a reader that sees
+	// "succeeded" always finds the answer next to it, and a job cancelled
+	// meanwhile never gets a reply (the transaction rolls back with it).
+	var reply *NewMessage
 	if job.ThreadID != nil {
 		out := strings.TrimSpace(res.Output)
 		if out == "" {
 			out = "_The agent finished without producing a reply._"
 		}
-		if _, err := w.store.AddMessage(ctx, sc, NewMessage{
+		reply = &NewMessage{
 			ThreadID:      *job.ThreadID,
 			AuthorKind:    AuthorAgent,
 			AuthorAgentID: agentRow.ID,
 			BodyMD:        out,
-		}); err != nil {
-			w.log.Warn("post agent reply", "job", job.ID, "error", err)
 		}
+	}
+	if err := w.store.FinishJobWithMessage(ctx, sc, job.ID, w.workerID, JobSucceeded, res, reply, "", ""); err != nil {
+		if !errors.Is(err, ErrNotRunning) {
+			w.log.Warn("finish job", "job", job.ID, "error", err)
+		}
+		w.publishState(sc, job.ID)
+		return
 	}
 	w.publishState(sc, job.ID)
 }
@@ -344,6 +347,19 @@ func (w *Worker) heartbeat(ctx context.Context, sc tenancy.Scope, jobID string, 
 				w.log.Warn("heartbeat job", "job", jobID, "error", err)
 			}
 		}
+	}
+}
+
+// systemMessage builds the system notice for a job, or nil when the job has
+// no thread to post into.
+func (w *Worker) systemMessage(sc tenancy.Scope, job Job, body string) *NewMessage {
+	if job.ThreadID == nil {
+		return nil
+	}
+	return &NewMessage{
+		ThreadID:   *job.ThreadID,
+		AuthorKind: AuthorSystem,
+		BodyMD:     body,
 	}
 }
 

@@ -11,7 +11,7 @@ current edge of it so a later session does not have to rediscover it.
 | M0 — scaffold, tenancy, auth, tenant admin | done | done |
 | M1 — work structure, queue overrides, base score, invitations | done | done |
 | M2 — first agent | done | done |
-| M3 — graph engine and checkpoints | not started | — |
+| M3 — graph engine and checkpoints | in progress | in progress |
 | M4 — GitHub, memory, LLM ranking, backoff | not started | — |
 
 ## Dev harness
@@ -220,6 +220,107 @@ to polling `/logs` if the stream drops. Because the hub is memory, replay after
 a restart still works from `job_logs`, but live frames are per-process — the
 same single-process constraint as the rate limiter.
 
+## M3 — the workflow engine
+
+The M3 code is split so that the decisions are testable without a database and
+the persistence is testable without a scheduler:
+
+| Package | What it owns |
+| --- | --- |
+| `internal/workflow/graph.go` | the graph model: nodes, edges, named ports, the validation rules of §4 |
+| `internal/workflow/topology.go` | reachability, entry nodes, cycle detection, cycle-return edges |
+| `internal/workflow/plan.go` | the pure planner: readiness, receipts, merge modes, loop budgets, run state, redo |
+| `internal/workflow/store.go` | templates, runs, step runs, checkpoints, interventions, artifacts |
+| `internal/workflow/engine*.go` | the scheduler: the tick, the dispatch, the human-in-the-loop surface |
+| `internal/ctxbundle` | the context bundle: soul → skills → memory → task file, with the untrusted block last |
+| `internal/memory` | the four memory scopes, append-only revisions, watermarks |
+| `internal/workspace` | bare-mirror worktrees: prepare, merge, prune |
+| `internal/notification` | the in-app notification centre |
+
+How the pieces fit:
+
+- **The graph is validated twice** — on write and again when the run starts.
+  A cycle without a `loop` that declares `max_iterations` is refused; a timeout
+  would be the wrong backstop for a body that can wait on a human for days.
+  A loop node may be the entry of a graph: the edge that closes the cycle is
+  recognised as a cycle-return edge and does not disqualify it.
+- **The run is an immutable snapshot.** `workflow_runs.definition_snapshot_json`
+  holds the published graph with its pinned `type_version`s; the engine never
+  re-reads the template, so editing a template cannot change a run in flight.
+- **The scheduler is a stateless tick.** It recomputes the ready set from the
+  persisted rows, claims a node with a lease (a compare-and-swap on the claim
+  lock), dispatches it, and writes the receipts. Nothing about readiness lives
+  in memory, so a restart is just the next tick.
+- **The join is receipts, not order.** A terminal upstream execution writes its
+  edge receipt (`delivered` / `skipped` / `dead`) into the downstream
+  execution's `input_edges_json` **in the same transaction** that marks it
+  terminal (`SetStepTerminalWithReceipts`). A merge node waits for its mode —
+  `all`, `any` or `n_of_m` — and fails on a `dead` receipt under `all`.
+- **An agent node enqueues exactly one job**, with the idempotency key
+  `run:<run>:<node>:<iteration>:<run_index>`. A replay attaches to the same job
+  row instead of enqueuing a second one, which is what makes "kill the server
+  mid-graph and resume" safe.
+- **A checkpoint parks its branch**, not the run. The decision is a
+  conditional update on `(id, lap, state = 'pending')`: the first writer wins
+  and the loser gets `already_decided` with the winning decision attached.
+  Re-entry opens the next lap; the earlier laps stay in the audit trail. A
+  rejection follows the node's policy (`retry_step`, `goto_step`, `abort`).
+- **A run's memory is written by the engine.** A terminal node's output lands
+  in the run scope under `node:<node_id>`, a checkpoint decision under
+  `checkpoint.<node_id>.lap.<n>`; both are append-only revisions, so a redo
+  writes the next revision of the same key. The node's context bundle reads
+  the four scopes (run → item → agent → workspace) with the node's selector,
+  and the manifest records what was injected.
+- **The context bundle is ordered.** Soul (never trimmed) → skills → memory
+  (run → item → agent → workspace) → task file, with the untrusted block last
+  and fenced. Untrusted text is sanitised on ingest (ANSI/OSC, NULs, bidi
+  overrides, instruction-shaped lines) and grants nothing: markers found in it
+  are logged, never executed. The receipt values of upstream nodes are treated
+  as untrusted data — a sibling agent's output is not an instruction.
+- **The manifest is the record.** Every step stores the context manifest, the
+  memory manifest and the task file's sha, so what the agent saw can be
+  reconstructed from rows.
+
+Security notes that are specific to M3:
+
+- The engine has no privileged connection. It finds the runs to work on
+  through `engine_active_runs()` — a narrow `SECURITY DEFINER` function owned
+  by `aic_auth` that returns coordinates only — and everything after that runs
+  tenant-scoped under RLS.
+- A run's workspaces come from an app-owned bare mirror, never from the
+  operator's checkout: `git worktree add` under the app's support directory,
+  with a branch name that embeds the step run and the attempt so a retry never
+  collides with an earlier one. When no mirror or repo URL is configured the
+  execution falls back to a scratch directory and says so in its result.
+- Memory is append-only with revisions: an update supersedes the prior row
+  rather than overwriting it, and the read watermark means a concurrent writer
+  cannot change what an already-ready node sees.
+- `checkpoints.fields_spec_json` holds the typed fields a checkpoint asks for;
+  the values the human submits live in `fields_json`.
+
+### What M3 does not do
+
+- **The `until` condition of a loop is evaluated against a structured value**,
+  not against prose: a boolean, or the name of an output key in the value the
+  loop received. An agent that answers in words never satisfies it, so the
+  seeded *Repair* template runs its three iterations and then fails with
+  `cycle_budget_exhausted` — the budget, not a timeout, is the backstop.
+- **A loop's body does not re-execute per iteration** (see the gaps below).
+- **`integration` nodes fail with the `capability` kind**: GitHub and Jira are
+  M4, and the engine says so instead of pretending.
+- **A run cannot be steered after it is terminal.** A redo of a finished run
+  is recorded in the intervention log and refused with `409 run_terminal`;
+  restarting a finished run is a new run.
+
+## M3 interface
+
+`/runs` lists the tenant's runs, `/runs/[id]` is the monitor (graph, timeline,
+step inspector, checkpoint decisions, intervene/redo) and `/checkpoints` is the
+inbox. The graph is drawn from the run snapshot: node positions when the
+template has them, otherwise a layered layout by topological depth. The run
+event stream is a polling SSE (`step`, `log`, `checkpoint`, `run`, `done`) and
+the client falls back to polling when the stream drops.
+
 ## Agent security notes
 
 - The runtime role is a member of `aic_app`, not the schema owner and not
@@ -233,9 +334,9 @@ same single-process constraint as the rate limiter.
   access to child partitions, bypassing the parent's RLS. Partitioning waits
   until per-partition RLS/revokes exist.
 - CLI isolation is the process boundary plus the narrowed environment and
-  process group. The macOS sandbox profile and worktree provisioning arrive
-  with the workflow engine; chat runs in a temp directory and cannot touch the
-  operator's checkout through a `..` cwd.
+  process group. The macOS sandbox profile is still missing; chat runs in a
+  temp directory and a workflow node runs in an app-owned worktree, so neither
+  can touch the operator's checkout through a `..` cwd.
 
 ## M2 interface
 
@@ -248,16 +349,29 @@ with polling fallback, and guests get a read-only chat.
 
 ## Known gaps
 
-- `item_failures`, backoff and `exhausted` at item level (M3/M4). Agent jobs have
+- `item_failures`, backoff and `exhausted` at item level (M4). Agent jobs have
   their own attempt counter, but items have none yet.
 - `priority_rankings` / ranking runs, LLM ranking, stale-run fallback (M4).
-- Start-now (M4) and agent assignees (M3).
-- Graph workflows, checkpoints and the merge node (M3) — chat jobs are the only
-  runs that exist.
-- Skills, memory (`memory_entries`) and task files (M3/M4) are designed but not
-  built; the agent prompt in M2 is soul + item context + thread history.
-- Worktrees, the macOS sandbox profile and the per-branch workspace isolation
-  arrive with the workflow engine. M2 CLI runs use a temp directory.
+- Start-now (M4) and agent assignees (M4).
+- Graph workflows, checkpoints and the merge node are built; what is still
+  missing is the `integration` node kind (GitHub/Jira are M4) — an integration
+  node fails with the `capability` kind, which is honest but not useful.
+- The `skills` and `skill_versions` tables are not built (M4), so the context
+  bundle's skills tier is always empty; the memory tiers and the task file are
+  built and in use.
+- **A loop's body does not re-execute per iteration.** The iteration budget is
+  enforced — the loop stops at `max_iterations` and the node fails with
+  `cycle_budget_exhausted` — but the body nodes share one execution row, so
+  the second iteration attaches to the first iteration's job instead of
+  running the agent again. Fixing it means giving the body nodes a per
+  iteration frame (`iteration_path`), which changes the planner's model of a
+  node's executions. The `until` condition is evaluated against the value the
+  loop received on its cycle-return edge (a boolean, or the name of an output
+  key); an agent that answers in prose never satisfies it, which is why the
+  seeded *Repair* template ends on its budget.
+- The macOS sandbox profile (§10) is still missing. A workflow node runs in an
+  app-owned worktree and a chat run in a temp directory, so the operator's
+  checkout is out of reach, but the child process itself is not confined.
 - The API adapter does not stream tokens and cannot call tools yet; the CLI
   adapter has no tool-permission gate.
 - `job_logs` is append-only but not partitioned (see above).
@@ -268,4 +382,5 @@ with polling fallback, and guests get a read-only chat.
 - Project nesting has no depth limit (items are capped at 6); cycles are
   rejected by `0006_tree_cycles.sql`.
 - The SSE hub and the rate limiter are per-process, so running more than one
-  API process would split live job frames and counters.
+  API process would split live job frames and counters. The engine's run event
+  stream is a polling SSE and is therefore process-independent.

@@ -24,7 +24,12 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 	"github.com/orlandoburli/ai-company/internal/agent/adapters"
 	"github.com/orlandoburli/ai-company/internal/api"
+	"github.com/orlandoburli/ai-company/internal/memory"
+	"github.com/orlandoburli/ai-company/internal/notification"
 	"github.com/orlandoburli/ai-company/internal/store/migrations"
+	"github.com/orlandoburli/ai-company/internal/work"
+	"github.com/orlandoburli/ai-company/internal/workflow"
+	"github.com/orlandoburli/ai-company/internal/workspace"
 )
 
 func main() {
@@ -91,12 +96,36 @@ func run() error {
 		agent.WithWorkerLogger(log))
 	worker.Start(ctx)
 
+	// M3 stores: the workflow persistence, the memory tiers and the
+	// notification centre. The engine (the scheduler that drives workflow
+	// runs) is wired on top of them.
+	workflowStore := workflow.NewStore(db)
+	memoryStore := memory.NewStore(db)
+	notifyStore := notification.NewStore(db)
+
+	// The engine is the scheduler: a stateless tick that recomputes the ready
+	// set from the persisted state and dispatches the ready nodes. It shares
+	// the process with the API and the agent worker, like everything else in
+	// the MVP.
+	engine := workflow.NewEngine(workflow.EngineDeps{
+		Store:         workflowStore,
+		Agents:        agentStore,
+		Memory:        memoryStore,
+		Work:          work.NewStore(db),
+		Workspaces:    workspace.NewProvider(),
+		Notifications: notifyStore,
+		Logger:        log,
+	})
+	engine.Start(ctx)
+
 	srv := &http.Server{
 		Addr: *addr,
 		Handler: api.New(db, log,
 			api.WithSecureCookies(*secureCookies),
 			api.WithAgentRuntime(agentStore, agentHub),
 			api.WithAgentWorker(worker),
+			api.WithWorkflowStores(workflowStore, memoryStore, notifyStore),
+			api.WithWorkflowEngine(engine),
 		).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

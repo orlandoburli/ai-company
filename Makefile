@@ -10,7 +10,7 @@ ADDR         ?= :8080
 SEED_FLAGS   ?=
 WEB_DIR      := web
 
-.PHONY: dev migrate seed api smoke web web-install test build fmt vet
+.PHONY: dev migrate seed api smoke smoke-workflow web web-install test build fmt vet
 
 # Migrate, seed and run API + web together. The seed is idempotent, so this is
 # safe to run every time.
@@ -39,6 +39,10 @@ api:
 # tenant cmd/seed creates; AIC_URL / AIC_EMAIL / AIC_PASSWORD override them.
 smoke:
 	@./scripts/smoke.sh
+
+# The M3 path: start a real run, decide its checkpoint, wait for the end.
+smoke-workflow:
+	@./scripts/smoke-workflow.sh
 
 web-install:
 	cd $(WEB_DIR) && npm install

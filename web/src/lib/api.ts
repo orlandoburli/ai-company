@@ -278,6 +278,29 @@ export const api = {
     ),
 
   cancelJob: (id: string) => post<{ job: Job }>(`/api/jobs/${id}/cancel`),
+
+  // --- workflow runs, checkpoints and notifications (M3 contract) ---------
+  listWorkflowTemplates: () => get<{ templates: WorkflowTemplate[] }>("/api/workflow-templates"),
+  listRuns: (filter?: { item_id?: string; state?: RunState; limit?: number }) =>
+    get<{ runs: Run[] }>("/api/runs" + query({ ...filter, limit: filter?.limit?.toString() })),
+  getRun: (id: string) => get<{ run: Run; steps: StepRun[] }>(`/api/runs/${encodeURIComponent(id)}`),
+  cancelRun: (id: string) => post<{ run: Run }>(`/api/runs/${encodeURIComponent(id)}/cancel`),
+  runLogs: (id: string, afterSeq = 0, limit = 500) =>
+    get<{ logs: LogEntry[] }>(`/api/runs/${encodeURIComponent(id)}/logs` + query({ after_seq: String(afterSeq), limit: String(limit) })),
+  listCheckpoints: (state = "pending", limit = 50) =>
+    get<{ checkpoints: Checkpoint[] }>("/api/checkpoints" + query({ state, limit: String(limit) })),
+  getCheckpoint: (id: string) => get<{ checkpoint: Checkpoint }>(`/api/checkpoints/${encodeURIComponent(id)}`),
+  decideCheckpoint: (id: string, body: { decision: CheckpointDecision; decision_md?: string; fields?: Record<string, unknown> }) =>
+    post<{ checkpoint: Checkpoint }>(`/api/checkpoints/${encodeURIComponent(id)}/decision`, body),
+  intervene: (id: string, body: { kind: Intervention["kind"]; node_id?: string; step_run_id?: string; body_md?: string }) =>
+    post<{ intervention: Intervention }>(`/api/runs/${encodeURIComponent(id)}/intervene`, body),
+  listInterventions: (id: string) => get<{ interventions: Intervention[] }>(`/api/runs/${encodeURIComponent(id)}/interventions`),
+  listMemory: (params: { scope_kind?: string; scope_ref?: string; limit?: number }) =>
+    get<{ entries: MemoryEntry[] }>("/api/memory" + query({ ...params, limit: params.limit?.toString() })),
+  memoryManifest: (stepRunId: string) => get<{ manifest: unknown[] }>("/api/memory/manifest" + query({ step_run_id: stepRunId })),
+  listNotifications: (unread = true, limit = 50) =>
+    get<{ notifications: Notification[] }>("/api/notifications" + query({ unread: unread ? "true" : undefined, limit: String(limit) })),
+  markNotificationRead: (id: string) => post<{ notification: Notification }>(`/api/notifications/${encodeURIComponent(id)}/read`),
 };
 
 /** Filters accepted by /api/items and /api/board. */
@@ -398,11 +421,85 @@ export interface Job {
 export interface LogEntry {
   seq: number;
   job_id?: string;
+  run_id?: string;
+  step_run_id?: string;
   stream?: string;
   level?: string;
   kind?: string;
   message: string;
   ts?: string;
+}
+
+// --- M3 workflow runtime ---------------------------------------------------
+export type RunState = "queued" | "running" | "waiting_human" | "completed" | "failed" | "cancelled";
+export type StepState = "pending" | "ready" | "running" | "waiting" | "succeeded" | "failed" | "skipped" | "blocked" | "cancelled" | "superseded";
+export type ReceiptState = "delivered" | "skipped" | "dead";
+export interface Receipt { state: ReceiptState; port?: string; value?: unknown; }
+export interface WorkflowNode {
+  id: string; kind: string; name: string; type?: string; type_version?: number;
+  config?: Record<string, unknown>; position?: { x: number; y: number };
+  on_error?: string; always_output_data?: boolean; workspace?: string;
+}
+export interface WorkflowEdge { id: string; from: { node: string; port: string }; to: { node: string; port: string }; }
+export interface WorkflowGraph { schema_version?: number; nodes: WorkflowNode[]; edges: WorkflowEdge[]; }
+export interface WorkflowTemplate {
+  id: string; name: string; applies_to?: string; version?: number; published?: boolean;
+  status?: string; max_concurrency?: number; graph?: WorkflowGraph; created_at?: string; updated_at?: string;
+}
+export interface Run {
+  id: string; item_id: string; template_id: string; template_version: number; state: RunState;
+  max_concurrency?: number; started_by?: string; started_at: string; finished_at?: string | null;
+  error?: string | null; failure_kind?: string | null; branch?: string | null; worktree_path?: string | null;
+  definition_snapshot_json?: WorkflowGraph | string;
+}
+export interface TokenUsage { in?: number; out?: number; }
+export interface StepResult {
+  status?: string; exit_reason?: string; summary?: string; tokens?: TokenUsage;
+  cost_usd?: number; failure_kind?: string | null; artifacts?: unknown[];
+}
+export interface StepRun {
+  id: string; run_id: string; node_id: string; iteration_path?: string; run_index?: number;
+  kind: string; name: string; state: StepState; input_edges?: Record<string, Receipt>;
+  output_ports?: Record<string, { value?: unknown; summary?: string }>; result?: StepResult | null;
+  failure_kind?: string | null; workspace_kind?: string; workdir?: string | null; agent_job_id?: string | null;
+  memory_manifest?: unknown[]; context_manifest?: unknown[]; claim_expires_at?: string | null;
+  started_at?: string | null; finished_at?: string | null;
+}
+export interface CheckpointFieldSpec { key: string; type: "string" | "number" | "boolean" | "enum"; label: string; required?: boolean; options?: string[]; }
+export type CheckpointDecision = "approve" | "approve_with_edits" | "reject" | "abort";
+export interface Checkpoint {
+  id: string; run_id: string; step_run_id: string; node_id: string; lap: number; state: string;
+  summary_md?: string; decision_md?: string | null; fields?: Record<string, unknown> | null;
+  fields_spec?: CheckpointFieldSpec[]; decided_by_kind?: string | null; decided_by?: string | null;
+  decided_at?: string | null; remind_after?: string | null; created_at?: string;
+}
+export interface Intervention {
+  id: string; run_id: string; step_run_id?: string | null; node_id?: string | null; seq: number;
+  kind: "inject" | "redo" | "stop"; body_md?: string; created_at?: string; delivered_at?: string | null;
+}
+export interface MemoryEntry {
+  id: string; scope_kind: string; scope_ref: string; key: string; value?: unknown; revision: number;
+  seq?: number; superseded_by?: string | null; created_at?: string;
+}
+export interface Notification {
+  id: string; kind: "checkpoint_pending" | "run_failed" | "run_completed" | "sync_error";
+  title?: string; body?: string; read_at?: string | null; created_at: string; run_id?: string; item_id?: string;
+}
+
+export interface RunEventHandlers {
+  onStep: (step: StepRun) => void; onLog: (entry: LogEntry) => void;
+  onCheckpoint: (checkpoint: Checkpoint) => void; onRun: (run: Run) => void;
+  onDone: () => void; onError: () => void;
+}
+export function openRunEvents(runId: string, afterSeq: number, h: RunEventHandlers): () => void {
+  const es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events?after_seq=${encodeURIComponent(String(afterSeq))}`);
+  es.addEventListener("step", (e: MessageEvent<string>) => { const value = parseFrame<{ step: StepRun }>(e.data)?.step; if (value) h.onStep(value); });
+  es.addEventListener("log", (e: MessageEvent<string>) => { const value = parseFrame<LogEntry>(e.data); if (value) h.onLog(value); });
+  es.addEventListener("checkpoint", (e: MessageEvent<string>) => { const value = parseFrame<{ checkpoint: Checkpoint }>(e.data)?.checkpoint; if (value) h.onCheckpoint(value); });
+  es.addEventListener("run", (e: MessageEvent<string>) => { const value = parseFrame<{ run: Run }>(e.data)?.run; if (value) h.onRun(value); });
+  es.addEventListener("done", () => h.onDone());
+  es.addEventListener("error", () => { es.close(); h.onError(); });
+  return () => es.close();
 }
 
 /** True once a job is past its terminal transition. */
