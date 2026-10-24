@@ -155,7 +155,7 @@
   --code-text: var(--theme-gray-900);
   --row-hover: rgb(var(--accent-rgb) / .035);
   --selected-bg: rgb(var(--accent-rgb) / .08);
-  --sidebar-bg: #2b3845;
+  --sidebar-bg: #ffffff;
   --topbar-bg: #ffffff;
   --status-backlog: var(--theme-gray-600);
   --status-todo: var(--theme-primary);
@@ -2623,7 +2623,7 @@ table.data th, table.data td { border-color: var(--table-border); }
   --shadow-2: var(--theme-box-shadow);
   --shadow-shell: none;
   --card-shadow: var(--theme-card-box-shadow);
-  --sidebar-bg: #2b3845;
+  --sidebar-bg: #ffffff;
   --topbar-bg: #ffffff;
   --status-backlog: #8495ab;
   --status-todo: #39379e;
@@ -2869,3 +2869,29 @@ table.data td { padding: 8px 9.6px; border-bottom: 1px solid #eef2f7; font-size:
 @media (max-width: 560px) {
   .topbar__breadcrumb { display: none; }
 }
+
+
+/* --- The Orbit light sidebar -----------------------------------------------
+   The skin ships a light rail as an alternative to the dark one, and that is
+   the one that belongs with this product: the canvas is #f3f6f9, so a white
+   rail reads as a panel and the indigo (#39379e) carries the active item, the
+   hover and the icons — the same vocabulary the rest of the interface uses.
+   The values are the theme's own: the items #6c757d, the hover and the
+   active state #39379e on #eff1fc. */
+.sidebar { background: var(--sidebar-bg); color: var(--theme-gray-700); }
+.sidebar .brand__name { color: var(--text-strong); }
+.brand__mark { background: var(--theme-primary); }
+.sidebar-nav__link { color: var(--theme-gray-700); }
+.sidebar-nav__link:hover { background: #eff1fc; color: var(--theme-primary); }
+.sidebar-nav__link[aria-current="page"] { background: #eff1fc; color: var(--theme-primary); box-shadow: none; }
+.sidebar-nav__glyph { color: var(--theme-gray-600); }
+.sidebar-nav__link[aria-current="page"] .sidebar-nav__glyph { color: var(--theme-primary); }
+.tree__heading { color: var(--theme-gray-500); }
+.tree__subheading { color: var(--theme-gray-500); }
+.tree-row { color: var(--theme-gray-700); }
+.tree-row:hover { background: #eff1fc; color: var(--theme-primary); }
+.tree-row[aria-current="true"] { background: #eff1fc; color: var(--theme-primary); }
+.tree-row__caret, .tree-row__key, .tree-row__pct { color: var(--theme-gray-600); }
+.sidebar .muted, .sidebar .tiny { color: var(--theme-gray-600); }
+.sidebar .skeleton { background: var(--theme-gray-200); }
+.sidebar .error-note { color: var(--theme-danger); }
