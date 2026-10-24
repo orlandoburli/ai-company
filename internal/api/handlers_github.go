@@ -35,6 +35,8 @@ func (s *Server) registerGitHubRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/github/issues", s.authenticated(s.handleGitHubIssues))
 	mux.Handle("POST /api/github/sync", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleGitHubSync)))
 	mux.Handle("POST /api/items/{id}/github-link", s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleGitHubLink)))
+	// The links of an item are a read, like the item itself.
+	mux.Handle("GET /api/items/{id}/github-links", s.authenticated(s.handleGitHubLinks))
 }
 
 func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +82,7 @@ func (s *Server) handleGitHubSync(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, op := range []func(context.Context, tenancy.Scope, string, string) (ghsync.Result, error){
+			// ImportIssues brings the pull requests along: both become links.
 			svc.ImportIssues, svc.SyncIssues, svc.SyncMergedPullRequests,
 		} {
 			part, err := op(r.Context(), sc, product.ID, product.RepoURL)

@@ -1946,6 +1946,140 @@ table.data + table.data {
 .checkpoint-summary .msg__heading { margin: 14px 0 5px; color: var(--text-strong); font-size: 14px; line-height: 1.35; }
 .checkpoint-summary .msg__heading:first-child { margin-top: 0; }
 .checkpoint-summary .msg__list { margin: 5px 0 9px; padding-left: 21px; }
+
+/* --- project vocabulary pickers ------------------------------------------ */
+.kind-combobox,
+.label-input__anchor { position: relative; min-width: 0; }
+.picker-menu {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow-2);
+}
+.picker-option {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.picker-option:hover,
+.picker-option[aria-selected="true"] { background: rgb(var(--accent-rgb) / .08); color: var(--accent); }
+.picker-option--custom { color: var(--accent); font-weight: 600; }
+.picker-empty { display: block; padding: 7px 9px; color: var(--muted); font-size: 12.5px; }
+.label-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 5px 7px;
+  border: 1px solid var(--theme-border-color);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.label-input:focus-within { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 0; }
+.label-input--disabled { background: var(--panel-2); }
+.label-input__chips { display: contents; }
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 5px 2px 8px;
+  border: 1px solid rgb(var(--accent-rgb) / .2);
+  border-radius: 999px;
+  background: rgb(var(--accent-rgb) / .07);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.label-chip button {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: 16px/1 var(--sans);
+  cursor: pointer;
+}
+.label-chip button:hover { background: rgb(var(--accent-rgb) / .12); }
+.label-input__anchor { flex: 1 1 110px; }
+.label-input__text {
+  width: 100%;
+  min-width: 90px;
+  padding: 3px 2px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.label-input__text::placeholder { color: var(--placeholder); }
+.label-input__text:disabled { cursor: default; }
+
+/* --- item family and linked GitHub work ----------------------------------- */
+.family-list,
+.github-link-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.family-list__link {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--card-shadow);
+  color: var(--text);
+}
+.family-list__title { flex: 1 1 180px; min-width: 0; color: var(--text-strong); font-weight: 500; }
+.github-link-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: var(--card-shadow);
+}
+.github-link-list__main { display: grid; min-width: 0; gap: 5px; }
+.github-link-list__title { color: var(--text-strong); font-weight: 500; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .github-link-list > li { align-items: flex-start; }
+  .github-link-list > li > .btn { flex: none; }
+}
+
+/* --- ordered project kinds ------------------------------------------------- */
+.kind-settings-card { display: grid; gap: 10px; padding: 12px; border-radius: 6px; background: var(--panel); box-shadow: var(--card-shadow); }
+.kind-settings-card > .spread { color: var(--text-strong); }
+.kind-settings-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; counter-reset: kind; }
+.kind-settings-list > li { display: grid; grid-template-columns: 24px minmax(100px, 1fr) auto; gap: 8px; align-items: center; }
+.kind-settings-list__position { color: var(--muted); font: 12.5px var(--mono); text-align: center; }
+@media (max-width: 560px) {
+  .kind-settings-list > li { grid-template-columns: 22px minmax(0, 1fr); }
+  .kind-settings-list > li > .stack { grid-column: 2; justify-content: flex-end; }
+}
 .checkpoint-summary .msg__list li { padding: 2px 0; }
 .checkpoint-summary .msg__list li::marker { color: var(--cyan); }
 .checkpoint-summary code:not(.mono) { color: var(--info); background: rgb(var(--info-rgb) / .08); padding: 1px 4px; border-radius: 3px; }

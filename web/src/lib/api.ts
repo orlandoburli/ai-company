@@ -5,13 +5,17 @@ import type {
   CreateInviteResult,
   DependencyEdge,
   FailureState,
+  GitHubItemLink,
   Invite,
   InvitePeek,
   Item,
+  ItemChildRef,
+  ItemFamilyRef,
   ItemScore,
   MeResponse,
   Member,
   Product,
+  ProjectKind,
   Project,
   ProjectNode,
   QueueItem,
@@ -230,6 +234,15 @@ export const api = {
   listProjects: (productId?: string) =>
     get<{ projects: Project[] }>("/api/projects" + query({ product_id: productId })),
 
+  listProjectKinds: (projectId: string) =>
+    get<{ kinds: ProjectKind[] }>(`/api/projects/${encodeURIComponent(projectId)}/kinds`),
+
+  setProjectKinds: (projectId: string, kinds: ProjectKind[]) =>
+    request<{ kinds: ProjectKind[] }>("PUT", `/api/projects/${encodeURIComponent(projectId)}/kinds`, { kinds }),
+
+  listLabels: (projectId?: string) =>
+    get<{ labels: string[] }>("/api/labels" + query({ project_id: projectId })),
+
   createProject: (b: {
     product_id: string;
     parent_id?: string;
@@ -249,9 +262,18 @@ export const api = {
     post<{ item: Item }>("/api/items", b),
 
   getItem: (id: string) =>
-    get<{ item: Item; blockers: DependencyEdge[]; dependents: DependencyEdge[] }>(
+    get<{
+      item: Item;
+      blockers: DependencyEdge[];
+      dependents: DependencyEdge[];
+      parent?: ItemFamilyRef | null;
+      children?: ItemChildRef[];
+    }>(
       `/api/items/${id}`,
     ),
+
+  githubLinks: (id: string) =>
+    get<{ links: GitHubItemLink[] }>(`/api/items/${encodeURIComponent(id)}/github-links`),
 
   patchItem: (id: string, b: PatchItemBody) => patch<{ item: Item }>(`/api/items/${id}`, b),
 

@@ -17,15 +17,16 @@ import (
 // assertion here vacuously true.
 
 type fixture struct {
-	t   *testing.T
-	app *sql.DB
-	st  *work.Store
-	t1  tenancy.Scope
-	t2  tenancy.Scope
-	p1  work.Product
-	pr1 work.Project
-	p2  work.Product
-	pr2 work.Project
+	t     *testing.T
+	app   *sql.DB
+	owner *sql.DB // schema owner: only for assertions no application role may make
+	st    *work.Store
+	t1    tenancy.Scope
+	t2    tenancy.Scope
+	p1    work.Product
+	pr1   work.Project
+	p2    work.Product
+	pr2   work.Project
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -42,11 +43,12 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f := &fixture{
-		t:   t,
-		app: app,
-		st:  work.NewStore(app),
-		t1:  tenancy.Scope{TenantID: "T1", UserID: "U-T1", Role: tenancy.RoleOwner},
-		t2:  tenancy.Scope{TenantID: "T2", UserID: "U-T2", Role: tenancy.RoleOwner},
+		t:     t,
+		app:   app,
+		owner: db.DB,
+		st:    work.NewStore(app),
+		t1:    tenancy.Scope{TenantID: "T1", UserID: "U-T1", Role: tenancy.RoleOwner},
+		t2:    tenancy.Scope{TenantID: "T2", UserID: "U-T2", Role: tenancy.RoleOwner},
 	}
 	ctx := context.Background()
 

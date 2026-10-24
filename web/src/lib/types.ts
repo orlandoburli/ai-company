@@ -65,6 +65,35 @@ export interface Item {
   is_epic: boolean;
 }
 
+/** Compact item refs included by the item detail endpoint for its hierarchy. */
+export interface ItemFamilyRef {
+  id: string;
+  number: number;
+  title: string;
+  kind: string;
+  status: Status;
+}
+
+export interface ItemChildRef extends ItemFamilyRef {
+  priority: Priority | null;
+}
+
+export interface GitHubItemLink {
+  kind: "issue" | "pr";
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  head_branch?: string | null;
+  base_branch?: string | null;
+}
+
+export interface ProjectKind {
+  name: string;
+  position: number;
+}
+
 export interface Product {
   id: string;
   name: string;

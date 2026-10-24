@@ -16,19 +16,28 @@ import (
 	"github.com/orlandoburli/ai-company/internal/workflow"
 )
 
-type apiFakeGitHub struct{ get map[int]integration.Issue }
+type apiFakeGitHub struct {
+	get    map[int]integration.Issue
+	issues []integration.Issue
+	prs    []integration.PullRequest
+}
 
 func (f *apiFakeGitHub) ListIssues(context.Context, string, string, int) ([]integration.Issue, error) {
-	return []integration.Issue{}, nil
+	return append([]integration.Issue(nil), f.issues...), nil
 }
 func (f *apiFakeGitHub) GetIssue(_ context.Context, _ string, number int) (integration.Issue, error) {
 	if issue, ok := f.get[number]; ok {
 		return issue, nil
 	}
+	for _, issue := range f.issues {
+		if issue.Number == number {
+			return issue, nil
+		}
+	}
 	return integration.Issue{}, &integration.APIError{Status: http.StatusNotFound, Message: "Not Found"}
 }
 func (f *apiFakeGitHub) ListPullRequests(context.Context, string, string, int) ([]integration.PullRequest, error) {
-	return []integration.PullRequest{}, nil
+	return append([]integration.PullRequest(nil), f.prs...), nil
 }
 func (f *apiFakeGitHub) UpdateIssueTitle(_ context.Context, repo string, number int, title string) (integration.Issue, error) {
 	issue, ok := f.get[number]
@@ -43,6 +52,14 @@ func (f *apiFakeGitHub) UpdateIssueTitle(_ context.Context, repo string, number 
 
 func githubAPIHarness(t *testing.T) *workflowHarness {
 	t.Helper()
+	h, _ := githubAPIHarnessWith(t)
+	return h
+}
+
+// githubAPIHarnessWith builds the harness and hands back the fake GitHub
+// client, so a test can seed the repository it syncs.
+func githubAPIHarnessWith(t *testing.T) (*workflowHarness, *apiFakeGitHub) {
+	t.Helper()
 	db := pgtest.FreshDB(t)
 	app := db.AsRole(t, "aic_app")
 	app.SetMaxOpenConns(10)
@@ -56,7 +73,7 @@ func githubAPIHarness(t *testing.T) *workflowHarness {
 	mux.Handle("/", s.Handler())
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &workflowHarness{t: t, db: app, admin: db, srv: srv}
+	return &workflowHarness{t: t, db: app, admin: db, srv: srv}, fake
 }
 
 func TestGitHubHTTPRolesLinkConflictAndTenant404(t *testing.T) {

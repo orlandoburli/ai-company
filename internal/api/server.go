@@ -164,6 +164,12 @@ func (s *Server) Handler() http.Handler {
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePatchProject)))
 	mux.Handle("DELETE /api/projects/{id}",
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteProject)))
+	// The kinds a project offers: everybody may read them, changing them is a
+	// settings surface, so owner/admin only.
+	mux.Handle("GET /api/projects/{id}/kinds", s.authenticated(s.handleGetProjectKinds))
+	mux.Handle("PUT /api/projects/{id}/kinds",
+		s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handlePutProjectKinds)))
+	mux.Handle("GET /api/labels", s.authenticated(s.handleListLabels))
 	mux.Handle("GET /api/tree", s.authenticated(s.handleTree))
 	mux.Handle("POST /api/items/bulk-status",
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleBulkStatus)))

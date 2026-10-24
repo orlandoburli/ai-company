@@ -76,9 +76,10 @@ function BoardView() {
         .board({
           project_id: projectFilter,
           assignee_user_id: assigneeFilter,
+          label: labelFilter,
         })
         .then((r) => r.columns),
-    [projectFilter, assigneeFilter],
+    [projectFilter, assigneeFilter, labelFilter],
   );
 
   const [moved, setMoved] = useState<Record<string, Status>>({});
@@ -118,12 +119,13 @@ function BoardView() {
     return out;
   }, [board.data, moved, overlay]);
 
-  const labelOptions = useMemo(() => {
-    const s = new Set<string>();
-    for (const col of board.data ?? [])
-      for (const it of col.items) for (const l of it.labels) s.add(l);
-    return [...s].sort();
-  }, [board.data]);
+  const labelOptionsQuery = useAsync(async () => {
+    if (projectFilter) return (await api.listLabels(projectFilter)).labels;
+    const projectIds = (projects.data ?? []).map((project) => project.id);
+    const results = await Promise.all(projectIds.map((projectId) => api.listLabels(projectId)));
+    return [...new Set(results.flatMap((result) => result.labels))].sort((a, b) => a.localeCompare(b));
+  }, [projectFilter, projects.data]);
+  const labelOptions = labelOptionsQuery.data ?? [];
 
   const itemCount = useMemo(
     () => (board.data ?? []).reduce((n, c) => n + c.items.length, 0),
@@ -280,14 +282,19 @@ function BoardView() {
             className="input input--inline"
             value={labelFilter}
             onChange={(e) => setParam("label", e.target.value)}
+            aria-describedby={labelOptionsQuery.error ? "f-label-note" : undefined}
           >
             <option value="">All</option>
             {labelOptions.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
+              <option key={l} value={l}>{l}</option>
             ))}
+            {labelFilter && !labelOptions.includes(labelFilter) ? (
+              <option value={labelFilter}>{labelFilter} (no longer in use)</option>
+            ) : null}
           </select>
+          {labelOptionsQuery.error ? (
+            <span id="f-label-note" className="tiny muted">Labels could not load.</span>
+          ) : null}
         </div>
         <div className="field">
           <label htmlFor="f-assignee">Assignee</label>
@@ -305,16 +312,6 @@ function BoardView() {
             ))}
           </select>
         </div>
-        <label className="field" style={{ visibility: "hidden" }} aria-hidden>
-          <label htmlFor="f-select-label">Selection filter</label>
-          <span
-            id="f-select-label"
-            className="input input--inline"
-            aria-label="Label filter mirrored for screen readers"
-          >
-            {labelFilter || "All"}
-          </span>
-        </label>
       </div>
 
       {selected.size > 0 && canWrite ? (

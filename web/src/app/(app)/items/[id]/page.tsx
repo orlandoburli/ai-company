@@ -10,7 +10,10 @@ import type {
   ActivityEntry,
   DependencyEdge,
   FailureState,
+  GitHubItemLink,
   Item,
+  ItemChildRef,
+  ItemFamilyRef,
   ItemScore,
   Member,
   Priority,
@@ -29,6 +32,8 @@ import {
   Dialog,
   EmptyState,
   ErrorBlock,
+  KindCombobox,
+  LabelInput,
   PrioritySelect,
   Skeleton,
   StatusSelect,
@@ -69,6 +74,18 @@ function ItemDetail() {
   const [tab, setTab] = useState<"details" | "activity" | "chat">("details");
 
   const item = detail.data?.item ?? null;
+  const kinds = useAsync(
+    () => item ? api.listProjectKinds(item.project_id) : Promise.resolve({ kinds: [] }),
+    [item?.project_id],
+  );
+  const labels = useAsync(
+    () => item ? api.listLabels(item.project_id) : Promise.resolve({ labels: [] }),
+    [item?.project_id],
+  );
+  const githubLinks = useAsync(
+    () => item ? api.githubLinks(item.id) : Promise.resolve({ links: [] }),
+    [item?.id],
+  );
   const [draft, setDraft] = useState<EditableDraft | null>(null);
   useEffect(() => {
     if (item && !draft) {
@@ -178,6 +195,12 @@ function ItemDetail() {
               item={item}
               canWrite={canWrite}
               members={members.data ?? []}
+              kinds={(kinds.data?.kinds ?? []).map((entry) => entry.name)}
+              kindsLoading={kinds.loading}
+              kindsError={Boolean(kinds.error)}
+              labelOptions={labels.data?.labels ?? []}
+              labelsLoading={labels.loading}
+              labelsError={Boolean(labels.error)}
               onSave={(d) => {
                 void (async () => {
                   try {
@@ -186,8 +209,7 @@ function ItemDetail() {
                       kind: d.kind.trim() || "task",
                       description_md: d.description_md,
                       due_date: d.due_date,
-                      labels: labelsOf(d.labels),
-                      github_issue_url: d.github_issue_url,
+                      labels: d.labels,
                       jira_issue_key: d.jira_issue_key,
                       external_url: d.external_url,
                     });
@@ -201,6 +223,13 @@ function ItemDetail() {
               }}
             />
           ) : null}
+          <ItemFamily parent={detail.data?.parent ?? null} children={detail.data?.children ?? []} />
+          <GitHubLinksPanel
+            links={githubLinks.data?.links ?? []}
+            loading={githubLinks.loading}
+            error={githubLinks.error?.message ?? null}
+            onRetry={() => void githubLinks.reload()}
+          />
           <FailurePanel itemId={item.id} paused={Boolean(item.paused || item.paused_at)} canWrite={canWrite} push={push} />
           <DependenciesPanel
             item={item}
@@ -411,8 +440,7 @@ interface EditableDraft {
   kind: string;
   description_md: string;
   due_date: string;
-  labels: string;
-  github_issue_url: string;
+  labels: string[];
   jira_issue_key: string;
   external_url: string;
 }
@@ -423,18 +451,10 @@ function draftFrom(it: Item): EditableDraft {
     kind: it.kind,
     description_md: it.description_md ?? "",
     due_date: inputDate(it.due_date),
-    labels: it.labels.join(", "),
-    github_issue_url: it.github_issue_url ?? "",
+    labels: [...it.labels],
     jira_issue_key: it.jira_issue_key ?? "",
     external_url: it.external_url ?? "",
   };
-}
-
-function labelsOf(s: string): string[] {
-  return s
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
 }
 
 /* --- breadcrumb & header ------------------------------------------------------ */
@@ -639,13 +659,19 @@ function DetailsForm(props: {
   item: Item;
   canWrite: boolean;
   members: Member[];
+  kinds: string[];
+  kindsLoading: boolean;
+  kindsError: boolean;
+  labelOptions: string[];
+  labelsLoading: boolean;
+  labelsError: boolean;
   onSave: (d: EditableDraft) => void;
 }) {
   const [d, setD] = useState<EditableDraft>(props.draft);
   useEffect(() => {
     setD(props.draft);
   }, [props.draft]);
-  const set = <K extends keyof EditableDraft>(k: K, v: string) =>
+  const set = <K extends keyof EditableDraft>(k: K, v: EditableDraft[K]) =>
     setD((x) => ({ ...x, [k]: v }));
 
   const dirty = JSON.stringify(d) !== JSON.stringify(props.draft);
@@ -669,14 +695,15 @@ function DetailsForm(props: {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12 }}>
               <div className="field">
-                <label htmlFor="i-kind">Kind</label>
-                <input
-                  id="i-kind"
-                  className="input"
+                <label>Kind</label>
+                <KindCombobox
                   value={d.kind}
-                  onChange={(e) => set("kind", e.target.value)}
+                  options={props.kinds}
+                  onChange={(value) => set("kind", value)}
                 />
-                <span className="tiny muted">Free-form: task, bug, epic…</span>
+                <span className="tiny muted">
+                  {props.kindsError ? "Project kinds could not load; any value is still allowed." : props.kindsLoading ? "Loading project kinds…" : "Choose a project kind or enter your own."}
+                </span>
               </div>
               <div className="field">
                 <label htmlFor="i-due">Due date</label>
@@ -700,24 +727,15 @@ function DetailsForm(props: {
               />
             </div>
             <div className="field">
-              <label htmlFor="i-labels">Labels</label>
-              <input
-                id="i-labels"
-                className="input"
+              <label>Labels</label>
+              <LabelInput
                 value={d.labels}
-                onChange={(e) => set("labels", e.target.value)}
-                placeholder="bug, frontend, infra"
+                options={props.labelOptions}
+                onChange={(value) => set("labels", value)}
               />
-              <span className="tiny muted">Comma separated.</span>
-            </div>
-            <div className="field">
-              <label htmlFor="i-gh">GitHub issue or PR URL</label>
-              <input
-                id="i-gh"
-                className="input"
-                value={d.github_issue_url}
-                onChange={(e) => set("github_issue_url", e.target.value)}
-              />
+              <span className="tiny muted">
+                {props.labelsError ? "Labels could not load; you can still add any label." : props.labelsLoading ? "Loading labels…" : "Choose a label in use or add a new one."}
+              </span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div className="field">
@@ -791,10 +809,100 @@ function ReadOnlyDetails({ item }: { item: Item }) {
   );
 }
 
+function ItemFamily(props: {
+  parent: ItemFamilyRef | null;
+  children: ItemChildRef[];
+}) {
+  return (
+    <section className="section" aria-labelledby="family-heading">
+      <div className="section__head">
+        <h2 id="family-heading">Sub-items <span className="tiny muted">({props.children.length})</span></h2>
+      </div>
+      <div className="section__body" style={{ display: "grid", gap: 12 }}>
+        {props.parent ? (
+          <p className="tiny" style={{ margin: 0 }}>
+            <span className="muted">Part of </span>
+            <Link href={`/items/${props.parent.id}`} className="rowlink">
+              #{props.parent.number} · {props.parent.title}
+            </Link>
+          </p>
+        ) : null}
+        {props.children.length === 0 ? (
+          <p className="tiny muted" style={{ margin: 0 }}>This item has no sub-items.</p>
+        ) : (
+          <ul className="family-list">
+            {props.children.map((child) => (
+              <li key={child.id}>
+                <Link href={`/items/${child.id}`} className="family-list__link">
+                  <span className="mono muted">#{child.number}</span>
+                  <span className="family-list__title">{child.title}</span>
+                  <span className="chip chip--kind">{child.kind}</span>
+                  <span className={`status-pill status-pill--${child.status}`}>{STATUS_LABELS[child.status]}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function GitHubLinksPanel(props: {
+  links: GitHubItemLink[];
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  return (
+    <section className="section" aria-labelledby="github-links-heading">
+      <div className="section__head">
+        <h2 id="github-links-heading">GitHub links</h2>
+        {!props.loading && !props.error ? <span className="tiny muted">{props.links.length}</span> : null}
+      </div>
+      <div className="section__body">
+        {props.error ? (
+          <ErrorBlock title="GitHub links could not load." message={props.error} retry={props.onRetry} />
+        ) : props.loading ? (
+          <Skeleton h={52} />
+        ) : props.links.length === 0 ? (
+          <p className="tiny muted" style={{ margin: 0 }}>No GitHub issues or pull requests are linked to this item.</p>
+        ) : (
+          <ul className="github-link-list">
+            {props.links.map((link) => (
+              <li key={`${link.kind}:${link.repo}:${link.number}`}>
+                <div className="github-link-list__main">
+                  <div className="stack" style={{ flexWrap: "wrap", gap: 6 }}>
+                    <span className={`badge ${link.kind === "issue" ? "badge--soft-info" : "badge--soft-secondary"}`}>
+                      {link.kind === "issue" ? "Issue" : "Pull request"}
+                    </span>
+                    <span className="mono tiny muted">{link.repo} #{link.number}</span>
+                    <span className={`badge ${link.state.toLowerCase() === "open" ? "badge--soft-success" : "badge--soft-secondary"}`}>
+                      {link.state}
+                    </span>
+                  </div>
+                  <a href={link.url} target="_blank" rel="noreferrer noopener" className="github-link-list__title">
+                    {link.title}
+                    <span className="visually-hidden"> (opens in a new tab)</span>
+                  </a>
+                  {link.kind === "pr" && link.head_branch ? (
+                    <span className="tiny muted">Head branch <code>{link.head_branch}</code></span>
+                  ) : null}
+                </div>
+                <a href={link.url} target="_blank" rel="noreferrer noopener" className="btn btn--sm">
+                  Open <span aria-hidden>↗</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function LinksOf({ item }: { item: Item }) {
   const links: { href: string; label: string }[] = [];
-  if (item.github_issue_url)
-    links.push({ href: item.github_issue_url, label: "GitHub issue" });
   if (item.external_url) links.push({ href: item.external_url, label: "External link" });
   if (item.jira_issue_key)
     links.push({ href: `https://jira.atlassian.com/browse/${item.jira_issue_key}`, label: item.jira_issue_key });

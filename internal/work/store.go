@@ -142,11 +142,17 @@ func (s *Store) CreateProject(ctx context.Context, sc tenancy.Scope, productID s
 	var p Project
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		p = Project{ID: newID(), ProductID: productID, ParentID: parentID, Name: name, Key: key, Status: "active"}
-		return tx.QueryRowContext(ctx, `
+		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO projects (id, tenant_id, product_id, parent_id, name, key)
 			VALUES ($1, $2, $3, nullif($4, ''), $5, nullif($6, ''))
 			RETURNING created_at`,
-			p.ID, sc.TenantID, productID, deref(parentID), name, key).Scan(&p.CreatedAt)
+			p.ID, sc.TenantID, productID, deref(parentID), name, key).Scan(&p.CreatedAt); err != nil {
+			return err
+		}
+		// A new project offers the default kinds, so the interface has
+		// something to offer before anybody has configured anything. The
+		// project may replace the list at any time.
+		return insertProjectKinds(ctx, tx, sc.TenantID, p.ID, defaultProjectKindNames())
 	})
 	if err != nil {
 		return Project{}, mapPGError(err)

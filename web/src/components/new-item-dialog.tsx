@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { useAsync } from "@/lib/hooks";
 import type { Priority, Product, Project, Status } from "@/lib/types";
-import { Dialog, apiErrorMessage, Field, StatusSelect } from "./primitives";
+import { Dialog, apiErrorMessage, Field, KindCombobox, LabelInput, StatusSelect } from "./primitives";
 export function NewItemDialog(props: {
   projects: Project[];
   products: Product[];
@@ -19,9 +20,11 @@ export function NewItemDialog(props: {
   const [kind, setKind] = useState("task");
   const [status, setStatus] = useState<Status | "">(props.defaultStatus ?? "backlog");
   const [priority, setPriority] = useState("");
-  const [labels, setLabels] = useState("");
+  const [labels, setLabels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const kinds = useAsync(() => api.listProjectKinds(projectId), [projectId]);
+  const usedLabels = useAsync(() => api.listLabels(projectId), [projectId]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,10 +38,7 @@ export function NewItemDialog(props: {
         title: title.trim(),
         status: status as Status | undefined,
         priority: priority as Priority | undefined,
-        labels: labels
-          .split(",")
-          .map((l) => l.trim())
-          .filter(Boolean),
+        labels,
       });
       props.onCreated(created.item);
     } catch (err) {
@@ -88,11 +88,14 @@ export function NewItemDialog(props: {
               />
             </Field>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Field label="Kind" hint="Free-form: task, bug, epic…">
-                <input
-                  className="input"
+              <Field
+                label="Kind"
+                hint={kinds.error ? "Project kinds could not load; any value is still allowed." : kinds.loading ? "Loading project kinds…" : "Choose a project kind or enter your own."}
+              >
+                <KindCombobox
                   value={kind}
-                  onChange={(e) => setKind(e.target.value)}
+                  options={(kinds.data?.kinds ?? []).map((entry) => entry.name)}
+                  onChange={setKind}
                 />
               </Field>
               <Field label="Priority">
@@ -116,11 +119,14 @@ export function NewItemDialog(props: {
                   onChange={setStatus}
                 />
               </Field>
-              <Field label="Labels" hint="Comma separated">
-                <input
-                  className="input"
+              <Field
+                label="Labels"
+                hint={usedLabels.error ? "Labels could not load; you can still add any label." : usedLabels.loading ? "Loading labels…" : "Choose a label in use or add a new one."}
+              >
+                <LabelInput
                   value={labels}
-                  onChange={(e) => setLabels(e.target.value)}
+                  options={usedLabels.data?.labels ?? []}
+                  onChange={setLabels}
                 />
               </Field>
             </div>

@@ -16,6 +16,7 @@ export function SettingsNav() {
     { href: "/settings/runners", label: "Runners" },
     { href: "/settings/notifications", label: "Notifications" },
     { href: "/settings/skills", label: "Skills" },
+    { href: "/settings/kinds", label: "Kinds" },
   ];
 
   return (

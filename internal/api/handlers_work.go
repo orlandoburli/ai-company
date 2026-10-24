@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -119,6 +120,107 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"project": pr})
 }
 
+// The kinds a project offers.
+//
+// An item's kind is free text: the user names their own kinds, and there is
+// deliberately no enum. What a project declares is the list it offers — the
+// vocabulary the interface presents when somebody picks a kind. The list is an
+// offer, not a constraint: an item keeps its kind even after the project stops
+// offering it.
+//
+// Reading the list is open to every role; changing it is a settings surface,
+// so owner/admin only.
+
+// setProjectKindsRequest is the list a project offers. The names may be given
+// as plain strings or as objects carrying a name, so the endpoint takes the
+// shape it returns as well as the simpler list of names.
+type setProjectKindsRequest struct {
+	Kinds []projectKindName `json:"kinds"`
+}
+
+// projectKindName accepts either a bare name or an object with a name.
+type projectKindName struct {
+	Name string
+}
+
+func (k *projectKindName) UnmarshalJSON(b []byte) error {
+	var name string
+	if err := json.Unmarshal(b, &name); err == nil {
+		k.Name = name
+		return nil
+	}
+	var obj struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	k.Name = obj.Name
+	return nil
+}
+
+// handleGetProjectKinds returns the kinds a project offers, in order.
+func (s *Server) handleGetProjectKinds(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	kinds, err := s.work.ListProjectKinds(r.Context(), sc, r.PathValue("id"))
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kinds": kinds})
+}
+
+// handlePutProjectKinds replaces the project's kinds with the given list, in
+// the given order. An empty list clears the project.
+func (s *Server) handlePutProjectKinds(w http.ResponseWriter, r *http.Request) {
+	var req setProjectKindsRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if req.Kinds == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "A kinds list is required.")
+		return
+	}
+	names := make([]string, 0, len(req.Kinds))
+	for _, k := range req.Kinds {
+		names = append(names, k.Name)
+	}
+	if err := s.work.SetProjectKinds(r.Context(), sc, r.PathValue("id"), names); err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	// Re-read rather than echo the request: the stored order is the answer.
+	kinds, err := s.work.ListProjectKinds(r.Context(), sc, r.PathValue("id"))
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kinds": kinds})
+}
+
+// handleListLabels returns the labels the tenant's items already use — the
+// autocomplete's vocabulary, derived from the items rather than declared. The
+// project filter is optional: without it the answer is the tenant's labels.
+func (s *Server) handleListLabels(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	labels, err := s.work.ListLabels(r.Context(), sc, strings.TrimSpace(r.URL.Query().Get("project_id")))
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"labels": labels})
+}
+
 type createItemRequest struct {
 	ProjectID      string   `json:"project_id"`
 	ParentID       string   `json:"parent_id"`
@@ -213,6 +315,29 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// itemParentView is the parent's shape in the item detail response: enough to
+// know what the item sits under, and nothing else.
+type itemParentView struct {
+	ID     string `json:"id"`
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+}
+
+// parentViewOf maps the store's summary onto the parent's wire shape. An item
+// without a parent has none: the answer is null, not an empty object.
+func parentViewOf(p *work.ItemSummary) *itemParentView {
+	if p == nil {
+		return nil
+	}
+	return &itemParentView{
+		ID: p.ID, Number: p.Number, Title: p.Title, Kind: p.Kind, Status: p.Status,
+	}
+}
+
+// handleGetItem returns one item with everything that frames it: the edges it
+// waits on, the item it sits under, and the children that make it an epic.
 func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	sc, ok := s.scope(w, r)
 	if !ok {
@@ -228,10 +353,17 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		s.writeWorkError(w, err)
 		return
 	}
+	parent, children, err := s.work.GetItemFamily(r.Context(), sc, it.ID)
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"item":       it,
 		"blockers":   blockers,
 		"dependents": dependents,
+		"parent":     parentViewOf(parent),
+		"children":   children,
 	})
 }
 

@@ -21,6 +21,197 @@ export function Field(props: {
   );
 }
 
+/** An editable project-kind picker. Existing values remain valid even when the
+ * project has not offered them; the suggestions are vocabulary, not a rule. */
+export function KindCombobox(props: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const matches = props.options.filter((name) =>
+    name.toLocaleLowerCase().includes(props.value.trim().toLocaleLowerCase()),
+  );
+  const addCustom = props.value.trim() && !props.options.some(
+    (name) => name.toLocaleLowerCase() === props.value.trim().toLocaleLowerCase(),
+  );
+  const menuOptions = [...matches, ...(addCustom ? [props.value.trim()] : [])];
+
+  return (
+    <div className="kind-combobox">
+      <input
+        className="input"
+        role="combobox"
+        aria-label={props.ariaLabel ?? "Kind"}
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={`${id}-options`}
+        aria-activedescendant={open && activeIndex >= 0 ? `${id}-option-${activeIndex}` : undefined}
+        value={props.value}
+        disabled={props.disabled}
+        onFocus={() => { setOpen(true); setActiveIndex(-1); }}
+        onChange={(e) => { props.onChange(e.target.value); setOpen(true); setActiveIndex(-1); }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+          if (e.key === "ArrowDown" && menuOptions.length) {
+            e.preventDefault(); setOpen(true); setActiveIndex((index) => Math.min(menuOptions.length - 1, index + 1));
+          } else if (e.key === "ArrowUp" && menuOptions.length) {
+            e.preventDefault(); setActiveIndex((index) => Math.max(0, index < 0 ? 0 : index - 1));
+          } else if (e.key === "Enter" && open) {
+            e.preventDefault();
+            if (activeIndex >= 0 && menuOptions[activeIndex]) props.onChange(menuOptions[activeIndex]);
+            setOpen(false);
+          }
+        }}
+        onBlur={() => setOpen(false)}
+      />
+      {open && !props.disabled ? (
+        <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label="Project kinds">
+          {matches.map((name, index) => (
+            <button
+              id={`${id}-option-${index}`}
+              key={name}
+              type="button"
+              role="option"
+              aria-selected={index === activeIndex || name === props.value}
+              className="picker-option"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { props.onChange(name); setOpen(false); }}
+            >{name}</button>
+          ))}
+          {addCustom ? (
+            <button
+              id={`${id}-option-${matches.length}`}
+              type="button"
+              role="option"
+              aria-selected={activeIndex === matches.length}
+              className="picker-option picker-option--custom"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { props.onChange(props.value.trim()); setOpen(false); }}
+            >Use “{props.value.trim()}”</button>
+          ) : null}
+          {matches.length === 0 && !addCustom ? <span className="picker-empty">No project kinds yet.</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Chip editor with suggestions from labels already in use and free-value add. */
+export function LabelInput(props: {
+  value: string[];
+  options: string[];
+  onChange: (labels: string[]) => void;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const normalized = query.trim().toLocaleLowerCase();
+  const matches = props.options.filter((label) =>
+    label.toLocaleLowerCase().includes(normalized) && !props.value.includes(label),
+  );
+  const custom = query.trim() && !props.value.some(
+    (label) => label.toLocaleLowerCase() === normalized,
+  ) && !matches.some((label) => label.toLocaleLowerCase() === normalized);
+  const menuOptions = [...matches, ...(custom ? [query.trim()] : [])];
+
+  function add(label: string) {
+    const next = label.trim();
+    if (next && !props.value.some((item) => item.toLocaleLowerCase() === next.toLocaleLowerCase())) {
+      props.onChange([...props.value, next]);
+    }
+    setQuery("");
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  return (
+    <div className={`label-input${props.disabled ? " label-input--disabled" : ""}`}>
+      {props.value.length ? (
+        <div className="label-input__chips">
+          {props.value.map((label) => (
+            <span key={label} className="label-chip">
+              {label}
+              {!props.disabled ? (
+                <button
+                  type="button"
+                  aria-label={`Remove label ${label}`}
+                  onClick={() => props.onChange(props.value.filter((item) => item !== label))}
+                >×</button>
+              ) : null}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="label-input__anchor">
+        <input
+          className="label-input__text"
+          role="combobox"
+          aria-label={props.ariaLabel ?? "Add label"}
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls={`${id}-options`}
+          aria-activedescendant={open && activeIndex >= 0 ? `${id}-label-option-${activeIndex}` : undefined}
+          placeholder={props.value.length ? "Add another label…" : "Type a label…"}
+          value={query}
+          disabled={props.disabled}
+          onFocus={() => { setOpen(true); setActiveIndex(-1); }}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); setActiveIndex(-1); }}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" && menuOptions.length) {
+              e.preventDefault(); setOpen(true); setActiveIndex((index) => Math.min(menuOptions.length - 1, index + 1));
+            } else if (e.key === "ArrowUp" && menuOptions.length) {
+              e.preventDefault(); setActiveIndex((index) => Math.max(0, index < 0 ? 0 : index - 1));
+            } else if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              if (e.key === "Enter" && open && activeIndex >= 0 && menuOptions[activeIndex]) add(menuOptions[activeIndex]);
+              else add(query);
+            } else if (e.key === "Escape") setOpen(false);
+            else if (e.key === "Backspace" && !query && props.value.length) {
+              props.onChange(props.value.slice(0, -1));
+            }
+          }}
+        />
+        {open && !props.disabled && (matches.length > 0 || custom) ? (
+          <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label="Available labels">
+            {matches.map((label, index) => (
+              <button
+                id={`${id}-label-option-${index}`}
+                key={label}
+                type="button"
+                role="option"
+                aria-selected={activeIndex === index}
+                className="picker-option"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => add(label)}
+              >{label}</button>
+            ))}
+            {custom ? (
+              <button
+                id={`${id}-label-option-${matches.length}`}
+                type="button"
+                role="option"
+                aria-selected={activeIndex === matches.length}
+                className="picker-option picker-option--custom"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => add(query)}
+              >Add “{query.trim()}”</button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /* --- Status / priority selects ------------------------------------------- */
 
 export function StatusSelect(props: {
