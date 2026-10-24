@@ -21,13 +21,13 @@ import { NewItemDialog } from "@/components/new-item-dialog";
 import { IconPause, IconPin, IconPlus } from "@/components/icons";
 
 const STATUS_COLORS: Record<Status, string> = {
-  backlog: "#7a8ea7",
-  todo: "#236dc9",
-  in_progress: "#f9bf59",
-  waiting_human: "#f7577e",
-  in_review: "#5bc3e1",
-  done: "#02bc9c",
-  cancelled: "#f7577e",
+  backlog: "var(--status-backlog)",
+  todo: "var(--status-todo)",
+  in_progress: "var(--status-progress)",
+  waiting_human: "var(--status-waiting)",
+  in_review: "var(--status-review)",
+  done: "var(--status-done)",
+  cancelled: "var(--status-error)",
 };
 
 export default function BoardPage() {

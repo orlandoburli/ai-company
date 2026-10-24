@@ -9,11 +9,11 @@ import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from
 import { renderMarkdown } from "@/components/chat";
 
 const STEP_COLOR: Record<string, string> = {
-  pending: "#596579", ready: "#58a6ff", running: "#58a6ff", waiting: "#f0b429",
-  succeeded: "#3ecf6e", failed: "#f4756b", skipped: "#8590a4", blocked: "#f4756b",
-  cancelled: "#8590a4", superseded: "#a78bfa",
+  pending: "var(--status-backlog)", ready: "var(--status-todo)", running: "var(--status-progress)", waiting: "var(--status-waiting)",
+  succeeded: "var(--status-done)", failed: "var(--status-error)", skipped: "var(--status-backlog)", blocked: "var(--status-error)",
+  cancelled: "var(--status-error)", superseded: "var(--status-waiting)",
 };
-const EDGE_COLOR = { delivered: "#3ecf6e", skipped: "#8590a4", dead: "#f4756b" };
+const EDGE_COLOR = { delivered: "var(--status-done)", skipped: "var(--status-backlog)", dead: "var(--status-error)" };
 
 export function formatElapsed(start?: string | null, end?: string | null): string {
   if (!start) return "—";
@@ -24,7 +24,7 @@ export function formatElapsed(start?: string | null, end?: string | null): strin
 }
 
 export function StateChip({ state }: { state: string }) {
-  const cls = state === "running" || state === "ready" ? "jobchip--run" : ["completed", "succeeded"].includes(state) ? "jobchip--ok" : ["failed", "blocked"].includes(state) ? "jobchip--fail" : ["waiting_human", "waiting"].includes(state) ? "jobchip--warn" : "jobchip--queued";
+  const cls = state === "running" ? "jobchip--warn" : state === "ready" ? "jobchip--run" : ["completed", "succeeded"].includes(state) ? "jobchip--ok" : ["failed", "blocked", "cancelled"].includes(state) ? "jobchip--fail" : ["waiting_human", "waiting"].includes(state) ? "jobchip--waiting" : "jobchip--queued";
   return <span className={`jobchip ${cls}`}><span className="jobchip__dot" />{state.replaceAll("_", " ")}</span>;
 }
 
@@ -101,7 +101,7 @@ export function RunGraph({ graph, steps, selected, onSelect }: RunGraphProps) {
           const a = layout.points.get(edge.from.node); const b = layout.points.get(edge.to.node);
           if (!a || !b) return null;
           const receipt = stepByNode.get(edge.to.node)?.input_edges?.[edge.id];
-          const color = receipt ? EDGE_COLOR[receipt.state] : "#344052";
+          const color = receipt ? EDGE_COLOR[receipt.state] : "var(--theme-gray-600)";
           return <g key={edge.id}><path d={`M ${a.x + 165} ${a.y + 30} C ${a.x + 205} ${a.y + 30}, ${b.x - 42} ${b.y + 30}, ${b.x} ${b.y + 30}`} fill="none" stroke={color} strokeWidth="2" />
             <circle cx={b.x} cy={b.y + 30} r="3" fill={color} /></g>;
         })}

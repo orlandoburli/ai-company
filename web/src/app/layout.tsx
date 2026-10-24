@@ -1,12 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Mono, Nunito } from "next/font/google";
+import { IBM_Plex_Mono, Outfit } from "next/font/google";
 import { SessionProvider } from "@/lib/session";
 import "./globals.css";
 
-const nunito = Nunito({
+const outfit = Outfit({
   weight: ["400", "500", "600", "700", "800"],
   subsets: ["latin"],
-  variable: "--font-nunito",
+  variable: "--font-outfit",
   display: "swap",
 });
 
@@ -27,14 +27,14 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#1e1f27",
+  themeColor: "#2b3845",
 };
 
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${nunito.variable} ${plexMono.variable}`}>
+    <html lang="en" className={`${outfit.variable} ${plexMono.variable}`}>
       <body>
         <SessionProvider>{children}</SessionProvider>
       </body>

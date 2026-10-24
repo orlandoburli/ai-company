@@ -529,8 +529,8 @@ function InvitesSection() {
             className="panel section__body"
             role="alert"
             style={{
-              background: "rgb(62 207 110 / 0.05)",
-              borderColor: "rgb(62 207 110 / 0.4)",
+              background: "var(--theme-success-bg-subtle)",
+              border: "1px solid var(--theme-success-border-subtle)",
               marginBottom: 12,
             }}
           >

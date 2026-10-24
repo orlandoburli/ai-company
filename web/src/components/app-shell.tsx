@@ -42,6 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const activeProject = params.get("project_id") ?? "";
+  const breadcrumb = getBreadcrumb(pathname);
 
   const close = () => setOpen(false);
 
@@ -71,7 +72,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="brand__name" style={{ padding: 0 }}>
             AI Company
           </span>
-          <span style={{ marginLeft: "auto" }} />
+          <nav className="topbar__breadcrumb" aria-label="Breadcrumb">
+            <Link href={breadcrumb.href}>{breadcrumb.parent}</Link>
+            <span aria-hidden>›</span>
+            <span aria-current="page">{breadcrumb.current}</span>
+          </nav>
           <TenantSwitcher />
           <NotificationCentre />
           <UserMenu />
@@ -80,6 +85,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
     </div>
   );
+}
+
+function getBreadcrumb(pathname: string) {
+  if (pathname.startsWith("/settings/")) {
+    const current = pathname.slice("/settings/".length).split("/")[0];
+    const labels: Record<string, string> = {
+      agents: "Agents",
+      runners: "Runners",
+      notifications: "Notifications",
+      skills: "Skills",
+    };
+    return { href: "/settings", parent: "Settings", current: labels[current] ?? "Settings" };
+  }
+  if (pathname.startsWith("/items/")) return { href: "/backlog", parent: "Tasks", current: "Task details" };
+  if (pathname.startsWith("/runs/")) return { href: "/runs", parent: "Runs", current: "Run monitor" };
+  if (pathname.startsWith("/workflows/")) return { href: "/workflows", parent: "Workflows", current: "Workflow editor" };
+  if (pathname.startsWith("/chat/")) return { href: "/board", parent: "Workspace", current: "Chat" };
+  const current = pathname === "/" ? "Home" : pathname.slice(1).split("/")[0];
+  const labels: Record<string, string> = {
+    board: "Board",
+    backlog: "Backlog",
+    queue: "Queue",
+    runs: "Runs",
+    workflows: "Workflows",
+    checkpoints: "Checkpoints",
+    usage: "Usage",
+    rankings: "Rankings",
+    settings: "Settings",
+  };
+  return { href: "/board", parent: "Workspace", current: labels[current] ?? current };
 }
 
 function CheckpointBadge() {

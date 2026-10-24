@@ -349,7 +349,7 @@ function FailurePanel(props: {
               {`, capped at ${durationWords(failure.backoff_params.max_backoff_seconds)}; ${failure.backoff_params.max_failures} failures exhaust the retry.`}
             </div>
             {failure.state === "backing_off" ? (
-              <div className="error-note" style={{ color: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--warn)" : "var(--accent)", borderColor: !Number.isFinite(nextAt) || timeLeft > 0 ? "rgb(240 180 41 / .3)" : "rgb(62 207 110 / .28)" }}>
+              <div className="error-note" style={{ color: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-text-emphasis)" : "var(--theme-success-text-emphasis)", borderColor: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-border-subtle)" : "var(--theme-success-border-subtle)", background: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-bg-subtle)" : "var(--theme-success-bg-subtle)" }}>
                 {Number.isFinite(nextAt) && timeLeft > 0
                   ? `Backing off · ${durationWords(Math.ceil(timeLeft / 1000))} remaining · not before ${clock(nextAt)}.`
                   : Number.isFinite(nextAt)
@@ -522,9 +522,9 @@ function HeaderRow(props: {
               marginTop: 8,
               padding: "7px 10px",
               borderRadius: 6,
-              background: "rgb(240 180 41 / 0.08)",
-              border: "1px solid rgb(240 180 41 / 0.3)",
-              color: "var(--warn)",
+              background: "var(--theme-warning-bg-subtle)",
+              border: "1px solid var(--theme-warning-border-subtle)",
+              color: "var(--theme-warning-text-emphasis)",
             }}
           >
             Paused
@@ -1023,9 +1023,9 @@ function ScorePanel(props: {
                 className="tiny"
                 style={{
                   margin: "0 0 10px",
-                  color: "var(--warn)",
-                  background: "rgb(240 180 41 / 0.07)",
-                  border: "1px solid rgb(240 180 41 / 0.3)",
+                  color: "var(--theme-warning-text-emphasis)",
+                  background: "var(--theme-warning-bg-subtle)",
+                  border: "1px solid var(--theme-warning-border-subtle)",
                   borderRadius: 6,
                   padding: "7px 10px",
                 }}

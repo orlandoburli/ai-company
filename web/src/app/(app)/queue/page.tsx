@@ -68,7 +68,7 @@ function QueueView() {
         </span>
       </div>
 
-      <div className="panel" style={{ marginBottom: 14, padding: "10px 14px", borderColor: "rgb(62 207 110 / .28)", background: "linear-gradient(105deg, rgb(62 207 110 / .07), var(--panel) 48%)" }}>
+      <div className="panel" style={{ marginBottom: 14, padding: "10px 14px", borderColor: "var(--theme-success-border-subtle)", background: "var(--theme-success-bg-subtle)" }}>
         <div className="stack" style={{ alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
           <strong className="tiny" style={{ color: "var(--accent)" }}>ORDER IS NOT ELIGIBILITY</strong>
           <span className="tiny muted">Start now moves an eligible item to the front. It never bypasses a pause, dependency, backoff, or exhausted state.</span>

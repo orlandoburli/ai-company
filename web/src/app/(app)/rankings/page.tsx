@@ -84,10 +84,10 @@ function RankingsView() {
                 <h2 style={{ marginTop: 4 }}>{run.state === "ready" ? "Dispatch order explained" : `Ranking ${run.state}`}</h2>
               </div>
               <span className={`badge-outline ranking-state ranking-state--${run.state}`}>{run.state}</span>
-              {degraded ? <span className="badge-outline" style={{ color: "var(--warn)", borderColor: "rgb(240 180 41 / .4)" }}>Degraded · {run.degraded_reason}</span> : null}
+              {degraded ? <span className="badge-outline" style={{ color: "var(--theme-warning-text-emphasis)", borderColor: "var(--theme-warning-border-subtle)", background: "var(--theme-warning-bg-subtle)" }}>Degraded · {run.degraded_reason}</span> : null}
             </div>
             <div className="section__body" style={{ display: "grid", gap: 12 }}>
-              {degraded ? <div className="error-note" style={{ color: "var(--warn)", borderColor: "rgb(240 180 41 / .3)" }}>
+              {degraded ? <div className="error-note" style={{ color: "var(--theme-warning-text-emphasis)", borderColor: "var(--theme-warning-border-subtle)", background: "var(--theme-warning-bg-subtle)" }}>
                 The model pass did not decide the order ({run.degraded_reason}). The deterministic base score decided instead.
               </div> : null}
               <p style={{ margin: 0, maxWidth: 900, whiteSpace: "pre-wrap" }}>{run.summary_md || "This run has no summary."}</p>
