@@ -164,8 +164,10 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	impl.Workspace = workflow.WorkspaceWorktree
+	// No "repo" here on purpose: an integration without one follows the
+	// item's product repository. A template that pins a repository only
+	// works for the product it was written against.
 	pr, err := integrationNode("n_pr", "open pull request", "github.open_pr", 1, map[string]any{
-		"repo":  "orlandoburli/fazgiro",
 		"base":  "main",
 		"title": "{{item.title}}",
 		"body":  "Opened by AI Company for item {{item.id}}.\n\n{{item.description}}",
@@ -174,7 +176,6 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		return seedTemplate{}, err
 	}
 	ci, err := integrationNode("n_ci", "wait for ci", "github.wait_ci", 1, map[string]any{
-		"repo":      "orlandoburli/fazgiro",
 		"timeout_s": 900,
 	})
 	if err != nil {
