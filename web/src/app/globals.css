@@ -118,6 +118,12 @@
   --cyan-rgb: 127 209 205;
   --indigo-rgb: 107 94 174;
   --neutral-rgb: 132 149 171;
+  /* The flow's two boundaries: the start wears the indigo primary, the end a
+     violet of its own — distinct from the agent periwinkle and loop indigo. */
+  --workflow-start: var(--theme-primary);
+  --workflow-start-rgb: 57 55 158;
+  --workflow-end: #7042c9;
+  --workflow-end-rgb: 112 66 201;
   --shadow-1: var(--theme-box-shadow);
   --shadow-2: var(--theme-box-shadow);
   --shadow-shell: var(--theme-box-shadow);
@@ -2319,9 +2325,9 @@ table.data + table.data {
 .workflow-meta-bar .field { min-width: 0; }
 .workflow-meta-bar .input { padding: 6px 8px; font-size: 12.5px; }
 .workflow-meta-help { color: var(--muted); font-size: 12.5px; padding-bottom: 8px; }
-.workflow-workbench { display: grid; grid-template-columns: 174px minmax(0, 1fr) 310px; gap: 10px; align-items: stretch; min-height: 660px; }
+.workflow-workbench { display: grid; grid-template-columns: 208px minmax(0, 1fr) 310px; gap: 10px; align-items: stretch; min-height: 660px; }
 .workflow-palette, .workflow-inspector { min-width: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); }
-.workflow-palette { display: flex; flex-direction: column; padding: 12px 10px; }
+.workflow-palette { display: flex; flex-direction: column; padding: 12px 8px; }
 .workflow-panel-title { display: flex; align-items: center; gap: 8px; padding: 0 1px 10px; color: var(--text-strong); font-size: 12.5px; }
 .workflow-panel-title > span:first-child, .workflow-panel-index { color: var(--accent); font: 12.5px var(--mono); }
 .workflow-panel-title > strong { font-size: 12.5px; }
@@ -2331,7 +2337,7 @@ table.data + table.data {
 .workflow-palette-item:disabled { opacity: .45; cursor: not-allowed; }
 .workflow-palette-item > span:nth-child(2) { display: grid; gap: 1px; min-width: 0; }
 .workflow-palette-item strong { color: var(--text-strong); font-size: 12.5px; }
-.workflow-palette-item small { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.workflow-palette-item small { overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .workflow-palette-item > b { color: var(--muted); font-size: 13px; font-weight: 400; }
 .workflow-kind-icon { flex: none; display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 13px; }
 .workflow-kind-icon--agent { color: var(--agent); border-color: rgb(var(--agent-rgb) / .4); background: rgb(var(--agent-rgb) / .1); }
@@ -2339,6 +2345,11 @@ table.data + table.data {
 .workflow-kind-icon--checkpoint { color: var(--warn); border-color: rgb(var(--warn-rgb) / .3); background: rgb(var(--warn-rgb) / .07); }
 .workflow-kind-icon--loop { color: var(--theme-indigo); border-color: rgb(var(--indigo-rgb) / .3); background: rgb(var(--indigo-rgb) / .07); }
 .workflow-kind-icon--merge { color: var(--theme-success); border-color: rgb(var(--success-rgb) / .3); background: rgb(var(--success-rgb) / .07); }
+.workflow-kind-icon--start { color: var(--workflow-start); border-color: rgb(var(--workflow-start-rgb) / .4); background: rgb(var(--workflow-start-rgb) / .1); }
+.workflow-kind-icon--end { color: var(--workflow-end); border-color: rgb(var(--workflow-end-rgb) / .4); background: rgb(var(--workflow-end-rgb) / .1); }
+.workflow-palette-group { display: grid; gap: 1px; }
+.workflow-palette-group + .workflow-palette-group { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+.workflow-palette-group-label { margin: 0 2px 4px; color: var(--muted); font: 12.5px var(--mono); letter-spacing: .09em; text-transform: uppercase; }
 .workflow-palette-rule { height: 1px; margin: 12px 1px 10px; background: var(--border); }
 .workflow-palette .workflow-palette-tip { padding: 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-raised); line-height: 1.55; }
 .workflow-palette-tip strong { color: var(--text); }
@@ -2395,6 +2406,20 @@ table.data + table.data {
 .workflow-port:hover { color: var(--text-strong); }
 .workflow-port:disabled { cursor: default; }
 .workflow-port:disabled:hover i { transform: none; border-color: var(--canvas-port); background: var(--canvas-port-fill); }
+
+/* The flow's boundaries. A terminator is a pill rather than a card, so the
+   start and the end of a flow are unmistakable beside the work steps. */
+.workflow-terminator { --workflow-kind-color: var(--workflow-start); --workflow-kind-rgb: var(--workflow-start-rgb); position: absolute; z-index: 1; display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 14px; border: 1px solid rgb(var(--workflow-kind-rgb) / .34); border-radius: var(--theme-border-radius-pill); background: var(--canvas-node); box-shadow: var(--canvas-grid-shadow); color: var(--text); cursor: move; user-select: none; transition: border-color 120ms ease, box-shadow 120ms ease; }
+.workflow-terminator--start { --workflow-kind-color: var(--workflow-start); --workflow-kind-rgb: var(--workflow-start-rgb); }
+.workflow-terminator--end { --workflow-kind-color: var(--workflow-end); --workflow-kind-rgb: var(--workflow-end-rgb); }
+.workflow-terminator:hover { border-color: var(--hover-border); }
+.workflow-terminator--selected { border-color: var(--accent); box-shadow: var(--canvas-selected-shadow); }
+.workflow-terminator--invalid { border-color: var(--danger); box-shadow: var(--canvas-invalid-shadow); }
+.workflow-terminator-glyph { display: grid; place-items: center; width: 22px; height: 22px; flex: none; border-radius: 50%; color: #ffffff; background: var(--workflow-kind-color); font-size: 10px; line-height: 1; }
+.workflow-terminator--end .workflow-terminator-glyph { border-radius: 6px; font-size: 9px; }
+.workflow-terminator-name { overflow: hidden; color: var(--text-strong); font-size: 12.5px; font-weight: 500; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-terminator .workflow-port { color: var(--workflow-kind-color); }
+.workflow-terminator .workflow-port span { display: none; }
 .workflow-canvas-empty { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; pointer-events: none; text-align: center; }
 .workflow-canvas-empty > span { color: var(--accent); font-size: 25px; }
 .workflow-canvas-empty strong { color: var(--text-strong); font-size: 12.5px; }
@@ -2433,6 +2458,10 @@ table.data + table.data {
 .workflow-form .field > label { font-size: 12.5px; }
 .workflow-form .input { min-height: 30px; padding: 5px 7px; font-size: 12.5px; }
 .workflow-prompt { min-height: 95px !important; resize: vertical; font-size: 12.5px !important; line-height: 1.45 !important; }
+.workflow-description { min-height: 58px !important; resize: vertical; font-size: 12.5px !important; line-height: 1.45 !important; }
+.workflow-terminator-note { margin: 0; padding: 8px 10px; border-left: 2px solid var(--border-strong); border-radius: 0 5px 5px 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.workflow-form:has(.workflow-kind-icon--start) .workflow-terminator-note { border-left-color: var(--workflow-start); }
+.workflow-form:has(.workflow-kind-icon--end) .workflow-terminator-note { border-left-color: var(--workflow-end); }
 .workflow-json { min-height: 112px !important; font: 12.5px/1.45 var(--mono) !important; }
 .workflow-json[aria-invalid="true"] { border-color: var(--danger); }
 .workflow-json-error { color: var(--danger-soft-text); font-size: 12.5px; line-height: 1.5; }
@@ -2471,12 +2500,12 @@ table.data + table.data {
 .workflow-runbox > .tiny { margin: 7px 0 0; }
 
 @media (max-width: 1220px) {
-  .workflow-workbench { grid-template-columns: 160px minmax(0, 1fr) 280px; gap: 7px; }
+  .workflow-workbench { grid-template-columns: 204px minmax(0, 1fr) 290px; gap: 7px; }
   .workflow-meta-bar { grid-template-columns: minmax(170px, 1.1fr) minmax(150px, 1fr) 120px; }
   .workflow-meta-help { grid-column: 1 / -1; padding: 0; }
 }
 @media (max-width: 980px) {
-  .workflow-workbench { grid-template-columns: 145px minmax(0, 1fr); }
+  .workflow-workbench { grid-template-columns: 194px minmax(0, 1fr); }
   .workflow-inspector { grid-column: 1 / -1; max-height: unset; }
   .workflow-inspector-body { max-height: 440px; }
   .workflow-runbox { display: grid; grid-template-columns: 1fr 1fr; align-items: center; column-gap: 12px; }
@@ -2503,6 +2532,8 @@ table.data + table.data {
   .workflow-palette-item { display: flex; flex-direction: column; gap: 4px; padding: 6px 2px; text-align: center; }
   .workflow-palette-item > span:nth-child(2) { justify-items: center; }
   .workflow-palette-item small { display: none; }
+  .workflow-palette-group { display: contents; }
+  .workflow-palette-group-label { display: none; }
   .workflow-palette-item > b, .workflow-palette-rule, .workflow-palette-tip, .workflow-palette-footer { display: none; }
   .workflow-canvas { min-height: 420px; }
   .workflow-canvas-column { min-height: 510px; }
@@ -2613,6 +2644,24 @@ h1, h2, h3 { letter-spacing: 0; }
 .sidebar .skeleton { background: var(--theme-gray-900); }
 .sidebar .muted, .sidebar .tiny { color: var(--theme-gray-400); }
 .sidebar .error-note { color: var(--theme-danger); }
+
+/* Confirmation modal: the familiar Orbit dialog with a deliberate entrance. */
+.confirm-dialog-motion .scrim { animation: confirm-scrim-in 160ms ease-out both; }
+.confirm-dialog-motion .dialog { animation: confirm-dialog-in 180ms cubic-bezier(.2, .75, .25, 1) both; }
+.confirm-dialog__message { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.confirm-dialog__actions { margin-top: 20px; }
+@keyframes confirm-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes confirm-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confirm-dialog-motion .scrim,
+  .confirm-dialog-motion .dialog { animation: none; }
+}
 .main { min-width: 0; }
 .topbar { height: 58px; border-bottom: 1px solid var(--border); background: var(--topbar-bg); box-shadow: none; }
 .topbar .brand__name { color: var(--text-strong); font-size: 15px; font-weight: 600; }
@@ -2753,6 +2802,10 @@ table.data th, table.data td { border-color: var(--table-border); }
   --cyan-rgb: 127 209 205;
   --indigo-rgb: 107 94 174;
   --neutral-rgb: 132 149 171;
+  --workflow-start: var(--theme-primary);
+  --workflow-start-rgb: 57 55 158;
+  --workflow-end: #7042c9;
+  --workflow-end-rgb: 112 66 201;
   --shadow-1: var(--theme-card-box-shadow);
   --shadow-2: var(--theme-box-shadow);
   --shadow-shell: none;
@@ -2947,6 +3000,8 @@ table.data td { padding: 8px 9.6px; border-bottom: 1px solid #eef2f7; font-size:
 .workflow-kind-icon--integration { color: var(--theme-info-text-emphasis); background: var(--theme-info-bg-subtle); border-color: var(--theme-info-border-subtle); }
 .workflow-kind-icon--loop { color: var(--theme-indigo); background: rgba(107,94,174,0.15); border-color: rgba(107,94,174,0.3); }
 .workflow-kind-icon--merge { color: var(--theme-success); background: var(--theme-success-bg-subtle); border-color: var(--theme-success-border-subtle); }
+.workflow-kind-icon--start { color: var(--theme-primary); background: var(--theme-primary-bg-subtle); border-color: var(--theme-primary-border-subtle); }
+.workflow-kind-icon--end { color: var(--workflow-end); background: rgb(var(--workflow-end-rgb) / .12); border-color: rgb(var(--workflow-end-rgb) / .32); }
 .workflow-node:has(.workflow-kind-icon--agent) { --workflow-kind-color: var(--theme-secondary); --workflow-kind-rgb: 136 143 223; }
 .workflow-node:has(.workflow-kind-icon--loop) { --workflow-kind-color: var(--theme-indigo); --workflow-kind-rgb: 107 94 174; }
 .workflow-node:has(.workflow-kind-icon--merge) { --workflow-kind-color: var(--theme-success); --workflow-kind-rgb: 87 183 138; }
@@ -3029,3 +3084,17 @@ table.data td { padding: 8px 9.6px; border-bottom: 1px solid #eef2f7; font-size:
 .sidebar .muted, .sidebar .tiny { color: #9ba0c9; }
 .sidebar .skeleton { background: rgb(219 236 255 / .08); }
 .sidebar .error-note { color: var(--theme-danger); }
+
+/* --- The destructive confirmation --------------------------------------------
+   It comes after every .btn rule on purpose: the button variants are set in
+   one place, and a later .btn would otherwise paint the danger fill away. */
+.btn--confirm-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+.btn--confirm-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, #000000);
+  border-color: color-mix(in srgb, var(--danger) 88%, #000000);
+  color: var(--danger-ink);
+}

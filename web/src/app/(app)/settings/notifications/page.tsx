@@ -9,6 +9,7 @@ import {
   type NotificationEvent,
 } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import { SettingsNav } from "@/components/settings-nav";
 import { CopyButton, Dialog, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
@@ -31,13 +32,14 @@ const PLACEHOLDERS = [
 export default function NotificationChannelsPage() {
   const { me } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const channelsQ = useAsync(() => api.listNotificationChannels().then((r) => r.channels), []);
   const [editing, setEditing] = useState<NotificationChannel | "new" | null>(null);
   const isManager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const channels = useMemo(() => [...(channelsQ.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [channelsQ.data]);
 
   async function remove(channel: NotificationChannel) {
-    if (!window.confirm(`Delete the “${channel.name}” command channel?`)) return;
+    if (!await confirm({ title: "Delete command channel?", message: `Delete the “${channel.name}” command channel?`, confirmLabel: "Delete", destructive: true })) return;
     try {
       await api.deleteNotificationChannel(channel.id);
       await channelsQ.reload();

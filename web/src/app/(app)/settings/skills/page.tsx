@@ -9,6 +9,7 @@ import {
 } from "@/lib/api";
 import type { Product } from "@/lib/types";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import { formatDate } from "@/lib/format";
 import { SettingsNav } from "@/components/settings-nav";
@@ -24,6 +25,7 @@ import {
 export default function SkillsSettingsPage() {
   const { me } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const isManager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const skillsQ = useAsync(() => api.listSkills().then((r) => r.skills), []);
   const productsQ = useAsync(() => api.listProducts().then((r) => r.products), []);
@@ -65,7 +67,7 @@ export default function SkillsSettingsPage() {
   }
 
   async function remove(skill: Skill) {
-    if (!window.confirm(`Delete the skill “${skill.name}” and its version history?`)) return;
+    if (!await confirm({ title: "Delete skill?", message: `Delete the skill “${skill.name}” and its version history?`, confirmLabel: "Delete", destructive: true })) return;
     setBusyId(skill.id);
     try {
       await api.deleteSkill(skill.id);

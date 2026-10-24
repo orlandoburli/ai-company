@@ -8,16 +8,42 @@ import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
 
-const KIND_META: Record<string, { title: string; caption: string; input: string[]; output: string[] }> = {
-  agent: { title: "Agent", caption: "Delegated work", input: ["in"], output: ["main", "error"] },
-  integration: { title: "Integration", caption: "A connected service", input: ["in"], output: ["main", "error"] },
-  checkpoint: { title: "Checkpoint", caption: "Human decision", input: ["in"], output: ["approved", "rejected"] },
-  loop: { title: "Loop", caption: "Bounded repetition", input: ["in"], output: ["body", "done"] },
-  merge: { title: "Merge", caption: "Join branches", input: ["in"], output: ["main", "error"] },
+/** A kind's palette entry: how it is named, what it does, and its ports. */
+type KindMeta = {
+  title: string;
+  caption: string;
+  input: string[];
+  output: string[];
+  glyph: string;
+  /** "ends" are the flow's boundaries; "work" are the steps that do the work. */
+  group: "ends" | "work";
+  defaultName: string;
+  note?: string;
+  hint?: string;
 };
+
+// The flow's boundaries come first, then the work. A start has no input and a
+// single "main" output; an end has a single "in" input and no output.
+const KIND_META: Record<string, KindMeta> = {
+  start: { title: "Start", caption: "Where the flow begins", input: [], output: ["main"], glyph: "▶", group: "ends", defaultName: "Start", note: "The flow begins here.", hint: "The engine passes straight through this node; it is never dispatched as work." },
+  end: { title: "End", caption: "Where it finishes", input: ["in"], output: [], glyph: "■", group: "ends", defaultName: "End", note: "Reaching this ends the run.", hint: "This node has no outputs, so nothing follows it." },
+  agent: { title: "Agent", caption: "Delegated work", input: ["in"], output: ["main", "error"], glyph: "✦", group: "work", defaultName: "agent" },
+  integration: { title: "Integration", caption: "A connected service", input: ["in"], output: ["main", "error"], glyph: "⌁", group: "work", defaultName: "integration" },
+  checkpoint: { title: "Checkpoint", caption: "Human decision", input: ["in"], output: ["approved", "rejected"], glyph: "◇", group: "work", defaultName: "checkpoint" },
+  loop: { title: "Loop", caption: "Bounded repetition", input: ["in"], output: ["body", "done"], glyph: "↻", group: "work", defaultName: "loop" },
+  merge: { title: "Merge", caption: "Join branches", input: ["in"], output: ["main", "error"], glyph: "⋈", group: "work", defaultName: "merge" },
+};
+const PALETTE_GROUPS: { key: "ends" | "work"; label: string }[] = [
+  { key: "ends", label: "Flow ends" },
+  { key: "work", label: "Work" },
+];
 const PORT_ROW = 24;
 const CARD_W = 252;
 const NODE_H = 118;
+/** A terminator is a pill, not a card: its width and height are fixed so its
+ *  ports can be anchored to the canvas geometry. */
+const TERMINATOR_W = 148;
+const TERMINATOR_H = 40;
 const GAP_X = 120;
 const GAP_Y = 48;
 const BASE_X = 3200;
@@ -106,12 +132,15 @@ export function layoutGraph(graph: WorkflowGraph, ignorePositions = false): Reco
   ranks.forEach((rank) => rankCounts.set(rank, (rankCounts.get(rank) ?? 0) + 1));
   const rankOffsets = new Map<number, number>();
   const stepY = NODE_H + GAP_Y;
-  const arranged = nodes.map((_node, index) => {
+  const arranged = nodes.map((node, index) => {
     const rank = ranks[index];
     const ordinal = rankOffsets.get(rank) ?? 0;
     rankOffsets.set(rank, ordinal + 1);
     const count = rankCounts.get(rank) ?? 1;
-    return { x: rank * (CARD_W + GAP_X), y: (ordinal - (count - 1) / 2) * stepY };
+    // A terminator is narrower than a card, so it is centred in its column
+    // and the flow still reads as one straight line through the columns.
+    const width = nodeWidth(node);
+    return { x: rank * (CARD_W + GAP_X) + (CARD_W - width) / 2, y: (ordinal - (count - 1) / 2) * stepY };
   });
 
   const positions: Record<string, { x: number; y: number }> = {};
@@ -159,24 +188,41 @@ function makeId(): string {
   return timePart + random;
 }
 function newNode(kind: string, position = { x: 160, y: 120 }): WorkflowNode {
-  const common = { id: makeId(), kind, name: KIND_META[kind]?.title.toLowerCase() ?? kind, type_version: 1, config: {}, position, on_error: "stop_workflow", always_output_data: false, workspace: "scratch" };
+  const meta = KIND_META[kind];
+  const common = { id: makeId(), kind, name: meta?.defaultName ?? kind, type_version: 1, config: {}, position, on_error: "stop_workflow", always_output_data: false, workspace: "scratch" };
+  if (kind === "start") return { ...common, type: "flow.start" };
+  if (kind === "end") return { ...common, type: "flow.end" };
   if (kind === "agent") return { ...common, type: "agent.dev", config: { agent_id: "", prompt_tmpl: "", outputs: {} } };
   if (kind === "integration") return { ...common, type: INTEGRATIONS[0], config: {} };
   if (kind === "checkpoint") return { ...common, type: "checkpoint.approval", config: { policy: "retry_step", max_cycles: 2 } };
   if (kind === "loop") return { ...common, type: "loop.bounded", config: { max_iterations: 3, until: true } };
   return { ...common, type: "merge.all", config: { mode: "all" }, always_output_data: true };
 }
+/** Start and end mark the flow's boundaries; every other kind does work. */
+function isTerminator(kind: string): boolean {
+  return kind === "start" || kind === "end";
+}
+function nodeWidth(node: WorkflowNode): number {
+  return isTerminator(node.kind) ? TERMINATOR_W : CARD_W;
+}
 function starterGraph(agentId = "", agentRole = "dev"): WorkflowGraph {
-  const first = newNode("agent", { x: 100, y: 140 });
-  const gate = newNode("checkpoint", { x: 430, y: 140 });
-  const second = newNode("agent", { x: 760, y: 140 });
+  // The flow says where it begins and where it ends, the way the seeded
+  // templates do: a start hands over to the first agent, the end takes the
+  // last word.
+  const start = newNode("start", { x: 52, y: 140 });
+  const first = newNode("agent", { x: 372, y: 140 });
+  const gate = newNode("checkpoint", { x: 744, y: 140 });
+  const second = newNode("agent", { x: 1116, y: 140 });
+  const end = newNode("end", { x: 1540, y: 140 });
   first.name = "review brief"; first.config = { agent_id: agentId, prompt_tmpl: "Review the item and summarize the work needed.", outputs: { findings_md: "string" } };
   gate.name = "approve plan";
   second.name = "implement"; second.config = { agent_id: agentId, prompt_tmpl: "Implement the approved plan.", outputs: {} }; second.workspace = "worktree";
   if (agentId) { first.type = `agent.${agentRole}`; second.type = `agent.${agentRole}`; }
-  return { schema_version: 1, nodes: [first, gate, second], edges: [
+  return { schema_version: 1, nodes: [start, first, gate, second, end], edges: [
+    { id: makeId(), from: { node: start.id, port: "main" }, to: { node: first.id, port: "in" } },
     { id: makeId(), from: { node: first.id, port: "main" }, to: { node: gate.id, port: "in" } },
     { id: makeId(), from: { node: gate.id, port: "approved" }, to: { node: second.id, port: "in" } },
+    { id: makeId(), from: { node: second.id, port: "main" }, to: { node: end.id, port: "in" } },
   ] };
 }
 function isPublished(template: WorkflowTemplate | WorkflowTemplateSummary): boolean {
@@ -426,7 +472,10 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
       <aside className="workflow-palette">
         <div className="workflow-panel-title"><span>01</span><strong>Node palette</strong></div>
         <p>Choose a step to add it to the canvas.</p>
-        {Object.entries(KIND_META).map(([kind, entry]) => <button key={kind} type="button" className="workflow-palette-item" disabled={!editable} onClick={() => addNode(kind, { x: 80 + graph.nodes.length * 24, y: 100 + graph.nodes.length * 22 })}><span className={`workflow-kind-icon workflow-kind-icon--${kind}`}>{kind === "agent" ? "✦" : kind === "checkpoint" ? "◇" : kind === "loop" ? "↻" : kind === "merge" ? "⋈" : "⌁"}</span><span><strong>{entry.title}</strong><small>{entry.caption}</small></span><b>＋</b></button>)}
+        {PALETTE_GROUPS.map((group) => <div className="workflow-palette-group" key={group.key}>
+          <span className="workflow-palette-group-label">{group.label}</span>
+          {Object.entries(KIND_META).filter(([, entry]) => entry.group === group.key).map(([kind, entry]) => <button key={kind} type="button" className="workflow-palette-item" disabled={!editable} onClick={() => addNode(kind, { x: 80 + graph.nodes.length * 24, y: 100 + graph.nodes.length * 22 })}><span className={`workflow-kind-icon workflow-kind-icon--${kind}`}>{entry.glyph}</span><span><strong>{entry.title}</strong><small>{entry.caption}</small></span><b>＋</b></button>)}
+        </div>)}
         <div className="workflow-palette-rule" />
         <p className="workflow-palette-tip"><strong>Connect the graph</strong><br />Drag from an output port on the right to an input port on the left.</p>
         <div className="workflow-palette-footer"><span className="mono">{graph.nodes.length} nodes</span><span className="mono">{graph.edges.length} edges</span></div>
@@ -484,9 +533,9 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
   const fit = useCallback(() => {
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect || !graph.nodes.length) return;
-    const points = graph.nodes.map((node) => ({ x: BASE_X + (node.position?.x ?? 0), y: BASE_Y + (node.position?.y ?? 0), size: nodeGeometry(node) }));
+    const points = graph.nodes.map((node) => ({ x: BASE_X + (node.position?.x ?? 0), y: BASE_Y + (node.position?.y ?? 0), size: nodeGeometry(node), width: nodeWidth(node) }));
     const left = Math.min(...points.map((p) => p.x)); const top = Math.min(...points.map((p) => p.y));
-    const right = Math.max(...points.map((p) => p.x + CARD_W)); const bottom = Math.max(...points.map((p) => p.y + p.size.height));
+    const right = Math.max(...points.map((p) => p.x + p.width)); const bottom = Math.max(...points.map((p) => p.y + p.size.height));
     const scale = Math.max(0.42, Math.min(1.25, (rect.width - 100) / (right - left + 120), (rect.height - 90) / (bottom - top + 100)));
     const x = rect.width / 2 - ((left + right) / 2) * scale; const y = rect.height / 2 - ((top + bottom) / 2) * scale;
     setView({ x, y, scale });
@@ -501,7 +550,7 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
       const id = (event as CustomEvent<string>).detail; const node = graph.nodes.find((candidate) => candidate.id === id); const rect = viewportRef.current?.getBoundingClientRect();
       if (!node || !rect) return;
       const pos = node.position ?? { x: 0, y: 0 };
-      setView((current) => ({ ...current, x: rect.width / 2 - (BASE_X + pos.x + CARD_W / 2) * current.scale, y: rect.height / 2 - (BASE_Y + pos.y + nodeGeometry(node).height / 2) * current.scale }));
+      setView((current) => ({ ...current, x: rect.width / 2 - (BASE_X + pos.x + nodeWidth(node) / 2) * current.scale, y: rect.height / 2 - (BASE_Y + pos.y + nodeGeometry(node).height / 2) * current.scale }));
     };
     window.addEventListener("workflow-zoom", zoom); window.addEventListener("workflow-fit", onFit); window.addEventListener("workflow-focus", onFocus);
     return () => { window.removeEventListener("workflow-zoom", zoom); window.removeEventListener("workflow-fit", onFit); window.removeEventListener("workflow-focus", onFocus); };
@@ -548,7 +597,7 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
     setDropMessage(""); setDragBoth({ type: "connect", node: node.id, port, point });
   }
   function beginPan(event: React.PointerEvent) {
-    if ((event.target as HTMLElement).closest(".workflow-node, .workflow-edge-hit, button")) return;
+    if ((event.target as HTMLElement).closest(".workflow-node, .workflow-terminator, .workflow-edge-hit, button")) return;
     event.preventDefault(); setDragBoth({ type: "pan", startX: event.clientX, startY: event.clientY, originX: view.x, originY: view.y });
   }
   function wheel(event: React.WheelEvent) {
@@ -559,6 +608,16 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
     const px = event.clientX - rect.left; const py = event.clientY - rect.top;
     const ratio = nextScale / view.scale;
     setView({ scale: nextScale, x: px - (px - view.x) * ratio, y: py - (py - view.y) * ratio });
+  }
+  /** The handles for a node, taken from the kind's own port list. A terminator
+   *  carries a single port, so it sits centred on the pill rather than stacked. */
+  function nodePorts(node: WorkflowNode, ports: KindMeta, centered: boolean) {
+    const label = node.name || "Unnamed step";
+    const offset = (index: number): React.CSSProperties => (centered ? { top: "50%", transform: "translateY(-50%)" } : { top: 58 + index * PORT_ROW });
+    return <div className="workflow-node-ports">
+      <div className="workflow-port-column workflow-port-column--input">{ports.input.map((port, index) => <button key={port} type="button" className="workflow-port workflow-port--input" data-input-node={node.id} data-input-port={port} style={offset(index)} aria-label={`${label} input ${port}`} onPointerDown={(event) => { event.stopPropagation(); onSelect({ type: "node", id: node.id }); }}><i /><span>{port}</span></button>)}</div>
+      <div className="workflow-port-column workflow-port-column--output">{ports.output.map((port, index) => <button key={port} type="button" className="workflow-port workflow-port--output" style={offset(index)} aria-label={`${label} output ${port}`} disabled={!editable} onPointerDown={(event) => beginConnect(event, node, port)}><span>{port}</span><i /></button>)}</div>
+    </div>;
   }
   const live = drag?.type === "connect" ? drag.point : null;
   return <div className="workflow-canvas" data-workflow-canvas ref={viewportRef} onPointerDown={beginPan} onWheel={wheel} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
@@ -580,14 +639,19 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
       </svg>
       {graph.nodes.map((node) => {
         const pos = node.position ?? { x: 0, y: 0 }; const ports = KIND_META[node.kind] ?? KIND_META.agent; const agentId = String(asConfig(node.config).agent_id ?? ""); const agent = agents.get(agentId);
-        return <article key={node.id} data-node-id={node.id} className={`workflow-node ${selection?.type === "node" && selection.id === node.id ? "workflow-node--selected" : ""} ${problemNodes.has(node.id) ? "workflow-node--invalid" : ""}`} style={{ left: BASE_X + pos.x, top: BASE_Y + pos.y, width: CARD_W, minHeight: nodeGeometry(node).height }} onPointerDown={(event) => beginNode(event, node)} onClick={() => onSelect({ type: "node", id: node.id })}>
-          <header className="workflow-node-head"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{node.kind === "agent" ? "✦" : node.kind === "checkpoint" ? "◇" : node.kind === "loop" ? "↻" : node.kind === "merge" ? "⋈" : "⌁"}</span><span className="workflow-node-kind">{node.kind}</span><span className="workflow-node-id mono">{node.id.slice(0, 6)}</span></header>
+        const state = `${selection?.type === "node" && selection.id === node.id ? " workflow-node--selected" : ""}${problemNodes.has(node.id) ? " workflow-node--invalid" : ""}`;
+        // Start and end are drawn as pills, not cards, so the flow's two
+        // boundaries are unmistakable beside the work steps.
+        if (isTerminator(node.kind)) return <article key={node.id} data-node-id={node.id} className={`workflow-terminator workflow-terminator--${node.kind}${state}`} style={{ left: BASE_X + pos.x, top: BASE_Y + pos.y, width: TERMINATOR_W, height: TERMINATOR_H }} onPointerDown={(event) => beginNode(event, node)} onClick={() => onSelect({ type: "node", id: node.id })}>
+          <span className="workflow-terminator-glyph" aria-hidden="true">{ports.glyph}</span>
+          <strong className="workflow-terminator-name">{node.name || ports.defaultName}</strong>
+          {nodePorts(node, ports, true)}
+        </article>;
+        return <article key={node.id} data-node-id={node.id} className={`workflow-node${state}`} style={{ left: BASE_X + pos.x, top: BASE_Y + pos.y, width: CARD_W, minHeight: nodeGeometry(node).height }} onPointerDown={(event) => beginNode(event, node)} onClick={() => onSelect({ type: "node", id: node.id })}>
+          <header className="workflow-node-head"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{ports.glyph}</span><span className="workflow-node-kind">{node.kind}</span><span className="workflow-node-id mono">{node.id.slice(0, 6)}</span></header>
           <strong className="workflow-node-name">{node.name || "Unnamed step"}</strong>
           {node.kind === "agent" ? <span className="workflow-node-agent">{agent ? `✦ @${agent.name}` : agentId ? `Agent ${agentId.slice(0, 8)}` : "Choose an agent"}</span> : node.kind === "integration" ? <span className="workflow-node-agent">{node.type || "Integration"}</span> : <span className="workflow-node-agent">{node.type || ports.caption}</span>}
-          <div className="workflow-node-ports">
-            <div className="workflow-port-column workflow-port-column--input">{ports.input.map((port, index) => <button key={port} type="button" className="workflow-port workflow-port--input" data-input-node={node.id} data-input-port={port} style={{ top: 58 + index * PORT_ROW }} aria-label={`${node.name} input ${port}`} onPointerDown={(event) => { event.stopPropagation(); onSelect({ type: "node", id: node.id }); }}><i /><span>{port}</span></button>)}</div>
-            <div className="workflow-port-column workflow-port-column--output">{ports.output.map((port, index) => <button key={port} type="button" className="workflow-port workflow-port--output" style={{ top: 58 + index * PORT_ROW }} aria-label={`${node.name} output ${port}`} disabled={!editable} onPointerDown={(event) => beginConnect(event, node, port)}><span>{port}</span><i /></button>)}</div>
-          </div>
+          {nodePorts(node, ports, false)}
         </article>;
       })}
     </div>
@@ -598,12 +662,14 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
 }
 
 function nodeGeometry(node: WorkflowNode) {
+  if (isTerminator(node.kind)) return { height: TERMINATOR_H };
   const count = Math.max(KIND_META[node.kind]?.input.length ?? 1, KIND_META[node.kind]?.output.length ?? 1);
   return { height: 70 + count * PORT_ROW };
 }
 function portPoint(node: WorkflowNode, port: string, output: boolean) {
   const ports = output ? KIND_META[node.kind]?.output ?? [] : KIND_META[node.kind]?.input ?? [];
   const index = Math.max(0, ports.indexOf(port)); const position = node.position ?? { x: 0, y: 0 };
+  if (isTerminator(node.kind)) return { x: BASE_X + position.x + (output ? TERMINATOR_W : 0), y: BASE_Y + position.y + TERMINATOR_H / 2 };
   return { x: BASE_X + position.x + (output ? CARD_W : 0), y: BASE_Y + position.y + 68 + index * PORT_ROW };
 }
 function bezier(ax: number, ay: number, bx: number, by: number) {
@@ -613,6 +679,8 @@ function bezier(ax: number, ay: number, bx: number, by: number) {
 
 function NodeInspector({ node, agents, runners, variables, runnersError, variablesError, nodes, editable, onUpdate, onConfig, onDelete }: { node: WorkflowNode; agents: Agent[]; runners: Runner[]; variables: Record<string, string>; runnersError: Error | null; variablesError: Error | null; nodes: WorkflowNode[]; editable: boolean; onUpdate: (fn: (node: WorkflowNode) => WorkflowNode) => void; onConfig: (patch: Record<string, unknown>) => void; onDelete: () => void }) {
   const config = asConfig(node.config);
+  const meta = KIND_META[node.kind];
+  const terminator = isTerminator(node.kind);
   const selectedAgent = agents.find((agent) => agent.id === String(config.agent_id ?? ""));
   const runnerChoice = String(config.runner ?? "");
   const selectedVariable = runnerChoice.startsWith("$") ? runnerChoice.slice(1) : "";
@@ -623,8 +691,12 @@ function NodeInspector({ node, agents, runners, variables, runnersError, variabl
   const number = (label: string, value: unknown, change: (value: number | undefined) => void, min = 0) => <Field label={label}><input className="input" type="number" min={min} disabled={!editable} value={value == null ? "" : String(value)} onChange={(event) => change(event.target.value === "" ? undefined : Number(event.target.value))} /></Field>;
   const text = (label: string, value: unknown, change: (value: string) => void, placeholder = "") => <Field label={label}><input className="input" value={typeof value === "string" ? value : ""} disabled={!editable} placeholder={placeholder} onChange={(event) => change(event.target.value)} /></Field>;
   return <div className="workflow-form">
-    <div className="workflow-inspector-entity"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>✦</span><div><small>{node.kind} node</small><strong>{node.name || "Unnamed step"}</strong></div></div>
-    {text("Display name", node.name, (name) => onUpdate((current) => ({ ...current, name })), "e.g. review changes")}
+    <div className="workflow-inspector-entity"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{meta?.glyph ?? "✦"}</span><div><small>{terminator ? (node.type || node.kind) : `${node.kind} node`}</small><strong>{node.name || "Unnamed step"}</strong></div></div>
+    {terminator ? <p className="workflow-terminator-note">{meta?.note}</p> : null}
+    {text("Display name", node.name, (name) => onUpdate((current) => ({ ...current, name })), terminator ? "e.g. intake" : "e.g. review changes")}
+    {terminator ? <>
+      <Field label="Description" hint={meta?.hint}><textarea className="input workflow-description" value={String(config.description ?? "")} disabled={!editable} placeholder="What this point means for the run…" onChange={(event) => onConfig({ description: event.target.value })} /></Field>
+    </> : null}
     {node.kind === "agent" ? <>
       <Field label="Agent"><select className="input" value={String(config.agent_id ?? "")} disabled={!editable} onChange={(event) => { const agent = agents.find((candidate) => candidate.id === event.target.value); onConfig({ agent_id: event.target.value }); if (agent) onUpdate((current) => ({ ...current, type: `agent.${agent.role || "dev"}` })); }}><option value="">Choose an agent…</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.enabled ? "" : "Disabled · "}@{agent.name} · {agent.role}</option>)}</select></Field>
       <Field label="Runner choice"><select className="input" value={runnerChoice} disabled={!editable} onChange={(event) => onConfig({ runner: event.target.value || undefined })}><option value="">Use agent default</option><optgroup label="Tenant runners">{runners.map((runner) => <option key={runner.id} value={runner.name}>{runner.enabled ? "" : "Disabled · "}{runner.name} · {runner.kind}</option>)}</optgroup>{Object.keys(variables).length ? <optgroup label="Use a tenant variable">{Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => <option key={name} value={`$${name}`}>${name} = {value}</option>)}</optgroup> : null}</select><span className="tiny muted">Choose a specific runner or use a variable from the run.</span></Field>
@@ -654,9 +726,11 @@ function NodeInspector({ node, agents, runners, variables, runnersError, variabl
       <Field label="Integration config (JSON)"><textarea className="input workflow-json" aria-invalid={Boolean(integrationJsonError)} disabled={!editable} value={integrationJson} onChange={(event) => { setIntegrationJson(event.target.value); try { const value: unknown = JSON.parse(event.target.value); if (!value || typeof value !== "object" || Array.isArray(value)) { setIntegrationJsonError("Config must be a JSON object."); return; } setIntegrationJsonError(""); onUpdate((current) => ({ ...current, config: value as Record<string, unknown> })); } catch { setIntegrationJsonError("Config is not valid JSON yet; the last valid config is still saved."); } }} /></Field>{integrationJsonError ? <span className="workflow-json-error">{integrationJsonError}</span> : <span className="tiny muted">Config is validated by the server for the selected integration type.</span>}
     </> : null}
     <div className="workflow-form-divider" />
-    {select("On error", String(node.on_error ?? "stop_workflow"), ERROR_POLICIES, (on_error) => onUpdate((current) => ({ ...current, on_error })))}
-    {select("Workspace", String(node.workspace ?? "scratch"), WORKSPACES, (workspace) => onUpdate((current) => ({ ...current, workspace })))}
-    <label className="workflow-check"><input type="checkbox" checked={Boolean(node.always_output_data)} disabled={!editable} onChange={(event) => onUpdate((current) => ({ ...current, always_output_data: event.target.checked }))} />Always pass output data</label>
+    {terminator ? null : <>
+      {select("On error", String(node.on_error ?? "stop_workflow"), ERROR_POLICIES, (on_error) => onUpdate((current) => ({ ...current, on_error })))}
+      {select("Workspace", String(node.workspace ?? "scratch"), WORKSPACES, (workspace) => onUpdate((current) => ({ ...current, workspace })))}
+      <label className="workflow-check"><input type="checkbox" checked={Boolean(node.always_output_data)} disabled={!editable} onChange={(event) => onUpdate((current) => ({ ...current, always_output_data: event.target.checked }))} />Always pass output data</label>
+    </>}
     {editable ? <button className="btn btn--danger btn--sm workflow-delete-node" onClick={onDelete}>Delete node</button> : null}
   </div>;
 }

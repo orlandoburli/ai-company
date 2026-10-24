@@ -346,6 +346,7 @@ export function Dialog(props: {
   onClose: () => void;
   children: React.ReactNode;
   width?: number;
+  showCloseButton?: boolean;
 }) {
   const titleId = useId();
   const ref = useRef<HTMLDialogElement>(null);
@@ -371,15 +372,17 @@ export function Dialog(props: {
       >
         <div className="spread" style={{ marginBottom: 4 }}>
           <h2 id={titleId}>{props.title}</h2>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            aria-label="Close dialog"
-            onClick={props.onClose}
-            style={{ marginRight: -10 }}
-          >
-            <IconClose />
-          </button>
+          {props.showCloseButton === false ? null : (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              aria-label="Close dialog"
+              onClick={props.onClose}
+              style={{ marginRight: -10 }}
+            >
+              <IconClose />
+            </button>
+          )}
         </div>
         {props.description ? <p className="dialog__sub">{props.description}</p> : null}
         {props.children}

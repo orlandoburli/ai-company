@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { api, type Agent, type AgentInput, type Runner } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import { formatDate } from "@/lib/format";
 import { SettingsNav } from "@/components/settings-nav";
@@ -18,6 +19,7 @@ const DEFAULT_SKILLS = { auto: true, max_attach: 3 };
 export default function AgentsSettingsPage() {
   const { me } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const isManager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const agentsQ = useAsync(() => api.listAgents().then((r) => r.agents), []);
   const runnersQ = useAsync(() => api.listRunners().then((r) => r.runners), []);
@@ -29,7 +31,7 @@ export default function AgentsSettingsPage() {
     catch (error) { push("error", errorMessage(error)); }
   }
   async function remove(agent: Agent) {
-    if (!window.confirm(`Delete @${agent.name}? Agents with past job history cannot be deleted — disable it instead.`)) return;
+    if (!await confirm({ title: "Delete agent?", message: `Delete @${agent.name}? Agents with past job history cannot be deleted — disable it instead.`, confirmLabel: "Delete", destructive: true })) return;
     try { await api.deleteAgent(agent.id); await agentsQ.reload(); push("info", `Agent @${agent.name} deleted.`); }
     catch (error) { push("error", errorMessage(error)); }
   }

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError, type PatchItemBody } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import type {
   ActivityEntry,
@@ -59,6 +60,7 @@ function ItemDetail() {
   const router = useRouter();
   const { me, canWrite } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
 
   const detail = useAsync(() => api.getItem(id), [id]);
   const activity = useAsync(() => api.activity(id), [id]);
@@ -120,7 +122,7 @@ function ItemDetail() {
   }
 
   async function remove() {
-    if (!window.confirm("Delete this item? This cannot be undone.")) return;
+    if (!await confirm({ title: "Delete item?", message: "Delete this item? This cannot be undone.", confirmLabel: "Delete", destructive: true })) return;
     try {
       await api.deleteItem(id);
       router.push("/backlog");

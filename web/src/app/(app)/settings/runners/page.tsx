@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { api, type Runner, type RunnerInput, type RunnerKind } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import { formatDate } from "@/lib/format";
 import { SettingsNav } from "@/components/settings-nav";
@@ -11,6 +12,7 @@ import { Dialog, EmptyState, ErrorBlock, Field, Skeleton, Toasts, apiErrorMessag
 export default function RunnersSettingsPage() {
   const { me } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const manager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const runnersQ = useAsync(() => api.listRunners().then((result) => result.runners), []);
   const variablesQ = useAsync(() => api.getTenantVariables().then((result) => result.variables), []);
@@ -23,7 +25,7 @@ export default function RunnersSettingsPage() {
     catch (error) { push("error", errorMessage(error)); }
   }
   async function remove(runner: Runner) {
-    if (!window.confirm(`Delete runner “${runner.name}”? Remove it from every agent chain first if it is in use.`)) return;
+    if (!await confirm({ title: "Delete runner?", message: `Delete runner “${runner.name}”? Remove it from every agent chain first if it is in use.`, confirmLabel: "Delete", destructive: true })) return;
     try { await api.deleteRunner(runner.id); await runnersQ.reload(); push("info", `Runner “${runner.name}” deleted.`); }
     catch (error) { push("error", errorMessage(error)); }
   }

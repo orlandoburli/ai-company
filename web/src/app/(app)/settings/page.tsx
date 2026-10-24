@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { api } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
+import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
 import type { Member, Role } from "@/lib/types";
 import { formatDate } from "@/lib/format";
@@ -130,6 +131,7 @@ function TenantForm() {
 function ProductsSection() {
   const { me, refresh } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const products = useAsync(
     () => api.listProducts().then((r) => r.products),
     [],
@@ -190,7 +192,7 @@ function ProductsSection() {
   }
 
   async function deleteProduct(id: string) {
-    if (!window.confirm("Delete this product? Empty it first — products with projects cannot be deleted.")) return;
+    if (!await confirm({ title: "Delete product?", message: "Delete this product? Empty it first — products with projects cannot be deleted.", confirmLabel: "Delete", destructive: true })) return;
     try {
       await api.deleteProduct(id);
       await products.reload();
@@ -201,7 +203,7 @@ function ProductsSection() {
   }
 
   async function deleteProject(id: string) {
-    if (!window.confirm("Delete this project? It must have no items or sub-projects.")) return;
+    if (!await confirm({ title: "Delete project?", message: "Delete this project? It must have no items or sub-projects.", confirmLabel: "Delete", destructive: true })) return;
     try {
       await api.deleteProject(id);
       await projects.reload();
