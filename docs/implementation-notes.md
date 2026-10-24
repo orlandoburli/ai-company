@@ -586,28 +586,44 @@ each persona of the Apiary project pushes under its own account. That is
 the shape the AI Company's agent / runner split wants — an agent is a
 persona, a runner is a transport, and the credential belongs to the agent.
 
-**The wiring.** A runner's `credential_ref` is resolved **at execution
-time**: the worker loads the runner of the job, resolves the reference from
-the keychain, and hands the secret to the adapter — the API adapter prefers
-it over the environment variable named by `key_env`, and says plainly when
-neither exists. The secret is never persisted and never logged; only the
-reference is. A reference that does not resolve is a warning, not a
-failure: the step still runs.
+**The wiring.** The **agent** carries the identity — `agents.credential_ref` —
+and the **runner** keeps one as a fallback for a legacy setup. The resolution
+order everywhere is: the agent's reference, then the runner's, then the
+adapter's environment variable. The worker resolves the secret **at execution
+time**: it loads the job's agent and runner, resolves the reference from the
+keychain, and hands the secret to the adapter — the API adapter prefers it
+over `key_env` and says plainly when neither is available. The secret is
+never persisted and never logged; only the reference is. A reference that
+does not resolve is a warning, not a failure: the step still runs.
+
+**Why the identity sits on the agent and not the runner.** The tenant runs
+**two transports** — the Claude Code CLI and the OpenCode CLI — shared by
+every agent, each agent chaining `[claude, opencode]` so a run can move to
+the second when the first is out of budget. Four personas sharing two runners
+means a runner cannot hold an identity: one runner would have to be
+duplicated per persona. So the persona owns the identity and the transport
+owns the transport.
 
 **The identity of a run's GitHub work** is the credential of the runner the
-run's agent used. The agent step records its runner's reference, and the
-integration (the step that opens the pull request) resolves in this order:
-the node's own `secret_ref`, then the run's most recent agent credential,
-then the tenant's registered reference. A reference that does not resolve
-falls through to the next.
+run's agent used — now, the credential of the agent itself. The agent step
+records its reference, and the integration (the step that opens the pull
+request) resolves in this order: the node's own `secret_ref`, then the run's
+most recent agent credential, then the tenant's registered reference. A
+reference that does not resolve falls through to the next.
 
 **What that costs in practice:** a persona must be able to *write* to the
 repository. Pointing the developer agent at the reviewer's account made the
 pull-request step fail with a 404 — not because the wiring was wrong, but
-because that account cannot see the private repository. The other three
-personas (staff, reviewer, QA) are separate accounts with no access to
-`orlandoburli/fazgiro`; giving them collaborator access is a GitHub
-administration task, not a configuration one.
+because that account cannot see the private repository. The other personas
+(staff, reviewer, QA) are separate accounts with no access to the private
+repositories; giving them collaborator access is a GitHub administration
+task, not a configuration one.
+
+**Two transports, no API key.** The `pm` agent was an OpenAI **API** agent
+and there is no model key anywhere — not in the Apiary project, not in the
+keychain — so the seeded *Bugfix* template died at its spec step with "no
+credential found". Every persona is now a CLI persona on the Claude Code
+CLI, with the OpenCode CLI behind it in the chain.
 
 
 ## M5 decisions (Jira deferred, agent policy, usage, notifications)

@@ -138,6 +138,30 @@ func TestAgentRegistryValidationAndRoles(t *testing.T) {
 	}
 }
 
+func TestAgentCredentialReferenceCRUD(t *testing.T) {
+	o := newOwnerHarness(t)
+	created := createAgent(t, o, map[string]any{
+		"name": "identity", "role": "dev", "credential_ref": "github/orlando",
+	})
+	if created["credential_ref"] != "github/orlando" {
+		t.Fatalf("create response credential_ref = %v", created["credential_ref"])
+	}
+	id := created["id"].(string)
+
+	res := o.do("GET", "/api/agents/"+id, nil, o.ownerCookie)
+	if res.status != http.StatusOK || res.json(t)["agent"].(map[string]any)["credential_ref"] != "github/orlando" {
+		t.Fatalf("get agent credential_ref: %d %s", res.status, res.body)
+	}
+	res = o.do("PATCH", "/api/agents/"+id, map[string]any{"credential_ref": "github/updated"}, o.ownerCookie)
+	if res.status != http.StatusOK || res.json(t)["agent"].(map[string]any)["credential_ref"] != "github/updated" {
+		t.Fatalf("patch agent credential_ref: %d %s", res.status, res.body)
+	}
+	res = o.do("PATCH", "/api/agents/"+id, map[string]any{"credential_ref": "bad\x00reference"}, o.ownerCookie)
+	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_request" {
+		t.Fatalf("malformed credential_ref: %d %s", res.status, res.body)
+	}
+}
+
 // TestAgentRunnerChain checks that the agent CRUD carries the chain: the
 // runner ids and names, in order.
 func TestAgentRunnerChain(t *testing.T) {

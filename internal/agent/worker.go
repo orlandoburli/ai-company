@@ -35,9 +35,8 @@ type Worker struct {
 	log      *slog.Logger
 	workerID string
 
-	// secrets resolves a runner's credential reference at execution time; the
-	// runner store is where the reference comes from. Both are optional: a
-	// worker without them behaves exactly as before.
+	// secrets resolves agent and runner credential references at execution
+	// time. Both are optional: a worker without them leaves key_env as fallback.
 	secrets SecretResolver
 	runners *runner.Store
 
@@ -93,8 +92,7 @@ func WithWorkerLogger(l *slog.Logger) WorkerOption {
 	}
 }
 
-// WithSecretResolver sets the resolver the worker fetches a runner's
-// credential with.
+// WithSecretResolver sets the resolver the worker fetches credentials with.
 //
 // The secret is resolved at the moment the job runs, not when the job is
 // queued: the job row carries a reference, never a secret.
@@ -107,7 +105,7 @@ func WithSecretResolver(r SecretResolver) WorkerOption {
 }
 
 // WithRunnerStore sets the runner registry the worker reads a job's runner
-// from.
+// from for its credential fallback.
 //
 // The registry is where the runner's credential reference lives. Without it
 // the worker cannot resolve a credential, and the adapter falls back to its
@@ -283,9 +281,9 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 	job.AgentRole = agentRow.Role
 	job.Config = config
 	job.Capabilities = agentRow.Capabilities
-	// The runner's credential is fetched here, at the moment the job runs:
-	// the job row carries a reference, never a secret.
-	w.resolveCredential(ctx, sc, &job)
+	// The agent's credential is preferred; the runner's is the compatibility
+	// fallback. Both are references, never secrets, until resolved here.
+	w.resolveCredential(ctx, sc, &job, agentRow)
 
 	jobCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
@@ -386,18 +384,26 @@ func (w *Worker) runOne(ctx context.Context, tenantID, jobID string) {
 	w.publishState(sc, job.ID)
 }
 
-// resolveCredential fills the job's credential from the runner the job was
-// queued with.
+// resolveCredential fills the job's credential from the agent identity first,
+// then the runner identity as fallback.
 //
-// The runner names a REFERENCE to a secret, never the secret: the secret is
+// Each credential is a REFERENCE to a secret, never the secret: the secret is
 // fetched from the keychain at the moment the job runs, so it is never at
 // rest in the database and never travels with the job row.
 //
 // A reference that does not resolve is a warning, not a failure: the job
 // still runs, and the adapter falls back to its own environment variable.
 // The secret is never written to a log line — only the reference is.
-func (w *Worker) resolveCredential(ctx context.Context, sc tenancy.Scope, job *Job) {
-	if job.RunnerID == nil || *job.RunnerID == "" || w.runners == nil || w.secrets == nil {
+func (w *Worker) resolveCredential(ctx context.Context, sc tenancy.Scope, job *Job, a Agent) {
+	agentRef := strings.TrimSpace(a.CredentialRef)
+	if agentRef != "" {
+		job.CredentialRef = agentRef
+		if secret, ok := w.resolveCredentialRef(ctx, job, agentRef, "agent", a.Name); ok {
+			job.Credential = secret
+			return
+		}
+	}
+	if job.RunnerID == nil || *job.RunnerID == "" || w.runners == nil {
 		return
 	}
 	r, err := w.runners.Get(ctx, sc, *job.RunnerID)
@@ -409,15 +415,22 @@ func (w *Worker) resolveCredential(ctx context.Context, sc tenancy.Scope, job *J
 	if ref == "" {
 		return
 	}
-	// The reference is recorded even when it does not resolve: the adapter
-	// names it when it has no credential at all.
 	job.CredentialRef = ref
+	if secret, ok := w.resolveCredentialRef(ctx, job, ref, "runner", r.Name); ok {
+		job.Credential = secret
+	}
+}
+
+func (w *Worker) resolveCredentialRef(ctx context.Context, job *Job, ref, owner, name string) (string, bool) {
+	if w.secrets == nil {
+		return "", false
+	}
 	secret, err := w.secrets.Resolve(ctx, ref)
 	if err != nil || strings.TrimSpace(secret) == "" {
-		w.log.Warn("the runner's credential did not resolve", "job", job.ID, "runner", r.Name, "credential_ref", ref)
-		return
+		w.log.Warn("credential reference did not resolve", "job", job.ID, "owner", owner, "name", name, "credential_ref", ref)
+		return "", false
 	}
-	job.Credential = secret
+	return secret, true
 }
 
 func (w *Worker) heartbeat(ctx context.Context, sc tenancy.Scope, jobID string, done <-chan struct{}) {

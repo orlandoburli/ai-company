@@ -77,6 +77,16 @@ func (f *resolutionFixture) credentialRunner(sc tenancy.Scope, name, bin, ref st
 	return r
 }
 
+func (f *resolutionFixture) setAgentCredential(sc tenancy.Scope, a agent.Agent, ref string) agent.Agent {
+	f.t.Helper()
+	updated, err := f.agents.UpdateAgent(context.Background(), sc, a.ID,
+		agent.AgentPatch{CredentialRef: &ref}, sc.UserID)
+	if err != nil {
+		f.t.Fatalf("set agent credential: %v", err)
+	}
+	return updated
+}
+
 // registerSecret registers the secret reference the tenant holds for a
 // platform.
 func (f *resolutionFixture) registerSecret(sc tenancy.Scope, kind, ref string) {
@@ -167,6 +177,42 @@ func TestAgentStepCarriesTheRunnersCredential(t *testing.T) {
 	}
 }
 
+func TestAgentStepCarriesTheAgentsCredential(t *testing.T) {
+	f := newResolutionFixture(t)
+	ctx := context.Background()
+	r := f.credentialRunner(f.sc, "claude", "claude", "ai-company/github:transport")
+	a := f.setAgentCredential(f.sc, f.agent(f.sc, "dev"), "ai-company/github:persona")
+	if err := f.runners.SetChain(ctx, f.sc, a.ID, []string{r.ID}); err != nil {
+		t.Fatal(err)
+	}
+	graph := Template{SchemaVersion: 1, Nodes: []Node{
+		{ID: "only", Kind: NodeAgent, Name: "only step", Type: "agent.worker", TypeVersion: 1,
+			Config: json.RawMessage(`{"agent_id":"` + a.ID + `","prompt_tmpl":"do the work"}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+	}, Edges: []Edge{}}
+	tpl, err := f.store.CreateTemplate(ctx, f.sc, NewTemplate{Name: "persona-credential", Graph: graph, CreatedBy: f.sc.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.engine().StartRun(ctx, f.sc, tpl.ID, "", f.sc.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.engine().Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, ok := latestStep(steps, "only", "")
+	if !ok || step.AgentJobID == "" {
+		t.Fatalf("the node was not dispatched: %+v", step)
+	}
+	if got := stepResultField(t, step, "runner_credential"); got != "ai-company/github:persona" {
+		t.Fatalf("runner_credential = %q, want the agent's reference", got)
+	}
+}
+
 // stepResultField reads one field out of a step's result.
 func stepResultField(t *testing.T, step StepRun, field string) string {
 	t.Helper()
@@ -227,13 +273,12 @@ func runIdentityGraph(t *testing.T, f *resolutionFixture, e *Engine, graph Templ
 }
 
 // TestIntegrationRunsUnderTheAgentsCredential checks that the run's GitHub
-// work runs under the credential of the runner the run's agent used — not
-// under the tenant's registered one.
+// work runs under the agent persona's identity — not the runner or tenant's.
 func TestIntegrationRunsUnderTheAgentsCredential(t *testing.T) {
 	f := newResolutionFixture(t)
 	ctx := context.Background()
-	r := f.credentialRunner(f.sc, "claude", "claude", "ai-company/github:agent")
-	a := f.agent(f.sc, "dev")
+	r := f.credentialRunner(f.sc, "claude", "claude", "ai-company/github:transport")
+	a := f.setAgentCredential(f.sc, f.agent(f.sc, "dev"), "ai-company/github:agent")
 	if err := f.runners.SetChain(ctx, f.sc, a.ID, []string{r.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +347,7 @@ func TestIntegrationFallsBackWhenTheAgentsCredentialDoesNotResolve(t *testing.T)
 	f := newResolutionFixture(t)
 	ctx := context.Background()
 	r := f.credentialRunner(f.sc, "claude", "claude", "ai-company/github:agent")
-	a := f.agent(f.sc, "dev")
+	a := f.setAgentCredential(f.sc, f.agent(f.sc, "dev"), "ai-company/github:missing-agent")
 	if err := f.runners.SetChain(ctx, f.sc, a.ID, []string{r.ID}); err != nil {
 		t.Fatal(err)
 	}

@@ -574,8 +574,8 @@ you say what failed and how you know.`,
 		{
 			Name:             "pm",
 			Role:             agent.RolePM,
-			Kind:             agent.KindAPI,
-			Config:           json.RawMessage(`{"provider":"openai","model":"gpt-4o-mini","key_env":"OPENAI_API_KEY","max_tokens":1024}`),
+			Kind:             agent.KindCLI,
+			Config:           json.RawMessage(`{"bin":"claude","args":["-p","--output-format","stream-json","--verbose","--permission-mode","acceptEdits"],"output_format":"stream-json","timeout_sec":600}`),
 			Capabilities:     json.RawMessage(`{"code":false,"shell":false,"streaming":false,"usage":true}`),
 			ConcurrencyLimit: 2,
 			Enabled:          true,
@@ -588,11 +588,14 @@ you say what failed and how you know.`,
 
 	runners := runner.NewStore(db)
 	for _, a := range agents {
+		if err := ensureSeedRunners(ctx, runners, sc); err != nil {
+			return err
+		}
 		existing, err := store.GetAgentByName(ctx, sc, a.Name)
 		switch {
 		case err == nil:
-			// The agent exists: make sure it has a runner to run on.
-			if err := ensureSeedRunner(ctx, runners, sc, existing); err != nil {
+			// The agent exists: make sure it can run on the tenant's transports.
+			if err := ensureSeedAgentChain(ctx, runners, sc, existing); err != nil {
 				return err
 			}
 			continue
@@ -603,7 +606,7 @@ you say what failed and how you know.`,
 		if err != nil {
 			return fmt.Errorf("create agent %s: %w", a.Name, err)
 		}
-		if err := ensureSeedRunner(ctx, runners, sc, created); err != nil {
+		if err := ensureSeedAgentChain(ctx, runners, sc, created); err != nil {
 			return err
 		}
 	}
@@ -614,44 +617,63 @@ you say what failed and how you know.`,
 // the agent's transport, bound to it as the first link of its chain. It is
 // the same rule the schema's conversion uses, done through the stores so the
 // seed runs with the ordinary runtime role.
-func ensureSeedRunner(ctx context.Context, runners *runner.Store, sc tenancy.Scope, a agent.Agent) error {
-	kind := string(a.Kind)
-	if kind == "" {
-		kind = string(runner.KindCLI)
-	}
-	config := a.Config
-	if len(config) == 0 {
-		config = json.RawMessage("{}")
-	}
-	r, found, err := runners.GetByName(ctx, sc, a.Name)
-	if err != nil {
-		return fmt.Errorf("find runner %s: %w", a.Name, err)
-	}
-	if !found {
-		r, err = runners.Create(ctx, sc, runner.NewRunner{
-			Name:   a.Name,
-			Kind:   runner.Kind(kind),
-			Config: config,
-		})
+// ensureSeedRunners makes the tenant's two transports available: the Claude
+// Code CLI and the OpenCode CLI. They are shared by every agent — a runner is
+// the HOW, not a persona — and each agent chains them in that order, so a run
+// can move to the second transport when the first one is out of budget.
+func ensureSeedRunners(ctx context.Context, runners *runner.Store, sc tenancy.Scope) error {
+	for _, spec := range []struct {
+		name   string
+		config string
+	}{
+		{"claude", `{"bin":"claude","args":["-p","--output-format","stream-json","--verbose","--permission-mode","acceptEdits"],"output_format":"stream-json","timeout_sec":600}`},
+		{"opencode", `{"bin":"opencode","args":["run"],"output_format":"text","timeout_sec":600}`},
+	} {
+		_, found, err := runners.GetByName(ctx, sc, spec.name)
 		if err != nil {
-			return fmt.Errorf("create runner %s: %w", a.Name, err)
+			return fmt.Errorf("find runner %s: %w", spec.name, err)
+		}
+		if found {
+			continue
+		}
+		if _, err := runners.Create(ctx, sc, runner.NewRunner{
+			Name:   spec.name,
+			Kind:   runner.KindCLI,
+			Config: json.RawMessage(spec.config),
+		}); err != nil {
+			return fmt.Errorf("create runner %s: %w", spec.name, err)
 		}
 	}
+	return nil
+}
+
+// ensureSeedAgentChain binds an agent to the tenant's transports, in order:
+// the first is the default, the second is the fallback when the budget of the
+// first is spent. It never reorders an agent's chain a human has edited.
+func ensureSeedAgentChain(ctx context.Context, runners *runner.Store, sc tenancy.Scope, a agent.Agent) error {
 	chain, err := runners.Chain(ctx, sc, a.ID)
 	if err != nil {
 		return err
 	}
-	for _, existing := range chain {
-		if existing.ID == r.ID {
-			return nil
-		}
+	if len(chain) > 0 {
+		return nil
 	}
-	ids := []string{r.ID}
-	for _, existing := range chain {
-		ids = append(ids, existing.ID)
+	ids := make([]string, 0, 2)
+	for _, name := range []string{"claude", "opencode"} {
+		r, found, err := runners.GetByName(ctx, sc, name)
+		if err != nil {
+			return fmt.Errorf("find runner %s: %w", name, err)
+		}
+		if !found {
+			continue
+		}
+		ids = append(ids, r.ID)
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	if err := runners.SetChain(ctx, sc, a.ID, ids); err != nil {
-		return fmt.Errorf("bind runner %s to agent %s: %w", r.Name, a.Name, err)
+		return fmt.Errorf("bind the runners to agent %s: %w", a.Name, err)
 	}
 	return nil
 }

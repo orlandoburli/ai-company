@@ -235,6 +235,16 @@ func TestAgentCreationValidation(t *testing.T) {
 				Name: "x", Role: agent.RoleDev, Kind: agent.KindCLI, ConcurrencyLimit: 17,
 			})
 		}},
+		{"credential reference contains NUL", func() (agent.Agent, error) {
+			return f.st.CreateAgent(ctx, f.t1, agent.Agent{
+				Name: "x", Role: agent.RoleDev, CredentialRef: "service/account\x00bad",
+			})
+		}},
+		{"credential reference is too long", func() (agent.Agent, error) {
+			return f.st.CreateAgent(ctx, f.t1, agent.Agent{
+				Name: "x", Role: agent.RoleDev, CredentialRef: strings.Repeat("a", 513),
+			})
+		}},
 	}
 
 	for _, scene := range bad {
@@ -251,6 +261,78 @@ func TestAgentCreationValidation(t *testing.T) {
 	}
 	if _, err := f.st.CreateAgent(ctx, f.t2, agent.Agent{Name: "review", Role: agent.RoleReviewer, Kind: agent.KindCLI}); err != nil {
 		t.Fatalf("same name in T2: %v", err)
+	}
+}
+
+func TestAgentCredentialReferenceRoundTripsAndMigrationDefault(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	var columnDefault sql.NullString
+	if err := f.app.QueryRow(`SELECT column_default FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'agents' AND column_name = 'credential_ref'`).Scan(&columnDefault); err != nil {
+		t.Fatalf("read credential_ref migration column: %v", err)
+	}
+	if !columnDefault.Valid || !strings.Contains(columnDefault.String, "''") {
+		t.Fatalf("agents.credential_ref default = %v, want empty string", columnDefault)
+	}
+	tx, err := f.app.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin migration default check: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // committed below
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.tenant_id', $1, true)`, f.t1.TenantID); err != nil {
+		t.Fatalf("set tenant scope: %v", err)
+	}
+	var defaultRef string
+	if err := tx.QueryRowContext(ctx, `INSERT INTO agents (id, tenant_id, name, role, kind)
+		VALUES ('A-CREDENTIAL-DEFAULT', $1, 'default-credential', 'dev', 'api')
+		RETURNING credential_ref`, f.t1.TenantID).Scan(&defaultRef); err != nil {
+		t.Fatalf("insert with migration default: %v", err)
+	}
+	if defaultRef != "" {
+		t.Fatalf("inserted default credential_ref = %q, want empty", defaultRef)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit migration default check: %v", err)
+	}
+
+	a, err := f.st.CreateAgent(ctx, f.t1, agent.Agent{
+		Name: "identity", Role: agent.RoleDev, CredentialRef: "github/orlando",
+	})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if a.CredentialRef != "github/orlando" {
+		t.Fatalf("created credential_ref = %q", a.CredentialRef)
+	}
+	got, err := f.st.GetAgent(ctx, f.t1, a.ID)
+	if err != nil || got.CredentialRef != "github/orlando" {
+		t.Fatalf("read agent credential_ref = %q, err %v", got.CredentialRef, err)
+	}
+	listed, err := f.st.ListAgents(ctx, f.t1)
+	found := false
+	for _, listedAgent := range listed {
+		if listedAgent.ID == a.ID && listedAgent.CredentialRef == "github/orlando" {
+			found = true
+		}
+	}
+	if err != nil || !found {
+		t.Fatalf("list agent credential_ref = %+v, err %v", listed, err)
+	}
+	updated, err := f.st.UpdateAgent(ctx, f.t1, a.ID, agent.AgentPatch{CredentialRef: strptr("github/updated")}, f.t1.UserID)
+	if err != nil || updated.CredentialRef != "github/updated" {
+		t.Fatalf("updated credential_ref = %q, err %v", updated.CredentialRef, err)
+	}
+	if _, err := f.st.UpdateAgent(ctx, f.t1, a.ID, agent.AgentPatch{CredentialRef: strptr(strings.Repeat("x", 513))}, f.t1.UserID); !errors.Is(err, agent.ErrInvalid) {
+		t.Fatalf("malformed update credential_ref: err = %v, want ErrInvalid", err)
+	}
+	if _, err := f.st.GetAgent(ctx, f.t2, a.ID); !errors.Is(err, agent.ErrNotFound) {
+		t.Fatalf("other tenant read credential-bearing agent: %v", err)
+	}
+	other, err := f.st.CreateAgent(ctx, f.t2, agent.Agent{Name: "identity", Role: agent.RoleDev})
+	if err != nil || other.CredentialRef != "" {
+		t.Fatalf("other tenant agent = %+v, err %v", other, err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -22,20 +23,38 @@ import (
 // fakeSecrets is a resolver: it answers every reference with the same secret,
 // or with an error.
 type fakeSecrets struct {
-	mu     sync.Mutex
-	asked  []string
-	secret string
-	err    error
+	mu      sync.Mutex
+	asked   []string
+	secret  string
+	secrets map[string]string
+	err     error
 }
 
 func (f *fakeSecrets) Resolve(_ context.Context, ref string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, ref)
+	if f.secrets != nil {
+		secret, ok := f.secrets[ref]
+		if !ok {
+			return "", errors.New("integration: secret not found")
+		}
+		return secret, nil
+	}
 	if f.err != nil {
 		return "", f.err
 	}
 	return f.secret, nil
+}
+
+func setAgentCredential(t *testing.T, f *workerFixture, a agent.Agent, ref string) agent.Agent {
+	t.Helper()
+	updated, err := f.agent.UpdateAgent(context.Background(), f.sc, a.ID,
+		agent.AgentPatch{CredentialRef: &ref}, f.sc.UserID)
+	if err != nil {
+		t.Fatalf("set agent credential reference: %v", err)
+	}
+	return updated
 }
 
 // askedFor lists the references the resolver was asked about.
@@ -123,6 +142,69 @@ func TestWorkerResolvesTheRunnersCredential(t *testing.T) {
 	}
 	if stored.Credential != "" || stored.CredentialRef != "" {
 		t.Fatalf("the stored job carries a credential: %+v", stored)
+	}
+}
+
+func TestWorkerPrefersAgentCredentialOverRunner(t *testing.T) {
+	f := newWorkerFixture(t)
+	a := setAgentCredential(t, f, f.createAgent("persona-credential", 2), "ai-company/github:persona")
+	r := f.createRunner("persona-runner", "ai-company/github:transport")
+	secrets := &fakeSecrets{secrets: map[string]string{
+		"ai-company/github:persona":   "persona-secret",
+		"ai-company/github:transport": "transport-secret",
+	}}
+	logs := &syncBuffer{}
+	ad := &recordingAdapter{kind: "cli"}
+	cancel := startWorkerWithOptions(t, f.agent, []agent.Adapter{ad},
+		agent.WithSecretResolver(secrets), agent.WithRunnerStore(f.runners),
+		agent.WithWorkerLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	defer cancel()
+
+	job, err := f.agent.CreateJob(context.Background(), f.sc, agent.NewJob{
+		AgentID: a.ID, Prompt: "hello", RunnerID: r.ID, RunnerKind: "cli",
+		RunnerConfig: json.RawMessage(`{"bin":"echo","args":["-p"]}`),
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	waitJob(t, f.agent, f.sc, job.ID, agent.JobSucceeded)
+	ran := ad.last(t)
+	if ran.Credential != "persona-secret" || ran.CredentialRef != "ai-company/github:persona" {
+		t.Fatalf("adapter identity = %q / %q, want agent's reference and secret", ran.CredentialRef, ran.Credential)
+	}
+	if asked := secrets.askedFor(); len(asked) != 1 || asked[0] != "ai-company/github:persona" {
+		t.Fatalf("resolver asked for %v, want only agent reference", asked)
+	}
+	if strings.Contains(logs.String(), "persona-secret") {
+		t.Fatalf("the agent secret reached a log line: %s", logs.String())
+	}
+}
+
+func TestWorkerFallsBackToRunnerWhenAgentCredentialDoesNotResolve(t *testing.T) {
+	f := newWorkerFixture(t)
+	a := setAgentCredential(t, f, f.createAgent("unresolved-persona", 2), "ai-company/github:missing-agent")
+	r := f.createRunner("fallback-runner", "ai-company/github:transport")
+	secrets := &fakeSecrets{secrets: map[string]string{"ai-company/github:transport": "transport-secret"}}
+	ad := &recordingAdapter{kind: "cli"}
+	cancel := startWorkerWithOptions(t, f.agent, []agent.Adapter{ad},
+		agent.WithSecretResolver(secrets), agent.WithRunnerStore(f.runners), agent.WithWorkerLogger(quietLogger()))
+	defer cancel()
+
+	job, err := f.agent.CreateJob(context.Background(), f.sc, agent.NewJob{
+		AgentID: a.ID, Prompt: "hello", RunnerID: r.ID, RunnerKind: "cli",
+		RunnerConfig: json.RawMessage(`{"bin":"echo","args":["-p"]}`),
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	waitJob(t, f.agent, f.sc, job.ID, agent.JobSucceeded)
+	ran := ad.last(t)
+	if ran.Credential != "transport-secret" || ran.CredentialRef != "ai-company/github:transport" {
+		t.Fatalf("adapter identity = %q / %q, want runner fallback", ran.CredentialRef, ran.Credential)
+	}
+	want := []string{"ai-company/github:missing-agent", "ai-company/github:transport"}
+	if asked := secrets.askedFor(); !reflect.DeepEqual(asked, want) {
+		t.Fatalf("resolver asked for %v, want %v", asked, want)
 	}
 }
 

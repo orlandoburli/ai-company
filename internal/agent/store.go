@@ -30,6 +30,7 @@ const MaxQueuedPerTenant = 100
 const (
 	maxSoulBytes       = 200 * 1024
 	maxBodyBytes       = 64 * 1024
+	maxCredentialRef   = 512
 	minConcurrency     = 1
 	maxConcurrency     = 16
 	defaultConcurrency = 2
@@ -190,6 +191,16 @@ func validConcurrency(n int) error {
 	return nil
 }
 
+func validCredentialRef(ref string) error {
+	if strings.ContainsRune(ref, 0) {
+		return fmt.Errorf("%w: credential_ref contains an invalid character", ErrInvalid)
+	}
+	if len(ref) > maxCredentialRef {
+		return fmt.Errorf("%w: credential_ref is over %d bytes", ErrInvalid, maxCredentialRef)
+	}
+	return nil
+}
+
 func validAgentFields(name string, role Role, kind Kind, soul string, config, capabilities, skillsPolicy, fallbacks json.RawMessage) error {
 	if err := validName(name); err != nil {
 		return err
@@ -222,7 +233,7 @@ func validAgentFields(name string, role Role, kind Kind, soul string, config, ca
 
 const agentColumns = `
 	a.id, a.tenant_id, a.name, a.role, a.kind, a.config_json, a.capabilities_json,
-	a.concurrency_limit, a.enabled, a.soul_md, a.skills_policy_json, a.fallbacks_json,
+	a.concurrency_limit, a.enabled, a.soul_md, a.credential_ref, a.skills_policy_json, a.fallbacks_json,
 	a.created_by, a.created_at, a.updated_at`
 
 func scanAgent(r rowScanner) (Agent, error) {
@@ -232,7 +243,7 @@ func scanAgent(r rowScanner) (Agent, error) {
 		createdBy                      sql.NullString
 	)
 	err := r.Scan(&a.ID, &a.TenantID, &a.Name, &a.Role, &a.Kind, &config, &caps,
-		&a.ConcurrencyLimit, &a.Enabled, &a.SoulMD, &policy, &fallback,
+		&a.ConcurrencyLimit, &a.Enabled, &a.SoulMD, &a.CredentialRef, &policy, &fallback,
 		&createdBy, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return Agent{}, err
@@ -262,6 +273,9 @@ func (s *Store) CreateAgent(ctx context.Context, sc tenancy.Scope, in Agent) (Ag
 	if err := validAgentFields(in.Name, in.Role, kind, in.SoulMD, in.Config, in.Capabilities, in.SkillsPolicy, in.Fallbacks); err != nil {
 		return Agent{}, err
 	}
+	if err := validCredentialRef(in.CredentialRef); err != nil {
+		return Agent{}, err
+	}
 	limit := in.ConcurrencyLimit
 	if limit == 0 {
 		limit = defaultConcurrency
@@ -275,14 +289,14 @@ func (s *Store) CreateAgent(ctx context.Context, sc tenancy.Scope, in Agent) (Ag
 		created, err := scanAgent(tx.QueryRowContext(ctx, `
 			INSERT INTO agents AS a (id, tenant_id, name, role, kind, config_json,
 			                capabilities_json, concurrency_limit, enabled, soul_md,
-			                skills_policy_json, fallbacks_json, created_by)
+			                credential_ref, skills_policy_json, fallbacks_json, created_by)
 			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10,
-			        $11::jsonb, $12::jsonb, nullif($13, ''))
+			        $11, $12::jsonb, $13::jsonb, nullif($14, ''))
 			RETURNING`+agentColumns,
 			newID(), sc.TenantID, in.Name, in.Role, string(kind),
 			orJSON(in.Config, "{}"), orJSON(in.Capabilities, "{}"),
 			limit, in.Enabled, in.SoulMD,
-			orJSON(in.SkillsPolicy, "{}"), orJSON(in.Fallbacks, "[]"),
+			in.CredentialRef, orJSON(in.SkillsPolicy, "{}"), orJSON(in.Fallbacks, "[]"),
 			deref(in.CreatedBy)))
 		if err != nil {
 			return err
@@ -371,6 +385,7 @@ type AgentPatch struct {
 	ConcurrencyLimit *int
 	Enabled          *bool
 	SoulMD           *string
+	CredentialRef    *string
 	SkillsPolicy     *json.RawMessage
 	Fallbacks        *json.RawMessage
 }
@@ -398,6 +413,11 @@ func (s *Store) UpdateAgent(ctx context.Context, sc tenancy.Scope, id string, p 
 	}
 	if p.SoulMD != nil && len(*p.SoulMD) > maxSoulBytes {
 		return Agent{}, fmt.Errorf("%w: soul_md is over 200 KB", ErrInvalid)
+	}
+	if p.CredentialRef != nil {
+		if err := validCredentialRef(*p.CredentialRef); err != nil {
+			return Agent{}, err
+		}
 	}
 	if p.ConcurrencyLimit != nil {
 		if err := validConcurrency(*p.ConcurrencyLimit); err != nil {
@@ -448,6 +468,9 @@ func (s *Store) UpdateAgent(ctx context.Context, sc tenancy.Scope, id string, p 
 		}
 		if p.SoulMD != nil {
 			add("soul_md = $%d", *p.SoulMD) // empty string clears the soul
+		}
+		if p.CredentialRef != nil {
+			add("credential_ref = $%d", *p.CredentialRef)
 		}
 		if p.SkillsPolicy != nil {
 			add("skills_policy_json = COALESCE($%d::jsonb, '{}'::jsonb)", raw(*p.SkillsPolicy))

@@ -107,6 +107,7 @@ type Agent struct {
 	ConcurrencyLimit int             `json:"concurrency_limit"`
 	Enabled          bool            `json:"enabled"`
 	SoulMD           string          `json:"soul_md"`
+	CredentialRef    string          `json:"credential_ref"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
 	Fallbacks        json.RawMessage `json:"-"`
 	CreatedBy        *string         `json:"created_by"`
@@ -164,13 +165,13 @@ type Job struct {
 	RunnerID     *string         `json:"runner_id"`
 	RunnerKind   string          `json:"runner_kind"`
 	RunnerConfig json.RawMessage `json:"runner_config"`
-	// Credential is the secret resolved for this job: the runner's credential
-	// reference, resolved from the OS keychain at the moment the job runs. It
+	// Credential is the secret resolved for this job: the agent's reference,
+	// falling back to the runner's, resolved from the OS keychain at execution. It
 	// is filled by the worker at execution time and is never written to the
 	// database — the job row carries the reference, never the secret.
 	Credential string `json:"-"`
-	// CredentialRef is the reference the credential was resolved from: a
-	// name, never a secret. The worker fills it so that a failure can say
+	// CredentialRef is the reference used (or last attempted) for the credential:
+	// a name, never a secret. The worker fills it so that a failure can say
 	// WHICH reference did not resolve.
 	CredentialRef  string          `json:"-"`
 	ThreadID       *string         `json:"thread_id"`

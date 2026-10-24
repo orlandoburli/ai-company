@@ -51,6 +51,7 @@ type agentCreateRequest struct {
 	ConcurrencyLimit int             `json:"concurrency_limit"`
 	Enabled          *bool           `json:"enabled"`
 	SoulMD           *string         `json:"soul_md"`
+	CredentialRef    string          `json:"credential_ref"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
 
 	// Legacy transport fields. The transport moved to the runner chain, so
@@ -69,6 +70,7 @@ type agentPatchRequest struct {
 	ConcurrencyLimit *int            `json:"concurrency_limit"`
 	Enabled          *bool           `json:"enabled"`
 	SoulMD           *string         `json:"soul_md"`
+	CredentialRef    *string         `json:"credential_ref"`
 	SkillsPolicy     json.RawMessage `json:"skills_policy"`
 
 	// Legacy transport fields — accepted and ignored, see agentCreateRequest.
@@ -201,6 +203,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		ConcurrencyLimit: limit,
 		Enabled:          enabled,
 		SoulMD:           soul,
+		CredentialRef:    req.CredentialRef,
 		SkillsPolicy:     normalizeJSONValue(req.SkillsPolicy, "{}"),
 		CreatedBy:        &sc.UserID,
 	}
@@ -247,6 +250,7 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		ConcurrencyLimit: req.ConcurrencyLimit,
 		Enabled:          req.Enabled,
 		SoulMD:           req.SoulMD,
+		CredentialRef:    req.CredentialRef,
 	}
 	if req.Role != nil {
 		role := agent.Role(*req.Role)

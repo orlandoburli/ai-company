@@ -161,9 +161,8 @@ func (e *Engine) finalizeJobs(ctx context.Context, sc tenancy.Scope, run Run, t 
 			result["runner_attempt"] = trace.Attempt
 			result["runners_tried"] = trace.Tried
 		}
-		// The step says WHICH credential the runner ran under: the reference
-		// is a name, so it is safe to keep next to the result. It is what
-		// makes the run's GitHub work run under the agent's identity.
+		// The step says WHICH credential the agent ran under (falling back to
+		// the runner's reference): it is a name, safe to keep next to the result.
 		if trace.Credential != "" {
 			result["runner_credential"] = trace.Credential
 		}
@@ -554,7 +553,11 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 	// the tried list is what keeps a fallback from retrying the same runner.
 	// The credential reference travels with it: it is the identity the run's
 	// work runs under.
-	trace := readRunnerTrace(step).with(transport.Name, attempt, transport.CredentialRef)
+	credentialRef := strings.TrimSpace(a.CredentialRef)
+	if credentialRef == "" {
+		credentialRef = strings.TrimSpace(transport.CredentialRef)
+	}
+	trace := readRunnerTrace(step).with(transport.Name, attempt, credentialRef)
 	stepResultFields := map[string]any{"status": "running", "runner": trace.Runner, "runner_attempt": trace.Attempt, "runners_tried": trace.Tried}
 	if trace.Credential != "" {
 		stepResultFields["runner_credential"] = trace.Credential
@@ -657,9 +660,9 @@ type runnerTrace struct {
 	Runner string `json:"runner"`
 	// Tried lists the runners the step has tried, in order.
 	Tried []string `json:"runners_tried"`
-	// Credential is the credential REFERENCE of the runner the step is on:
-	// a name, never a secret. It says which identity the run's work runs
-	// under.
+	// Credential is the agent's credential reference, falling back to the
+	// current runner's reference: a name, never a secret. It says which identity
+	// the run's work runs under.
 	Credential string `json:"runner_credential,omitempty"`
 }
 
@@ -676,8 +679,7 @@ func readRunnerTrace(step StepRun) runnerTrace {
 }
 
 // with records a runner attempt: the runner the step is on, the list of
-// runners the step has tried and the credential reference the runner runs
-// under.
+// runners the step has tried and the identity reference used by the agent.
 func (t runnerTrace) with(name string, attempt int, credential string) runnerTrace {
 	t.Runner = name
 	t.Credential = credential
@@ -937,11 +939,11 @@ func (e *Engine) tenantSecretRef(ctx context.Context, sc tenancy.Scope, kind str
 }
 
 // runIdentitySecretRef returns the secret reference the run's platform work
-// authenticates with.
+// authenticates with: the succeeded agent step's reference, then the tenant's
+// registered platform reference.
 //
-// The identity of a run's GitHub work is the credential of the runner the
-// run's agent used: the agent's own reference first, the tenant's registered
-// reference second. A reference that does not resolve is not an identity —
+// The identity of a run's GitHub work is the agent reference carried by its
+// step, then the tenant's registered reference. A reference that does not resolve is not an identity —
 // the next one is tried, and a run whose references all fail leaves the
 // integration without a credential (the GitHub service is then not
 // configured).
@@ -958,9 +960,8 @@ func (e *Engine) runIdentitySecretRef(ctx context.Context, sc tenancy.Scope, run
 	return ""
 }
 
-// agentCredentialRef returns the credential reference of the runner the run's
-// agent used: the most recent succeeded agent step of the run that carries
-// one.
+// agentCredentialRef returns the identity reference carried by the most recent
+// succeeded agent step of the run.
 //
 // The reference is a name, not a secret: it is read out of the step's result,
 // which is safe to store.
