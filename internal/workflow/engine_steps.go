@@ -357,6 +357,17 @@ func (e *Engine) dispatchStep(ctx context.Context, sc tenancy.Scope, run Run, t 
 		return err
 	}
 	switch node.Kind {
+	case NodeStart:
+		// The start node is not work: no agent, no job, no workspace. It
+		// succeeds the moment the flow reaches it and hands the flow to its
+		// successor.
+		out := map[string]json.RawMessage{"main": rawJSON(map[string]any{"started": true})}
+		res := rawJSON(map[string]any{"status": "succeeded", "exit_reason": "ok", "summary": "the flow starts here"})
+		return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, res, out, "")
+	case NodeEnd:
+		// The end node is not work either: the flow finishes here.
+		res := rawJSON(map[string]any{"status": "succeeded", "exit_reason": "ok", "summary": "the flow ends here"})
+		return e.terminalWithReceipts(ctx, sc, run, t, claimed, StepSucceeded, res, nil, "")
 	case NodeAgent:
 		return e.dispatchAgent(ctx, sc, run, t, node, claimed, ready)
 	case NodeCheckpoint:
@@ -1333,13 +1344,17 @@ func (e *Engine) recordCheckpointArtifacts(ctx context.Context, sc tenancy.Scope
 // order of the graph.
 //
 // The node the checkpoint asks about is left out: the card asks the question,
-// it does not report the question as work.
+// it does not report the question as work. The flow's boundaries are left out
+// for the same reason: a start is not work, and neither is an end.
 func briefSteps(t *Template, rows []StepRun, nodeID string) []BriefStep {
 	out := []BriefStep{}
 	seen := map[string]bool{}
 	for _, node := range t.Nodes {
 		seen[node.ID] = true
 		if node.ID == nodeID {
+			continue
+		}
+		if node.Kind == NodeStart || node.Kind == NodeEnd {
 			continue
 		}
 		step, ok := latestStepAny(rows, node.ID)
@@ -1352,6 +1367,9 @@ func briefSteps(t *Template, rows []StepRun, nodeID string) []BriefStep {
 	// running execution — keeps its creation order.
 	for _, row := range rows {
 		if seen[row.NodeID] || row.NodeID == nodeID || len(row.Result) == 0 {
+			continue
+		}
+		if row.Kind == string(NodeStart) || row.Kind == string(NodeEnd) {
 			continue
 		}
 		out = append(out, briefStep(row))

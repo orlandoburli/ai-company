@@ -59,6 +59,9 @@ func seedTemplates(agents map[string]string) ([]seedTemplate, error) {
 // bugfixTemplate: pm.spec → checkpoint → dev.implement → (review ∥ qa) → merge
 // → checkpoint → close. The two branches under `implement` are what the merge
 // node reconciles; they run concurrently.
+//
+// The graph says where it begins and where it ends: the start node hands the
+// flow to the first agent, the end node takes the flow's last word.
 func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 	spec, err := agentNode("n_pm", "spec", "agent.pm", 2, agents["pm"],
 		"Write a specification for the item: what to change, how to verify it, and the risks.",
@@ -117,9 +120,10 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 		Graph: workflow.Template{
 			SchemaVersion: 1,
 			Nodes: []workflow.Node{
-				spec, gate, impl, review, qa, join, gate2, close,
+				startNode("n_start", "start"), spec, gate, impl, review, qa, join, gate2, close, endNode("n_end", "end"),
 			},
 			Edges: []workflow.Edge{
+				edge("e0", "n_start", "main", "n_pm", "in"),
 				edge("e1", "n_pm", "main", "n_gate", "in"),
 				edge("e2", "n_gate", "approved", "n_code", "in"),
 				edge("e3", "n_code", "main", "n_review", "in"),
@@ -128,6 +132,7 @@ func bugfixTemplate(agents map[string]string) (seedTemplate, error) {
 				edge("e6", "n_qa", "main", "n_join", "in"),
 				edge("e7", "n_join", "main", "n_gate2", "in"),
 				edge("e8", "n_gate2", "approved", "n_close", "in"),
+				edge("e9", "n_close", "main", "n_end", "in"),
 			},
 		},
 	}, nil
@@ -216,9 +221,10 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 		Graph: workflow.Template{
 			SchemaVersion: 1,
 			Nodes: []workflow.Node{
-				spec, gate, impl, pr, ci, review, join, gate2, closeNode, closeItem,
+				startNode("n_start", "start"), spec, gate, impl, pr, ci, review, join, gate2, closeNode, closeItem, endNode("n_end", "end"),
 			},
 			Edges: []workflow.Edge{
+				edge("e0", "n_start", "main", "n_pm", "in"),
 				edge("e1", "n_pm", "main", "n_gate", "in"),
 				edge("e2", "n_gate", "approved", "n_code", "in"),
 				edge("e3", "n_code", "main", "n_pr", "in"),
@@ -229,6 +235,7 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 				edge("e8", "n_join", "main", "n_gate2", "in"),
 				edge("e9", "n_gate2", "approved", "n_close", "in"),
 				edge("e10", "n_close", "main", "n_done", "in"),
+				edge("e11", "n_done", "main", "n_end", "in"),
 			},
 		},
 	}, nil
@@ -292,9 +299,11 @@ func reviewTemplate(agents map[string]string) (seedTemplate, error) {
 		MaxConcurrency: 2,
 		Graph: workflow.Template{
 			SchemaVersion: 1,
-			Nodes:         []workflow.Node{review, gate},
+			Nodes:         []workflow.Node{startNode("n_start", "start"), review, gate, endNode("n_end", "end")},
 			Edges: []workflow.Edge{
+				edge("e0", "n_start", "main", "n_review", "in"),
 				edge("e1", "n_review", "main", "n_gate", "in"),
+				edge("e2", "n_gate", "approved", "n_end", "in"),
 			},
 		},
 	}, nil
@@ -335,12 +344,14 @@ func repairTemplate(agents map[string]string) (seedTemplate, error) {
 		MaxConcurrency: 2,
 		Graph: workflow.Template{
 			SchemaVersion: 1,
-			Nodes:         []workflow.Node{loop, fix, check, done},
+			Nodes:         []workflow.Node{startNode("n_start", "start"), loop, fix, check, done, endNode("n_end", "end")},
 			Edges: []workflow.Edge{
+				edge("e0", "n_start", "main", "n_loop", "in"),
 				edge("e1", "n_loop", "body", "n_fix", "in"),
 				edge("e2", "n_fix", "main", "n_check", "in"),
 				edge("e3", "n_check", "main", "n_loop", "in"),
 				edge("e4", "n_loop", "done", "n_close", "in"),
+				edge("e5", "n_close", "main", "n_end", "in"),
 			},
 		},
 	}, nil
@@ -452,6 +463,40 @@ func loopNode(id, name, nodeType string, typeVersion int, config map[string]any)
 		OnError:     workflow.OnErrorStop,
 		Workspace:   workflow.WorkspaceScratch,
 	}, nil
+}
+
+// startNode builds the `start` node of a graph: where the flow begins.
+//
+// It is not work. It takes no input and hands the flow to its one
+// successor, so the reader of the graph sees where the flow starts.
+func startNode(id, name string) workflow.Node {
+	return workflow.Node{
+		ID:          id,
+		Kind:        workflow.NodeStart,
+		Name:        name,
+		Type:        "flow.start",
+		TypeVersion: 1,
+		Config:      json.RawMessage(`{}`),
+		OnError:     workflow.OnErrorStop,
+		Workspace:   workflow.WorkspaceScratch,
+	}
+}
+
+// endNode builds the `end` node of a graph: where the flow finishes.
+//
+// It is not work either. It takes the flow's last input and has no
+// successor, so the reader of the graph sees where the flow ends.
+func endNode(id, name string) workflow.Node {
+	return workflow.Node{
+		ID:          id,
+		Kind:        workflow.NodeEnd,
+		Name:        name,
+		Type:        "flow.end",
+		TypeVersion: 1,
+		Config:      json.RawMessage(`{}`),
+		OnError:     workflow.OnErrorStop,
+		Workspace:   workflow.WorkspaceScratch,
+	}
 }
 
 // edge builds one edge between two named ports.

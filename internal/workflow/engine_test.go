@@ -383,6 +383,204 @@ func TestEngineDiamondDispatchAndMergeReceipts(t *testing.T) {
 	}
 }
 
+// driveRun ticks the engine until the run reaches a terminal state. The agent
+// jobs are given the time to finish in between the ticks.
+func driveRun(t *testing.T, f *engineFixture, e *Engine, run Run, ctx context.Context) Run {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		if err := e.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range steps {
+			if step.State == StepRunning && step.AgentJobID != "" {
+				waitJobState(t, f.agents, f.sc, step.AgentJobID, agent.JobSucceeded)
+			}
+		}
+		finished, err := f.store.GetRun(ctx, f.sc, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if finished.State == RunCompleted || finished.State == RunFailed {
+			return finished
+		}
+	}
+	finished, err := f.store.GetRun(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return finished
+}
+
+// A graph that says where the flow begins and where it ends: the start hands
+// the flow on without running anything, and the end finishes the run.
+func TestEngineStartAndEndCompleteTheRun(t *testing.T) {
+	f := newEngineFixture(t)
+	ctx := context.Background()
+	a := f.createAgent(t)
+	graph := Template{SchemaVersion: 1, Nodes: []Node{
+		{ID: "start", Kind: NodeStart, Name: "start", Type: "flow.start", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "work", Kind: NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"prompt_tmpl":"work"}`, a.ID)), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "end", Kind: NodeEnd, Name: "end", Type: "flow.end", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+	}, Edges: []Edge{
+		{ID: "start-work", From: PortRef{Node: "start", Port: "main"}, To: PortRef{Node: "work", Port: "in"}},
+		{ID: "work-end", From: PortRef{Node: "work", Port: "main"}, To: PortRef{Node: "end", Port: "in"}},
+	}}
+	run := f.createRun(t, graph)
+	worker := agent.NewWorker(f.agents, agent.NewHub(), []agent.Adapter{&engineAdapter{output: "done"}}, agent.WithWorkerPoll(10*time.Millisecond), agent.WithWorkerLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(wctx)
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work})
+
+	// The start node is not work: it succeeds on the first tick, and no agent
+	// ran for it.
+	if err := e.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, ok := latestStep(steps, "start", "")
+	if !ok || start.State != StepSucceeded {
+		t.Fatalf("the start node did not succeed: %+v", start)
+	}
+	if start.AgentJobID != "" {
+		t.Fatalf("the start node ran a job: %s", start.AgentJobID)
+	}
+
+	// The flow moved on to the agent behind the start.
+	if err := e.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	steps, err = f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, ok := latestStep(steps, "work", "")
+	if !ok || work.State != StepRunning || work.AgentJobID == "" {
+		t.Fatalf("the agent did not run after the start: %+v", work)
+	}
+
+	// The end node takes the flow's last word, and the run is complete.
+	finished := driveRun(t, f, e, run, ctx)
+	if finished.State != RunCompleted {
+		t.Fatalf("run state=%s want completed", finished.State)
+	}
+	steps, err = f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, ok := latestStep(steps, "end", "")
+	if !ok || end.State != StepSucceeded {
+		t.Fatalf("the end node did not succeed: %+v", end)
+	}
+	if end.AgentJobID != "" {
+		t.Fatalf("the end node ran a job: %s", end.AgentJobID)
+	}
+}
+
+// The end node ends the run: a branch the flow left behind does not keep it
+// running.
+func TestEngineEndNodeEndsTheRun(t *testing.T) {
+	f := newEngineFixture(t)
+	ctx := context.Background()
+	a := f.createAgent(t)
+	graph := Template{SchemaVersion: 1, Nodes: []Node{
+		{ID: "start", Kind: NodeStart, Name: "start", Type: "flow.start", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "work", Kind: NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"prompt_tmpl":"work"}`, a.ID)), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "side", Kind: NodeAgent, Name: "side", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"prompt_tmpl":"side"}`, a.ID)), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "end", Kind: NodeEnd, Name: "end", Type: "flow.end", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+	}, Edges: []Edge{
+		{ID: "start-work", From: PortRef{Node: "start", Port: "main"}, To: PortRef{Node: "work", Port: "in"}},
+		{ID: "work-end", From: PortRef{Node: "work", Port: "main"}, To: PortRef{Node: "end", Port: "in"}},
+		{ID: "work-side", From: PortRef{Node: "work", Port: "main"}, To: PortRef{Node: "side", Port: "in"}},
+	}}
+	run := f.createRun(t, graph)
+	worker := agent.NewWorker(f.agents, agent.NewHub(), []agent.Adapter{&engineAdapter{output: "done"}}, agent.WithWorkerPoll(10*time.Millisecond), agent.WithWorkerLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(wctx)
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work})
+
+	// Tick until the flow reaches the end node.
+	for i := 0; i < 10; i++ {
+		if err := e.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end, ok := latestStep(steps, "end", "")
+		if ok && end.State == StepSucceeded {
+			break
+		}
+		for _, step := range steps {
+			if step.NodeID == "work" && step.State == StepRunning && step.AgentJobID != "" {
+				waitJobState(t, f.agents, f.sc, step.AgentJobID, agent.JobSucceeded)
+			}
+		}
+	}
+	finished, err := f.store.GetRun(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.State != RunCompleted {
+		t.Fatalf("run state=%s want completed: the end node ends the run", finished.State)
+	}
+	// The side branch was still in flight when the run finished: the flow had
+	// already reached its end.
+	steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	side, ok := latestStep(steps, "side", "")
+	if !ok || side.State != StepRunning {
+		t.Fatalf("the side branch should still be running: %+v", side)
+	}
+}
+
+// A graph without a start and without an end behaves exactly as it always
+// did: the flow begins at its entry node and finishes when its last step is
+// terminal.
+func TestEngineWithoutStartAndEndBehavesAsBefore(t *testing.T) {
+	f := newEngineFixture(t)
+	ctx := context.Background()
+	a := f.createAgent(t)
+	graph := Template{SchemaVersion: 1, Nodes: []Node{
+		{ID: "first", Kind: NodeAgent, Name: "first", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"prompt_tmpl":"first"}`, a.ID)), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "second", Kind: NodeAgent, Name: "second", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"prompt_tmpl":"second"}`, a.ID)), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+	}, Edges: []Edge{
+		{ID: "first-second", From: PortRef{Node: "first", Port: "main"}, To: PortRef{Node: "second", Port: "in"}},
+	}}
+	run := f.createRun(t, graph)
+	worker := agent.NewWorker(f.agents, agent.NewHub(), []agent.Adapter{&engineAdapter{output: "done"}}, agent.WithWorkerPoll(10*time.Millisecond), agent.WithWorkerLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	worker.Start(wctx)
+	e := NewEngine(EngineDeps{Store: f.store, Agents: f.agents, Runners: f.runners, Memory: memory.NewStore(f.db), Work: f.work})
+
+	finished := driveRun(t, f, e, run, ctx)
+	if finished.State != RunCompleted {
+		t.Fatalf("run state=%s want completed", finished.State)
+	}
+	steps, err := f.store.ListStepRuns(ctx, f.sc, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"first", "second"} {
+		step, ok := latestStep(steps, id, "")
+		if !ok || step.State != StepSucceeded {
+			t.Fatalf("%s did not succeed: %+v", id, step)
+		}
+	}
+}
+
 func TestEngineCancelWaitingRun(t *testing.T) {
 	f := newEngineFixture(t)
 	ctx := context.Background()

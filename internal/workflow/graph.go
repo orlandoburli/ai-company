@@ -19,6 +19,12 @@ const (
 	NodeCheckpoint  NodeKind = "checkpoint"
 	NodeLoop        NodeKind = "loop"
 	NodeMerge       NodeKind = "merge"
+	// NodeStart is where the flow begins. It takes no input and hands the
+	// flow to its one successor; it is never work.
+	NodeStart NodeKind = "start"
+	// NodeEnd is where the flow finishes. It takes the flow's last input and
+	// has no successor; it is never work either.
+	NodeEnd NodeKind = "end"
 )
 
 // OnError selects how a node failure affects its workflow branch.
@@ -151,6 +157,13 @@ const (
 	CodeInvalidEdgeID      = "invalid_edge_id"
 	CodeInvalidNodeType    = "invalid_node_type"
 	CodeInvalidMemory      = "invalid_memory"
+	// The explicit endpoints of a flow.
+	CodeDuplicateStartNode  = "duplicate_start_node"
+	CodeDuplicateEndNode    = "duplicate_end_node"
+	CodeStartNodeEdges      = "start_node_edges"
+	CodeEndNodeEdges        = "end_node_edges"
+	CodeUnexpectedEntryNode = "unexpected_entry_node"
+	CodeUnreachableEndNode  = "unreachable_end_node"
 )
 
 // ValidationError describes one invalid part of a template.
@@ -202,8 +215,27 @@ func PortsFor(kind NodeKind) (inputs []string, outputs []string) {
 		return []string{"in"}, []string{"approved", "rejected"}
 	case NodeLoop:
 		return []string{"in"}, []string{"body", "done"}
+	case NodeStart:
+		// The start takes no input: the flow begins here.
+		return nil, []string{"main"}
+	case NodeEnd:
+		// The end has no output: the flow finishes here.
+		return []string{"in"}, nil
 	default:
 		return nil, nil
+	}
+}
+
+// knownKind reports whether the kind is one this build understands.
+//
+// The test is not "has an output port": the end node has no output at all,
+// and it is a kind like any other.
+func knownKind(kind NodeKind) bool {
+	switch kind {
+	case NodeAgent, NodeIntegration, NodeCheckpoint, NodeLoop, NodeMerge, NodeStart, NodeEnd:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -229,7 +261,7 @@ func (t *Template) Validate() error {
 		if _, exists := nodes[n.ID]; exists {
 			return validationError(CodeDuplicateNodeID, "duplicate node id %q", n.ID)
 		}
-		if _, outputs := PortsFor(n.Kind); outputs == nil {
+		if !knownKind(n.Kind) {
 			return validationError(CodeInvalidKind, "node %q has unknown kind %q", n.ID, n.Kind)
 		}
 		if n.OnError != OnErrorStop && n.OnError != OnErrorContinueRegular && n.OnError != OnErrorContinueError {
@@ -253,6 +285,35 @@ func (t *Template) Validate() error {
 			}
 		}
 		nodes[n.ID] = *n
+	}
+	// The explicit endpoints of the flow. The rules about them come before
+	// the edge rules: an edge into a start node is a mistake about the
+	// start node, and the endpoint's own message says so.
+	starts := t.startNodeIDs()
+	ends := t.endNodeIDs()
+	if len(starts) > 1 {
+		return validationError(CodeDuplicateStartNode, "workflow graph has %d start nodes; a graph has at most one (%q)", len(starts), starts[1])
+	}
+	if len(ends) > 1 {
+		return validationError(CodeDuplicateEndNode, "workflow graph has %d end nodes; a graph has at most one (%q)", len(ends), ends[1])
+	}
+	if len(starts) == 1 {
+		start := starts[0]
+		if incoming := t.countKnownEdges(nodes, func(e Edge) bool { return e.To.Node == start }); incoming > 0 {
+			return validationError(CodeStartNodeEdges, "start node %q must not have an incoming edge", start)
+		}
+		if outgoing := t.countKnownEdges(nodes, func(e Edge) bool { return e.From.Node == start }); outgoing != 1 {
+			return validationError(CodeStartNodeEdges, "start node %q must have exactly one outgoing edge (has %d)", start, outgoing)
+		}
+	}
+	if len(ends) == 1 {
+		end := ends[0]
+		if outgoing := t.countKnownEdges(nodes, func(e Edge) bool { return e.From.Node == end }); outgoing > 0 {
+			return validationError(CodeEndNodeEdges, "end node %q must not have an outgoing edge", end)
+		}
+		if incoming := t.countKnownEdges(nodes, func(e Edge) bool { return e.To.Node == end }); incoming == 0 {
+			return validationError(CodeEndNodeEdges, "end node %q must have at least one incoming edge", end)
+		}
 	}
 	edgeIDs := make(map[string]struct{}, len(t.Edges))
 	pairs := make(map[string]struct{}, len(t.Edges))
@@ -292,6 +353,19 @@ func (t *Template) Validate() error {
 	if len(entries) == 0 {
 		return validationError(CodeNoEntryNode, "workflow graph has no entry node")
 	}
+	if len(starts) == 1 {
+		// The start node is the only entry of the flow: a node without an
+		// incoming edge is work the flow never reaches. The offender is named
+		// in the graph's own order, so the panel always points at the same
+		// node.
+		for i := range t.Nodes {
+			id := t.Nodes[i].ID
+			if id == starts[0] || !contains(entries, id) {
+				continue
+			}
+			return validationError(CodeUnexpectedEntryNode, "node %q has no incoming edge; the start node is the only entry of the flow", id)
+		}
+	}
 	visited := make(map[string]bool, len(nodes))
 	stack := append([]string(nil), entries...)
 	for len(stack) > 0 {
@@ -302,6 +376,17 @@ func (t *Template) Validate() error {
 		}
 		visited[id] = true
 		stack = append(stack, t.Successors(id)...)
+	}
+	if len(ends) == 1 {
+		// The end of the flow has to be reachable, or the flow finishes
+		// somewhere the flow never goes.
+		end := ends[0]
+		if !visited[end] {
+			if len(starts) == 1 {
+				return validationError(CodeUnreachableEndNode, "end node %q is not reachable from the start node %q", end, starts[0])
+			}
+			return validationError(CodeUnreachableEndNode, "end node %q is not reachable from any entry node", end)
+		}
 	}
 	// The nodes are walked in the graph's own order, not over the map: the
 	// first unreachable node must be the same one every time, so the
@@ -439,6 +524,25 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// countKnownEdges counts the edges between nodes the graph has that match the
+// predicate. An edge that names a node the graph does not have is left to the
+// edge rules: it is not one of this graph's edges yet.
+func (t *Template) countKnownEdges(nodes map[string]Node, match func(Edge) bool) int {
+	count := 0
+	for _, e := range t.Edges {
+		if _, ok := nodes[e.From.Node]; !ok {
+			continue
+		}
+		if _, ok := nodes[e.To.Node]; !ok {
+			continue
+		}
+		if match(e) {
+			count++
+		}
+	}
+	return count
 }
 
 func sortedKeys[V any](values map[string]V) []string {

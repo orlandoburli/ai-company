@@ -316,6 +316,12 @@ func (e *Engine) tickRun(ctx context.Context, sc tenancy.Scope, runID string) er
 		return err
 	}
 	state := RunState(plan.RunState)
+	// The explicit end node is the flow's last point: when the flow reaches
+	// it, the run is complete — the same verdict the run gets when its last
+	// step is terminal. A run that failed stays failed.
+	if state != RunFailed && endReached(tpl, steps) {
+		state = RunCompleted
+	}
 	updated, err := e.store.SetRunState(ctx, sc, runID, state, string(plan.RunFailureKind), plan.RunError)
 	if err != nil {
 		return err
@@ -387,6 +393,21 @@ func latestStep(steps []StepRun, nodeID, path string) (StepRun, bool) {
 		}
 	}
 	return found, found.ID != ""
+}
+
+// endReached reports whether the flow reached its explicit end node.
+//
+// The end node is the flow's last point: its execution is the last work the
+// flow does, and reaching it finishes the run. A graph without an end node
+// never reaches one — such a run completes the way it always did, when
+// every one of its nodes is terminal.
+func endReached(t *Template, steps []StepRun) bool {
+	endID, ok := t.EndNode()
+	if !ok {
+		return false
+	}
+	step, found := latestStep(steps, endID, "")
+	return found && step.State == StepSucceeded
 }
 
 func decodeConfig(node Node) map[string]json.RawMessage {

@@ -41,6 +41,49 @@ func (t *Template) EntryNodes() []string {
 	return entries
 }
 
+// StartNode returns the id of the graph's explicit start node, if it has one.
+//
+// A graph without a start node starts where it always did: at its entry
+// nodes, the ones without an incoming edge.
+func (t *Template) StartNode() (string, bool) {
+	ids := t.startNodeIDs()
+	if len(ids) == 0 {
+		return "", false
+	}
+	return ids[0], true
+}
+
+// EndNode returns the id of the graph's explicit end node, if it has one.
+//
+// A graph without an end node finishes where it always did: when its last
+// step is terminal.
+func (t *Template) EndNode() (string, bool) {
+	ids := t.endNodeIDs()
+	if len(ids) == 0 {
+		return "", false
+	}
+	return ids[0], true
+}
+
+// startNodeIDs returns the ids of every start node, in the graph's own order.
+func (t *Template) startNodeIDs() []string { return t.nodeIDsByKind(NodeStart) }
+
+// endNodeIDs returns the ids of every end node, in the graph's own order.
+func (t *Template) endNodeIDs() []string { return t.nodeIDsByKind(NodeEnd) }
+
+func (t *Template) nodeIDsByKind(kind NodeKind) []string {
+	if t == nil {
+		return nil
+	}
+	var ids []string
+	for _, node := range t.Nodes {
+		if node.Kind == kind {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids
+}
+
 // CycleReturnEdges returns incoming edges that close a body path back to the
 // loop node's in port, sorted by edge id.
 func (t *Template) CycleReturnEdges(loopID string) []Edge {

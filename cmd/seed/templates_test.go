@@ -91,8 +91,8 @@ func TestBugfixTemplateShape(t *testing.T) {
 	}
 
 	entries := tpl.Graph.EntryNodes()
-	if len(entries) != 1 || entries[0] != "n_pm" {
-		t.Fatalf("entry nodes = %v, want [n_pm]", entries)
+	if len(entries) != 1 || entries[0] != "n_start" {
+		t.Fatalf("entry nodes = %v, want [n_start]", entries)
 	}
 
 	// The two branches under the implementation must be siblings, so the merge
@@ -107,8 +107,8 @@ func TestBugfixTemplateShape(t *testing.T) {
 	if incoming := tpl.Graph.IncomingEdges("n_join"); len(incoming) != 2 {
 		t.Fatalf("merge incoming edges = %d, want 2", len(incoming))
 	}
-	if descendants := tpl.Graph.Descendants("n_code"); len(descendants) != 5 {
-		// n_review, n_qa, n_join, n_gate2, n_close
+	if descendants := tpl.Graph.Descendants("n_code"); len(descendants) != 6 {
+		// n_review, n_qa, n_join, n_gate2, n_close, n_end
 		t.Fatalf("descendants of n_code = %v", descendants)
 	}
 }

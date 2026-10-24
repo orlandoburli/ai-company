@@ -80,6 +80,17 @@ func problemLocation(t *Template, validation *ValidationError) (nodeID, edgeID s
 		// An empty node id cannot be represented as an ID in the response.
 	case CodeNoEntryNode, CodeEmptyGraph, CodeSchemaVersion:
 		return "", ""
+	case CodeUnreachableEndNode:
+		// The message names the end node first and the start node second:
+		// the problem is about the end node.
+		if id := quotedAfter(message, "end node "); id != "" {
+			nodeID = id
+		}
+	case CodeUnexpectedEntryNode:
+		// The message names the node that was left without an incoming edge.
+		if id := quotedAfter(message, "node "); id != "" {
+			nodeID = id
+		}
 	default:
 		for _, node := range t.Nodes {
 			if node.ID != "" && strings.Contains(message, fmt.Sprintf("%q", node.ID)) {
@@ -186,6 +197,20 @@ func repairValidationError(t *Template, validation *ValidationError, problem Pro
 		}
 		t.Edges = append(t.Edges, Edge{ID: uniqueEdgeID(t, "validation-link"), From: PortRef{Node: from.ID, Port: outputs[0]}, To: PortRef{Node: problem.NodeID, Port: "in"}})
 		return true
+	case CodeDuplicateStartNode:
+		// A graph has one start: the second one is not the start.
+		return removeNode(t, problem.NodeID)
+	case CodeDuplicateEndNode:
+		// A graph has one end: the second one is not the end.
+		return removeNode(t, problem.NodeID)
+	case CodeStartNodeEdges:
+		return repairStartEdges(t, problem.NodeID)
+	case CodeEndNodeEdges:
+		return repairEndEdges(t, problem.NodeID)
+	case CodeUnexpectedEntryNode:
+		return repairUnexpectedEntry(t, problem.NodeID)
+	case CodeUnreachableEndNode:
+		return repairUnreachableEnd(t, problem.NodeID)
 	case CodeCycleWithoutBudget:
 		cycles := t.FindCycles()
 		for _, cycle := range cycles {
@@ -327,6 +352,207 @@ func nodeIndex(t *Template, id string) int {
 		}
 	}
 	return -1
+}
+
+// removeNode removes a node and every edge that touches it.
+func removeNode(t *Template, id string) bool {
+	index := nodeIndex(t, id)
+	if index < 0 {
+		return false
+	}
+	t.Nodes = append(t.Nodes[:index], t.Nodes[index+1:]...)
+	kept := t.Edges[:0]
+	for _, e := range t.Edges {
+		if e.From.Node == id || e.To.Node == id {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	t.Edges = kept
+	return true
+}
+
+// repairStartEdges makes the start node well-formed: no incoming edge and
+// exactly one outgoing edge.
+func repairStartEdges(t *Template, id string) bool {
+	// The start takes no input.
+	removed := false
+	kept := t.Edges[:0]
+	for _, e := range t.Edges {
+		if e.To.Node == id {
+			removed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	t.Edges = kept
+	if removed {
+		return true
+	}
+	outgoing := 0
+	for _, e := range t.Edges {
+		if e.From.Node == id {
+			outgoing++
+		}
+	}
+	if outgoing > 1 {
+		// One successor, no more: the first edge stays.
+		seen := false
+		kept = t.Edges[:0]
+		for _, e := range t.Edges {
+			if e.From.Node == id {
+				if seen {
+					continue
+				}
+				seen = true
+			}
+			kept = append(kept, e)
+		}
+		t.Edges = kept
+		return true
+	}
+	if outgoing == 1 {
+		return false
+	}
+	// No successor: the start hands the flow to the first node that takes
+	// an input.
+	for i := range t.Nodes {
+		target := t.Nodes[i]
+		if target.ID == id {
+			continue
+		}
+		inputs, _ := PortsFor(target.Kind)
+		if !contains(inputs, "in") || hasEdge(t, id, "main", target.ID, "in") {
+			continue
+		}
+		appendEdge(t, id, "main", target.ID, "in")
+		return true
+	}
+	return false
+}
+
+// repairEndEdges makes the end node well-formed: no outgoing edge and at
+// least one incoming edge.
+func repairEndEdges(t *Template, id string) bool {
+	// The end has no output.
+	removed := false
+	kept := t.Edges[:0]
+	for _, e := range t.Edges {
+		if e.From.Node == id {
+			removed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	t.Edges = kept
+	if removed {
+		return true
+	}
+	if len(t.IncomingEdges(id)) > 0 {
+		return false
+	}
+	// The end needs an input. It is a sink, so an edge into it cannot close
+	// a cycle.
+	for i := len(t.Nodes) - 1; i >= 0; i-- {
+		source := t.Nodes[i]
+		if source.ID == id {
+			continue
+		}
+		outputs, _ := PortsFor(source.Kind)
+		if !contains(outputs, "main") || hasEdge(t, source.ID, "main", id, "in") {
+			continue
+		}
+		appendEdge(t, source.ID, "main", id, "in")
+		return true
+	}
+	return false
+}
+
+// repairUnexpectedEntry gives the node the flow left behind an incoming edge,
+// so the start node stays the only entry.
+func repairUnexpectedEntry(t *Template, id string) bool {
+	if nodeIndex(t, id) < 0 {
+		return false
+	}
+	reachable := t.reachableNodes()
+	descendants := map[string]bool{}
+	for _, descendant := range t.Descendants(id) {
+		descendants[descendant] = true
+	}
+	// The start node is the natural source: it has one successor to give.
+	start, hasStart := t.StartNode()
+	if hasStart && len(t.OutgoingEdges(start)) == 0 && !descendants[start] {
+		appendEdge(t, start, "main", id, "in")
+		return true
+	}
+	for i := range t.Nodes {
+		source := t.Nodes[i]
+		if source.ID == id || descendants[source.ID] || !reachable[source.ID] {
+			continue
+		}
+		outputs, _ := PortsFor(source.Kind)
+		if !contains(outputs, "main") || hasEdge(t, source.ID, "main", id, "in") {
+			continue
+		}
+		appendEdge(t, source.ID, "main", id, "in")
+		return true
+	}
+	return false
+}
+
+// repairUnreachableEnd connects the end node to the flow it never reached.
+func repairUnreachableEnd(t *Template, id string) bool {
+	if nodeIndex(t, id) < 0 {
+		return false
+	}
+	reachable := t.reachableNodes()
+	// The start node has exactly one successor: it is not the source here.
+	start, _ := t.StartNode()
+	for i := range t.Nodes {
+		source := t.Nodes[i]
+		if source.ID == id || source.ID == start || !reachable[source.ID] {
+			continue
+		}
+		outputs, _ := PortsFor(source.Kind)
+		if !contains(outputs, "main") || hasEdge(t, source.ID, "main", id, "in") {
+			continue
+		}
+		appendEdge(t, source.ID, "main", id, "in")
+		return true
+	}
+	return false
+}
+
+// reachableNodes returns the nodes the flow reaches from its entry nodes.
+func (t *Template) reachableNodes() map[string]bool {
+	visited := map[string]bool{}
+	stack := append([]string(nil), t.EntryNodes()...)
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if visited[id] {
+			continue
+		}
+		visited[id] = true
+		stack = append(stack, t.Successors(id)...)
+	}
+	return visited
+}
+
+// hasEdge reports whether the graph already connects the two ports.
+func hasEdge(t *Template, from, fromPort, to, toPort string) bool {
+	for _, e := range t.Edges {
+		if e.From.Node == from && e.From.Port == fromPort && e.To.Node == to && e.To.Port == toPort {
+			return true
+		}
+	}
+	return false
+}
+
+// appendEdge adds an edge between the two ports with a fresh id.
+func appendEdge(t *Template, from, fromPort, to, toPort string) {
+	t.Edges = append(t.Edges, Edge{ID: uniqueEdgeID(t, "validation-link"),
+		From: PortRef{Node: from, Port: fromPort}, To: PortRef{Node: to, Port: toPort}})
 }
 
 func removeEdge(t *Template, id string) bool {
