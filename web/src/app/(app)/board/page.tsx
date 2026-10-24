@@ -21,13 +21,13 @@ import { NewItemDialog } from "@/components/new-item-dialog";
 import { IconPause, IconPin, IconPlus } from "@/components/icons";
 
 const STATUS_COLORS: Record<Status, string> = {
-  backlog: "#8590a4",
-  todo: "#58a6ff",
-  in_progress: "#f0b429",
-  waiting_human: "#a78bfa",
-  in_review: "#56d4dd",
-  done: "#3ecf6e",
-  cancelled: "#f4756b",
+  backlog: "#7a8ea7",
+  todo: "#236dc9",
+  in_progress: "#f9bf59",
+  waiting_human: "#f7577e",
+  in_review: "#5bc3e1",
+  done: "#02bc9c",
+  cancelled: "#f7577e",
 };
 
 export default function BoardPage() {
@@ -87,6 +87,7 @@ function BoardView() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Status | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [newItemStatus, setNewItemStatus] = useState<Status>("backlog");
 
   const projectsList = projects.data ?? [];
   const productsList = products.data ?? [];
@@ -224,8 +225,8 @@ function BoardView() {
           {canWrite && projectsList.length > 0 ? (
             <button
               type="button"
-              className="btn btn--sm"
-              onClick={() => setShowNew(true)}
+              className="btn btn--primary btn--sm"
+              onClick={() => { setNewItemStatus("backlog"); setShowNew(true); }}
             >
               <IconPlus /> New item
             </button>
@@ -390,7 +391,7 @@ function BoardView() {
           }}
           onOverride={(id, action) => void queueOverride(id, action)}
           onToggleSelect={toggleSelect}
-          onCreateClick={() => setShowNew(true)}
+           onCreateClick={(status) => { setNewItemStatus(status); setShowNew(true); }}
           itemCount={itemCount}
         />
       )}
@@ -400,6 +401,7 @@ function BoardView() {
           projects={projectsList}
           products={productsList}
           defaultProjectId={projectFilter || undefined}
+          defaultStatus={newItemStatus}
           onClose={() => setShowNew(false)}
           onCreated={(item) => {
             setShowNew(false);
@@ -437,14 +439,14 @@ function BoardBody(props: {
   onKeyMove: (id: string, dir: -1 | 1) => void;
   onOverride: (id: string, action: "pin" | "unpin" | "pause" | "unpause") => void;
   onToggleSelect: (id: string) => void;
-  onCreateClick: () => void;
+  onCreateClick: (status: Status) => void;
   itemCount: number;
 }) {
   if (props.itemCount === 0) {
     return (
       <EmptyBoard
         canWrite={props.canWrite}
-        onCreateClick={props.onCreateClick}
+        onCreateClick={() => props.onCreateClick("backlog")}
       />
     );
   }
@@ -472,10 +474,20 @@ function BoardBody(props: {
         >
           <div className="board-col__head">
             <GlyphDot color={STATUS_COLORS[col.status]} />
-            <strong style={{ fontSize: 12.5 }}>
+            <strong>
               {STATUS_LABELS[col.status]}
             </strong>
             <span className="board-col__count">{col.items.length}</span>
+            {props.canWrite ? (
+              <button
+                type="button"
+                className="board-col__add"
+                aria-label={`Add item to ${STATUS_LABELS[col.status]}`}
+                onClick={() => props.onCreateClick(col.status)}
+              >
+                <IconPlus width={14} height={14} />
+              </button>
+            ) : null}
           </div>
           <div className="board-col__list">
             {col.items.length === 0 && props.canWrite && props.dragId ? (
@@ -569,12 +581,44 @@ function BoardCard(props: {
         }
       }}
     >
+      <div className="board-card__priority">
+        <PriorityChip priority={it.priority} />
+        <ItemIndicators item={it} />
+        {props.canWrite ? (
+          <span className="card-actions">
+            <button
+              type="button"
+              className="minibtn"
+              aria-label={it.pinned ? "Unpin" : "Pin to rank 1"}
+              aria-pressed={Boolean(it.pinned)}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onOverride(it.id, it.pinned ? "unpin" : "pin"); }}
+            ><IconPin width={12} height={12} /></button>
+            <button
+              type="button"
+              className="minibtn"
+              aria-label={it.paused ? "Unpause" : "Pause"}
+              aria-pressed={Boolean(it.paused)}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onOverride(it.id, it.paused ? "unpause" : "pause"); }}
+            ><IconPause width={12} height={12} /></button>
+            <button
+              type="button"
+              className={props.selected ? "selbtn on" : "selbtn"}
+              aria-label={props.selected ? "Deselect" : "Select"}
+              aria-pressed={props.selected}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onToggleSelect(it.id); }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+                <rect x="2" y="2" width="12" height="12" rx="3" fill="none" stroke={props.selected ? "var(--accent)" : "currentColor"} strokeWidth="1.6" />
+                {props.selected ? <path d="m5 8.5 2 2 4-5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /> : null}
+              </svg>
+            </button>
+          </span>
+        ) : null}
+      </div>
       <span className="board-card__title">{it.title}</span>
       <div className="board-card__row">
         <span className="board-card__num">#{it.number}</span>
         <span className="chip chip--kind">{it.kind}</span>
-        <PriorityChip priority={it.priority} />
-        <ItemIndicators item={it} />
         {it.assignee_user_id && !props.canWrite ? (
           <span
             className="attr-assignee"
@@ -593,70 +637,6 @@ function BoardCard(props: {
             {it.assignee_user_id
               ? firstName(props.memberName.get(it.assignee_user_id)) || "@user"
               : "Unassigned"}
-          </span>
-        ) : null}
-        {props.canWrite ? (
-          <span className="card-actions">
-            <button
-              type="button"
-              className="minibtn"
-              aria-label={it.pinned ? "Unpin" : "Pin to rank 1"}
-              aria-pressed={Boolean(it.pinned)}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                props.onOverride(it.id, it.pinned ? "unpin" : "pin");
-              }}
-            >
-              <IconPin width={12} height={12} />
-            </button>
-            <button
-              type="button"
-              className="minibtn"
-              aria-label={it.paused ? "Unpause" : "Pause"}
-              aria-pressed={Boolean(it.paused)}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                props.onOverride(it.id, it.paused ? "unpause" : "pause");
-              }}
-            >
-              <IconPause width={12} height={12} />
-            </button>
-            <button
-              type="button"
-              className={props.selected ? "selbtn on" : "selbtn"}
-              aria-label={props.selected ? "Deselect" : "Select"}
-              aria-pressed={props.selected}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                props.onToggleSelect(it.id);
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
-                <rect
-                  x="2"
-                  y="2"
-                  width="12"
-                  height="12"
-                  rx="3"
-                  fill="none"
-                  stroke={props.selected ? "var(--accent)" : "currentColor"}
-                  strokeWidth="1.6"
-                />
-                {props.selected ? (
-                  <path
-                    d="m5 8.5 2 2 4-5"
-                    fill="none"
-                    stroke="var(--accent)"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ) : null}
-              </svg>
-            </button>
           </span>
         ) : null}
       </div>

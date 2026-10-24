@@ -8,6 +8,7 @@ export function NewItemDialog(props: {
   projects: Project[];
   products: Product[];
   defaultProjectId?: string;
+  defaultStatus?: Status;
   onClose: () => void;
   onCreated: (item: { id: string; project_id: string }) => void;
 }) {
@@ -16,7 +17,7 @@ export function NewItemDialog(props: {
   );
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState("task");
-  const [status, setStatus] = useState<Status | "">("backlog");
+  const [status, setStatus] = useState<Status | "">(props.defaultStatus ?? "backlog");
   const [priority, setPriority] = useState("");
   const [labels, setLabels] = useState("");
   const [busy, setBusy] = useState(false);

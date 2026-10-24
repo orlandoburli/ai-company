@@ -26,6 +26,17 @@ const NAV = [
   { href: "/settings", label: "Settings" },
 ];
 
+const NAV_GLYPHS: Record<string, string> = {
+  "/board": "▦",
+  "/backlog": "▤",
+  "/queue": "⇧",
+  "/runs": "◷",
+  "/workflows": "⌘",
+  "/checkpoints": "✓",
+  "/usage": "▥",
+  "/settings": "⚙",
+};
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const params = useSearchParams();
   const pathname = usePathname();
@@ -44,7 +55,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           aria-hidden
         />
       ) : null}
-      <Sidebar activeProject={activeProject} onNavigate={close} />
+      <Sidebar activeProject={activeProject} pathname={pathname} onNavigate={close} />
       <div className="main">
         <header className="topbar">
           <button
@@ -60,17 +71,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="brand__name" style={{ padding: 0 }}>
             AI Company
           </span>
-          <nav className="nav" aria-label="Primary">
-            {NAV.map((n) => (
-              <Link
-                key={n.href}
-                href={n.href}
-                aria-current={pathname === n.href || pathname.startsWith(`${n.href}/`) ? "page" : undefined}
-              >
-                {n.label}{n.href === "/checkpoints" ? <CheckpointBadge /> : null}
-              </Link>
-            ))}
-          </nav>
           <span style={{ marginLeft: "auto" }} />
           <TenantSwitcher />
           <NotificationCentre />
@@ -123,9 +123,11 @@ function NotificationCentre() {
 
 function Sidebar({
   activeProject,
+  pathname,
   onNavigate,
 }: {
   activeProject: string;
+  pathname: string;
   onNavigate: () => void;
 }) {
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -165,8 +167,25 @@ function Sidebar({
         </span>
         <span className="brand__name">AI Company</span>
       </div>
+      <nav className="sidebar-nav" aria-label="Primary">
+        <div className="tree__heading">Main</div>
+        {NAV.map((n) => (
+          <Link
+            key={n.href}
+            href={n.href}
+            className="sidebar-nav__link"
+            aria-current={pathname === n.href || pathname.startsWith(`${n.href}/`) ? "page" : undefined}
+            onClick={onNavigate}
+          >
+            <span className="sidebar-nav__glyph" aria-hidden>{NAV_GLYPHS[n.href]}</span>
+            <span>{n.label}</span>
+            {n.href === "/checkpoints" ? <CheckpointBadge /> : null}
+          </Link>
+        ))}
+      </nav>
       <div className="tree">
-        <div className="tree__heading">Products</div>
+        <div className="tree__heading">Apps</div>
+        <div className="tree__subheading">Products</div>
         {error ? (
           <div className="error-note" style={{ margin: 8 }}>
             {error}
