@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type Agent, type Runner, type WorkflowEdge, type WorkflowGraph, type WorkflowNode, type WorkflowProblem, type WorkflowTemplate, type WorkflowTemplateInput, type WorkflowTemplateSummary } from "@/lib/api";
+import { useConfirm } from "@/lib/confirm";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import type { Item, Product, Project } from "@/lib/types";
 import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
 
 /** A kind's palette entry: how it is named, what it does, and its ports. */
@@ -37,6 +39,72 @@ const PALETTE_GROUPS: { key: "ends" | "work"; label: string }[] = [
   { key: "ends", label: "Flow ends" },
   { key: "work", label: "Work" },
 ];
+
+/** One integration type: the name the flow carries, the glyph that marks it,
+ *  and the form the inspector shows for it. Each type is its own entry in the
+ *  palette and its own form — the node it creates is an integration node whose
+ *  type is the contract the server reads. */
+type IntegrationMeta = {
+  title: string;
+  caption: string;
+  glyph: string;
+  form: "open_pr" | "wait_ci" | "comment" | "fetch_issue";
+};
+
+const INTEGRATION_META: Record<string, IntegrationMeta> = {
+  "github.open_pr": { title: "Open pull request", caption: "raises a pull request", glyph: "⇧", form: "open_pr" },
+  "github.wait_ci": { title: "Wait for CI", caption: "waits for the checks to finish", glyph: "◷", form: "wait_ci" },
+  "github.comment": { title: "Comment on a pull request", caption: "leaves a review comment", glyph: "✎", form: "comment" },
+  "github.fetch_issue": { title: "Fetch an issue", caption: "reads an issue from GitHub", glyph: "☰", form: "fetch_issue" },
+};
+
+/** The integrations the engine knows that take no settings of their own. */
+const BUILTIN_INTEGRATIONS: Record<string, string> = {
+  "item.mark_done": "Close the item",
+};
+
+/** The friendly name of an integration node, whatever its type. */
+function integrationName(type: string | undefined): string {
+  if (!type) return "Integration";
+  return INTEGRATION_META[type]?.title ?? BUILTIN_INTEGRATIONS[type] ?? type;
+}
+
+/** A palette entry: what the flow is made of. */
+type PaletteEntry = {
+  key: string;
+  kind: string;
+  /** Set for the integration entries: the type of the node they add. */
+  type?: string;
+  title: string;
+  caption: string;
+  glyph: string;
+  group: "ends" | "work";
+};
+
+function paletteEntry(kind: string, type?: string): PaletteEntry {
+  if (kind === "integration" && type) {
+    const meta = INTEGRATION_META[type];
+    return { key: `integration:${type}`, kind, type, title: meta.title, caption: meta.caption, glyph: meta.glyph, group: "work" };
+  }
+  const meta = KIND_META[kind];
+  return { key: kind, kind, title: meta.title, caption: meta.caption, glyph: meta.glyph, group: meta.group };
+}
+
+/** The palette reads as the things a flow is made of: where it begins, where
+ *  it ends, and the steps in between. */
+const PALETTE_ENTRIES: PaletteEntry[] = [
+  paletteEntry("start"),
+  paletteEntry("end"),
+  paletteEntry("agent"),
+  paletteEntry("integration", "github.open_pr"),
+  paletteEntry("integration", "github.wait_ci"),
+  paletteEntry("integration", "github.comment"),
+  paletteEntry("integration", "github.fetch_issue"),
+  paletteEntry("checkpoint"),
+  paletteEntry("loop"),
+  paletteEntry("merge"),
+];
+
 const PORT_ROW = 24;
 const CARD_W = 252;
 const NODE_H = 118;
@@ -49,7 +117,6 @@ const GAP_Y = 48;
 const BASE_X = 3200;
 const BASE_Y = 2500;
 const OUTPUT_TYPES = ["string", "number", "integer", "boolean", "object", "array"] as const;
-const INTEGRATIONS = ["github.open_pr", "github.wait_ci", "github.comment"];
 const ERROR_POLICIES = ["stop_workflow", "continue_regular_output", "continue_error_output"];
 const WORKSPACES = ["scratch", "worktree", "dir"];
 
@@ -187,16 +254,62 @@ function makeId(): string {
   for (let i = 0; i < 16; i += 1) random += alphabet[Math.floor(Math.random() * 32)];
   return timePart + random;
 }
-function newNode(kind: string, position = { x: 160, y: 120 }): WorkflowNode {
+function newNode(kind: string, position = { x: 160, y: 120 }, type?: string): WorkflowNode {
   const meta = KIND_META[kind];
   const common = { id: makeId(), kind, name: meta?.defaultName ?? kind, type_version: 1, config: {}, position, on_error: "stop_workflow", always_output_data: false, workspace: "scratch" };
   if (kind === "start") return { ...common, type: "flow.start" };
   if (kind === "end") return { ...common, type: "flow.end" };
   if (kind === "agent") return { ...common, type: "agent.dev", config: { agent_id: "", prompt_tmpl: "", outputs: {} } };
-  if (kind === "integration") return { ...common, type: INTEGRATIONS[0], config: {} };
+  // An integration node carries the type of the action it performs: the
+  // palette entry decides it, and the inspector shows that type's own form.
+  if (kind === "integration") {
+    const integrationType = type && INTEGRATION_META[type] ? type : "github.open_pr";
+    return { ...common, name: INTEGRATION_META[integrationType].title.toLowerCase(), type: integrationType, config: {} };
+  }
   if (kind === "checkpoint") return { ...common, type: "checkpoint.approval", config: { policy: "retry_step", max_cycles: 2 } };
   if (kind === "loop") return { ...common, type: "loop.bounded", config: { max_iterations: 3, until: true } };
   return { ...common, type: "merge.all", config: { mode: "all" }, always_output_data: true };
+}
+/** The repository a remote points at, in the owner/name form the GitHub API
+ *  takes. It mirrors the server's own mapping, so the editor and the engine
+ *  read the same repository from the same remote. */
+function repositoryFromRemote(remote: string | undefined): string {
+  const value = (remote ?? "").trim();
+  if (!value) return "";
+  let path = "";
+  const at = value.lastIndexOf("@");
+  if (at >= 0) {
+    const colon = value.indexOf(":", at + 1);
+    if (colon >= 0) path = value.slice(colon + 1);
+  } else {
+    const match = /^[a-z][a-z0-9+.-]*:\/\/[^/]+(\/.*)$/i.exec(value);
+    if (match) path = match[1];
+  }
+  path = path.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/, "");
+  const parts = path.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return "";
+  return parts[0] + "/" + parts[1];
+}
+/** The repository a new integration node starts from: the product the
+ *  template's items belong to, when the editor knows which one that is. When
+ *  it cannot tell, the field stays empty and the server follows the item's
+ *  own product at run time. */
+function defaultRepository(items: Item[], projects: Project[], products: Product[], appliesTo: string): string {
+  const kinds = appliesTo.split(",").map((kind) => kind.trim()).filter(Boolean);
+  const eligible = kinds.length ? items.filter((item) => kinds.includes(item.kind)) : items;
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const found = new Set<string>();
+  for (const item of eligible) {
+    const project = projectById.get(item.project_id);
+    const product = project ? productById.get(project.product_id) : undefined;
+    const repo = repositoryFromRemote(product?.repo_url);
+    if (repo) found.add(repo);
+    if (found.size > 1) return "";
+  }
+  if (found.size === 1) return [...found][0];
+  if (!found.size && products.length === 1) return repositoryFromRemote(products[0].repo_url);
+  return "";
 }
 /** Start and end mark the flow's boundaries; every other kind does work. */
 function isTerminator(kind: string): boolean {
@@ -235,6 +348,7 @@ function errorText(error: unknown): string {
 export function WorkflowsPage() {
   const { me } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const router = useRouter();
   const templates = useAsync(() => api.listWorkflowTemplates(), []);
   const agents = useAsync(() => api.listAgents(), []);
@@ -259,7 +373,7 @@ export function WorkflowsPage() {
     } catch (error) { push("error", errorText(error)); }
   }
   async function action(template: WorkflowTemplateSummary, kind: "publish" | "version" | "delete") {
-    if (kind === "delete" && !window.confirm(`Delete draft “${template.name}”? This cannot be undone.`)) return;
+    if (kind === "delete" && !await confirm({ title: "Delete this draft?", message: <>Delete the draft template “{template.name}”? This cannot be undone.</>, confirmLabel: "Delete", destructive: true })) return;
     try {
       if (kind === "publish") { await api.publishWorkflowTemplate(template.id); push("info", "Template published and frozen."); }
       if (kind === "version") { const result = await api.createWorkflowVersion(template.id); router.push(`/workflows/${result.template.id}`); return; }
@@ -302,6 +416,7 @@ type PortDrag = { type: "node"; id: string; startX: number; startY: number; orig
 export function WorkflowEditor({ templateId }: { templateId: string }) {
   const { me, canWrite } = useSession();
   const { toasts, push } = useToasts();
+  const confirm = useConfirm();
   const router = useRouter();
   const manager = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const query = useAsync(() => api.getWorkflowTemplate(templateId), [templateId]);
@@ -309,6 +424,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const runnersQ = useAsync(() => api.listRunners(), []);
   const variablesQ = useAsync(() => api.getTenantVariables(), []);
   const itemsQ = useAsync(() => api.listItems({ limit: 200 }), []);
+  const productsQ = useAsync(() => api.listProducts(), []);
+  const projectsQ = useAsync(() => api.listProjects(), []);
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [graph, setGraph] = useState<WorkflowGraph>({ schema_version: 1, nodes: [], edges: [] });
   const [saved, setSaved] = useState<WorkflowTemplateInput | null>(null);
@@ -328,6 +445,7 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const published = Boolean(template && isPublished(template));
   const editable = Boolean(manager && !published);
   const agentMap = useMemo(() => new Map((agentsQ.data?.agents ?? []).map((agent) => [agent.id, agent])), [agentsQ.data]);
+  const repository = useMemo(() => defaultRepository(itemsQ.data?.items ?? [], projectsQ.data?.projects ?? [], productsQ.data?.products ?? [], meta.applies_to), [itemsQ.data, projectsQ.data, productsQ.data, meta.applies_to]);
   const renderedGraph = useMemo(() => applyLayout(graph, layoutGraph(graph)), [graph]);
 
   useEffect(() => {
@@ -345,15 +463,32 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   useEffect(() => {
     if (!dirty) return;
     const beforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    // Leaving with unsaved changes asks first, in the app's own dialog: the
+    // click is held, and the navigation happens only when the answer is yes.
     const guardLink = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       const link = target?.closest("a[href]") as HTMLAnchorElement | null;
-      if (link && link.origin === window.location.origin && link.pathname !== window.location.pathname && !window.confirm("You have unsaved workflow changes. Leave without saving?")) event.preventDefault();
+      if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
+      if (link.origin !== window.location.origin || link.pathname === window.location.pathname) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void confirm({
+        title: "Leave without saving?",
+        message: <>This workflow has unsaved changes. Leaving now discards them.</>,
+        confirmLabel: "Leave",
+        destructive: true,
+      }).then((leave) => {
+        if (!leave) return;
+        const href = link.getAttribute("href") ?? "";
+        if (href.startsWith("/")) router.push(href);
+        else window.location.assign(link.href);
+      });
     };
     window.addEventListener("beforeunload", beforeUnload);
     document.addEventListener("click", guardLink, true);
     return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", guardLink, true); };
-  }, [dirty]);
+  }, [dirty, confirm, router]);
 
   useEffect(() => {
     if (!template || !graph) return;
@@ -368,15 +503,20 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     setGraph((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === id ? update(node) : node) }));
   }, []);
   const updateConfig = useCallback((id: string, patch: Record<string, unknown>) => updateNode(id, (node) => ({ ...node, config: { ...asConfig(node.config), ...patch } })), [updateNode]);
-  const addNode = useCallback((kind: string, position: { x: number; y: number }) => {
+  const addNode = useCallback((kind: string, position: { x: number; y: number }, type?: string) => {
     if (!editable) return;
-    const node = newNode(kind, position);
+    const node = newNode(kind, position, type);
     if (kind === "agent") {
       const first = agentsQ.data?.agents.find((agent) => agent.enabled);
       if (first) { node.config = { ...asConfig(node.config), agent_id: first.id }; node.type = `agent.${first.role || "dev"}`; }
     }
+    if (kind === "integration" && repository) {
+      // The repository the product of the template's items points at, when the
+      // editor knows it. The other fields start empty.
+      node.config = { ...asConfig(node.config), repo: repository };
+    }
     setGraph((current) => ({ ...current, nodes: [...current.nodes, node] })); setSelection({ type: "node", id: node.id });
-  }, [agentsQ.data, editable]);
+  }, [agentsQ.data, editable, repository]);
   const deleteSelection = useCallback(() => {
     if (!editable || !selection) return;
     if (selection.type === "node") setGraph((current) => ({ ...current, nodes: current.nodes.filter((node) => node.id !== selection.id), edges: current.edges.filter((edge) => edge.from.node !== selection.id && edge.to.node !== selection.id) }));
@@ -417,7 +557,8 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); setBusy(false); }
   }
   async function deleteDraft() {
-    if (!template || !manager || published || busy || !window.confirm(`Delete draft “${template.name}”? This cannot be undone.`)) return;
+    if (!template || !manager || published || busy) return;
+    if (!await confirm({ title: "Delete this draft?", message: <>Delete the draft template “{template.name}”? This cannot be undone.</>, confirmLabel: "Delete", destructive: true })) return;
     setBusy(true);
     try { await api.deleteWorkflowTemplate(template.id); router.push("/workflows"); }
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); setBusy(false); }
@@ -471,18 +612,18 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     <div className="workflow-workbench">
       <aside className="workflow-palette">
         <div className="workflow-panel-title"><span>01</span><strong>Node palette</strong></div>
-        <p>Choose a step to add it to the canvas.</p>
-        {PALETTE_GROUPS.map((group) => <div className="workflow-palette-group" key={group.key}>
-          <span className="workflow-palette-group-label">{group.label}</span>
-          {Object.entries(KIND_META).filter(([, entry]) => entry.group === group.key).map(([kind, entry]) => <button key={kind} type="button" className="workflow-palette-item" disabled={!editable} onClick={() => addNode(kind, { x: 80 + graph.nodes.length * 24, y: 100 + graph.nodes.length * 22 })}><span className={`workflow-kind-icon workflow-kind-icon--${kind}`}>{entry.glyph}</span><span><strong>{entry.title}</strong><small>{entry.caption}</small></span><b>＋</b></button>)}
-        </div>)}
-        <div className="workflow-palette-rule" />
-        <p className="workflow-palette-tip"><strong>Connect the graph</strong><br />Drag from an output port on the right to an input port on the left.</p>
+        <p>Choose a step to add it.</p>
+        <div className="workflow-palette-scroll">
+          {PALETTE_GROUPS.map((group) => <div className="workflow-palette-group" key={group.key}>
+            <span className="workflow-palette-group-label">{group.label}</span>
+            {PALETTE_ENTRIES.filter((entry) => entry.group === group.key).map((entry) => <button key={entry.key} type="button" className="workflow-palette-item" disabled={!editable} onClick={() => addNode(entry.kind, { x: 80 + graph.nodes.length * 24, y: 100 + graph.nodes.length * 22 }, entry.type)}><span className={`workflow-kind-icon workflow-kind-icon--${entry.kind}`}>{entry.glyph}</span><span><strong>{entry.title}</strong><small>{entry.caption}</small></span><b>＋</b></button>)}
+          </div>)}
+        </div>
         <div className="workflow-palette-footer"><span className="mono">{graph.nodes.length} nodes</span><span className="mono">{graph.edges.length} edges</span></div>
       </aside>
 
       <main className="workflow-canvas-column">
-      <div className="workflow-canvas-toolbar"><div><span className="workflow-live-dot" />Graph canvas<span className="tiny muted">· {editable ? "drag nodes · drag ports to connect" : "read-only view"}</span></div><div className="workflow-zoom-tools"><button className="btn btn--sm" aria-label="Zoom out" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: -0.1 }))}>−</button><button className="btn btn--sm" aria-label="Zoom in" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: 0.1 }))}>＋</button><button className="btn btn--sm" disabled={published} title={published ? "Published versions are frozen." : "Lay the graph out in reading order"} onClick={arrangeGraph}>Arrange</button><button className="btn btn--sm" onClick={() => window.dispatchEvent(new Event("workflow-fit"))}>Fit</button></div></div>
+      <div className="workflow-canvas-toolbar"><div><span className="workflow-live-dot" /><span className="workflow-canvas-label">Graph canvas<span className="tiny muted">· {editable ? "drag nodes · drag ports to connect" : "read-only view"}</span></span></div><div className="workflow-zoom-tools"><button className="btn btn--sm" aria-label="Zoom out" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: -0.1 }))}>−</button><button className="btn btn--sm" aria-label="Zoom in" onClick={() => window.dispatchEvent(new CustomEvent("workflow-zoom", { detail: 0.1 }))}>＋</button><button className="btn btn--sm" disabled={published} title={published ? "Published versions are frozen." : "Lay the graph out in reading order"} onClick={arrangeGraph}>Arrange</button><button className="btn btn--sm" onClick={() => window.dispatchEvent(new Event("workflow-fit"))}>Fit</button></div></div>
         <WorkflowCanvas graph={renderedGraph} fitVersion={fitVersion} agents={agentMap} editable={editable} selection={selection} problems={problems} onSelect={setSelection} onPosition={(id, position) => updateNode(id, (node) => ({ ...node, position }))} onAddEdge={(edge) => { setGraph((current) => ({ ...current, edges: [...current.edges, edge] })); setSelection({ type: "edge", id: edge.id }); }} onMessage={(text) => push("error", text)} onAddNode={addNode} />
         <section className="workflow-validation">
           <div className="workflow-validation-head"><div><span className="workflow-panel-index">02</span><strong>Validation</strong></div><span className={`workflow-validation-state workflow-validation-state--${validation}`}>{validation === "loading" ? "Checking…" : validation === "offline" ? "Unavailable" : problems.length ? `${problems.length} issue${problems.length === 1 ? "" : "s"}` : "Ready"}</span></div>
@@ -514,7 +655,7 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
 function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, problems, onSelect, onPosition, onAddEdge, onMessage, onAddNode }: {
   graph: WorkflowGraph; fitVersion: number; agents: Map<string, Agent>; editable: boolean; selection: Selection; problems: WorkflowProblem[];
   onSelect: (selection: Selection) => void; onPosition: (id: string, position: { x: number; y: number }) => void;
-  onAddEdge: (edge: WorkflowEdge) => void; onMessage: (message: string) => void; onAddNode: (kind: string, position: { x: number; y: number }) => void;
+  onAddEdge: (edge: WorkflowEdge) => void; onMessage: (message: string) => void; onAddNode: (kind: string, position: { x: number; y: number }, type?: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ x: -BASE_X + 380, y: -BASE_Y + 250, scale: 1 });
@@ -622,7 +763,7 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
   const live = drag?.type === "connect" ? drag.point : null;
   return <div className="workflow-canvas" data-workflow-canvas ref={viewportRef} onPointerDown={beginPan} onWheel={wheel} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
     const kind = event.dataTransfer.getData("workflow-kind"); if (!kind || !editable) return;
-    const p = pointInCanvas(event.clientX, event.clientY); onAddNode(kind, { x: Math.round(p.x - BASE_X), y: Math.round(p.y - BASE_Y) });
+    const p = pointInCanvas(event.clientX, event.clientY); onAddNode(kind, { x: Math.round(p.x - BASE_X), y: Math.round(p.y - BASE_Y) }, event.dataTransfer.getData("workflow-integration") || undefined);
   }}>
     <div className="workflow-canvas-grid" />
     <div className="workflow-world" style={{ width: 6400, height: 5000, transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
@@ -639,6 +780,9 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
       </svg>
       {graph.nodes.map((node) => {
         const pos = node.position ?? { x: 0, y: 0 }; const ports = KIND_META[node.kind] ?? KIND_META.agent; const agentId = String(asConfig(node.config).agent_id ?? ""); const agent = agents.get(agentId);
+        // An integration node wears the glyph of the action it performs, so the
+        // four kinds of GitHub work are told apart on the canvas as well.
+        const glyph = node.kind === "integration" ? (INTEGRATION_META[node.type ?? ""]?.glyph ?? ports.glyph) : ports.glyph;
         const state = `${selection?.type === "node" && selection.id === node.id ? " workflow-node--selected" : ""}${problemNodes.has(node.id) ? " workflow-node--invalid" : ""}`;
         // Start and end are drawn as pills, not cards, so the flow's two
         // boundaries are unmistakable beside the work steps.
@@ -648,9 +792,9 @@ function WorkflowCanvas({ graph, fitVersion, agents, editable, selection, proble
           {nodePorts(node, ports, true)}
         </article>;
         return <article key={node.id} data-node-id={node.id} className={`workflow-node${state}`} style={{ left: BASE_X + pos.x, top: BASE_Y + pos.y, width: CARD_W, minHeight: nodeGeometry(node).height }} onPointerDown={(event) => beginNode(event, node)} onClick={() => onSelect({ type: "node", id: node.id })}>
-          <header className="workflow-node-head"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{ports.glyph}</span><span className="workflow-node-kind">{node.kind}</span><span className="workflow-node-id mono">{node.id.slice(0, 6)}</span></header>
+          <header className="workflow-node-head"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{glyph}</span><span className="workflow-node-kind">{node.kind}</span><span className="workflow-node-id mono">{node.id.slice(0, 6)}</span></header>
           <strong className="workflow-node-name">{node.name || "Unnamed step"}</strong>
-          {node.kind === "agent" ? <span className="workflow-node-agent">{agent ? `✦ @${agent.name}` : agentId ? `Agent ${agentId.slice(0, 8)}` : "Choose an agent"}</span> : node.kind === "integration" ? <span className="workflow-node-agent">{node.type || "Integration"}</span> : <span className="workflow-node-agent">{node.type || ports.caption}</span>}
+          {node.kind === "agent" ? <span className="workflow-node-agent">{agent ? `✦ @${agent.name}` : agentId ? `Agent ${agentId.slice(0, 8)}` : "Choose an agent"}</span> : node.kind === "integration" ? <span className="workflow-node-agent">{integrationName(node.type)}</span> : <span className="workflow-node-agent">{node.type || ports.caption}</span>}
           {nodePorts(node, ports, false)}
         </article>;
       })}
@@ -681,17 +825,15 @@ function NodeInspector({ node, agents, runners, variables, runnersError, variabl
   const config = asConfig(node.config);
   const meta = KIND_META[node.kind];
   const terminator = isTerminator(node.kind);
+  const integration = node.kind === "integration" ? INTEGRATION_META[node.type ?? ""] : undefined;
   const selectedAgent = agents.find((agent) => agent.id === String(config.agent_id ?? ""));
   const runnerChoice = String(config.runner ?? "");
   const selectedVariable = runnerChoice.startsWith("$") ? runnerChoice.slice(1) : "";
-  const [integrationJson, setIntegrationJson] = useState(() => JSON.stringify(config, null, 2));
-  const [integrationJsonError, setIntegrationJsonError] = useState("");
-  useEffect(() => { setIntegrationJson(JSON.stringify(asConfig(node.config), null, 2)); setIntegrationJsonError(""); }, [node.id, node.config]);
   const select = (label: string, value: string, options: string[], change: (value: string) => void) => <Field label={label}><select className="input" value={value} disabled={!editable} onChange={(event) => change(event.target.value)}>{options.map((option) => <option key={option} value={option}>{option.replaceAll("_", " ")}</option>)}</select></Field>;
   const number = (label: string, value: unknown, change: (value: number | undefined) => void, min = 0) => <Field label={label}><input className="input" type="number" min={min} disabled={!editable} value={value == null ? "" : String(value)} onChange={(event) => change(event.target.value === "" ? undefined : Number(event.target.value))} /></Field>;
   const text = (label: string, value: unknown, change: (value: string) => void, placeholder = "") => <Field label={label}><input className="input" value={typeof value === "string" ? value : ""} disabled={!editable} placeholder={placeholder} onChange={(event) => change(event.target.value)} /></Field>;
   return <div className="workflow-form">
-    <div className="workflow-inspector-entity"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{meta?.glyph ?? "✦"}</span><div><small>{terminator ? (node.type || node.kind) : `${node.kind} node`}</small><strong>{node.name || "Unnamed step"}</strong></div></div>
+    <div className="workflow-inspector-entity"><span className={`workflow-kind-icon workflow-kind-icon--${node.kind}`}>{integration?.glyph ?? meta?.glyph ?? "✦"}</span><div><small>{terminator ? (node.type || node.kind) : node.kind === "integration" ? integrationName(node.type) : `${node.kind} node`}</small><strong>{node.name || "Unnamed step"}</strong></div></div>
     {terminator ? <p className="workflow-terminator-note">{meta?.note}</p> : null}
     {text("Display name", node.name, (name) => onUpdate((current) => ({ ...current, name })), terminator ? "e.g. intake" : "e.g. review changes")}
     {terminator ? <>
@@ -721,10 +863,9 @@ function NodeInspector({ node, agents, runners, variables, runnersError, variabl
       {select("Join mode", String(config.mode ?? "all"), ["all", "any", "n_of_m"], (mode) => { onConfig({ mode }); onUpdate((current) => ({ ...current, type: `merge.${mode}` })); })}
       {config.mode === "n_of_m" ? number("Required inputs (n)", config.n, (n) => onConfig({ n }), 1) : null}
     </> : null}
-    {node.kind === "integration" ? <>
-      <Field label="Integration type"><select className="input" value={INTEGRATIONS.includes(node.type ?? "") ? node.type : ""} disabled={!editable} onChange={(event) => onUpdate((current) => ({ ...current, type: event.target.value }))}><option value="">Choose an integration…</option>{INTEGRATIONS.map((type) => <option key={type}>{type}</option>)}</select></Field>
-      <Field label="Integration config (JSON)"><textarea className="input workflow-json" aria-invalid={Boolean(integrationJsonError)} disabled={!editable} value={integrationJson} onChange={(event) => { setIntegrationJson(event.target.value); try { const value: unknown = JSON.parse(event.target.value); if (!value || typeof value !== "object" || Array.isArray(value)) { setIntegrationJsonError("Config must be a JSON object."); return; } setIntegrationJsonError(""); onUpdate((current) => ({ ...current, config: value as Record<string, unknown> })); } catch { setIntegrationJsonError("Config is not valid JSON yet; the last valid config is still saved."); } }} /></Field>{integrationJsonError ? <span className="workflow-json-error">{integrationJsonError}</span> : <span className="tiny muted">Config is validated by the server for the selected integration type.</span>}
-    </> : null}
+    {node.kind === "integration" ? (integration
+      ? <IntegrationForm type={node.type ?? ""} config={config} editable={editable} onConfig={onConfig} />
+      : <p className="workflow-terminator-note">“{integrationName(node.type)}” is a built-in action. It has no settings of its own — the server runs it as it is.</p>) : null}
     <div className="workflow-form-divider" />
     {terminator ? null : <>
       {select("On error", String(node.on_error ?? "stop_workflow"), ERROR_POLICIES, (on_error) => onUpdate((current) => ({ ...current, on_error })))}
@@ -733,6 +874,122 @@ function NodeInspector({ node, agents, runners, variables, runnersError, variabl
     </>}
     {editable ? <button className="btn btn--danger btn--sm workflow-delete-node" onClick={onDelete}>Delete node</button> : null}
   </div>;
+}
+
+/* --- Integration forms ------------------------------------------------------
+   Each integration type has its own form with named fields: the fields the
+   server reads, and nothing else. The JSON box is gone — a flow is written in
+   words, not in braces. */
+
+type IntegrationFieldProps = {
+  config: Record<string, unknown>;
+  editable: boolean;
+  onConfig: (patch: Record<string, unknown>) => void;
+};
+
+/** The placeholders the engine fills in when the run starts. */
+const TEMPLATE_HINT = "Templated: {{item.title}}, {{item.description}} and {{item.id}} are filled in when the run starts.";
+
+function configText(config: Record<string, unknown>, key: string): string {
+  return typeof config[key] === "string" ? (config[key] as string) : "";
+}
+function configNumber(config: Record<string, unknown>, key: string): number | undefined {
+  const value = config[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function RepositoryField({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <Field label="Repository" hint="The repository as owner/name. Empty means the item's own product repository.">
+    <input className="input" value={configText(config, "repo")} disabled={!editable} placeholder="owner/name" onChange={(event) => onConfig({ repo: event.target.value })} />
+  </Field>;
+}
+
+function RemoteField({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <Field label="Remote" hint="The clone remote to push to. It usually stays empty: the product's repository is used.">
+    <input className="input" value={configText(config, "remote")} disabled={!editable} placeholder="https://github.com/owner/name.git" onChange={(event) => onConfig({ remote: event.target.value })} />
+  </Field>;
+}
+
+function AdvancedRemote({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <>
+    <div className="workflow-form-subhead"><strong>Advanced</strong><span>usually empty</span></div>
+    <RemoteField config={config} editable={editable} onConfig={onConfig} />
+  </>;
+}
+
+/** github.open_pr — the server needs head, base and title. */
+function OpenPullRequestForm({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <>
+    <RepositoryField config={config} editable={editable} onConfig={onConfig} />
+    <Field label="Base branch" hint="The branch the pull request merges into. The server requires it.">
+      <input className="input" value={configText(config, "base")} disabled={!editable} placeholder="main" onChange={(event) => onConfig({ base: event.target.value })} />
+    </Field>
+    <Field label="Head branch" hint="The branch the worktree pushed. Empty means the run's branch: aic/<item>-<step>-<attempt>.">
+      <input className="input" value={configText(config, "head")} disabled={!editable} placeholder="aic/…" onChange={(event) => onConfig({ head: event.target.value })} />
+    </Field>
+    <Field label="Title" hint={TEMPLATE_HINT}>
+      <input className="input" value={configText(config, "title")} disabled={!editable} placeholder="{{item.title}}" onChange={(event) => onConfig({ title: event.target.value })} />
+    </Field>
+    <Field label="Body" hint={TEMPLATE_HINT}>
+      <textarea className="input workflow-description" value={configText(config, "body")} disabled={!editable} placeholder="{{item.description}}" onChange={(event) => onConfig({ body: event.target.value })} />
+    </Field>
+    <label className="workflow-check"><input type="checkbox" checked={Boolean(config.draft)} disabled={!editable} onChange={(event) => onConfig({ draft: event.target.checked })} />Open as a draft</label>
+    <AdvancedRemote config={config} editable={editable} onConfig={onConfig} />
+  </>;
+}
+
+/** github.wait_ci — the server needs a pull request, and finds it by number
+ *  or by the branch the run worked on. */
+function WaitForCIForm({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <>
+    <RepositoryField config={config} editable={editable} onConfig={onConfig} />
+    <Field label="Pull request number" hint="The pull request to watch. Empty means the pull request the run opened.">
+      <input className="input" type="number" min={1} value={configNumber(config, "pr") ?? ""} disabled={!editable} placeholder="42" onChange={(event) => onConfig({ pr: event.target.value === "" ? undefined : Number(event.target.value) })} />
+    </Field>
+    <Field label="Branch" hint="Empty waits on the pull request of the run's own branch: aic/<item>-<step>-<attempt>.">
+      <input className="input" value={configText(config, "head")} disabled={!editable} placeholder="aic/…" onChange={(event) => onConfig({ head: event.target.value })} />
+    </Field>
+    <Field label="Timeout (seconds)" hint="How long the node waits before it gives up. Empty means 30 minutes.">
+      <input className="input" type="number" min={1} value={configNumber(config, "timeout_s") ?? ""} disabled={!editable} placeholder="1800" onChange={(event) => onConfig({ timeout_s: event.target.value === "" ? undefined : Number(event.target.value) })} />
+    </Field>
+    <Field label="Poll interval (seconds)" hint="How often the checks are read. Empty means every 5 seconds.">
+      <input className="input" type="number" min={1} value={configNumber(config, "poll_interval_s") ?? ""} disabled={!editable} placeholder="5" onChange={(event) => onConfig({ poll_interval_s: event.target.value === "" ? undefined : Number(event.target.value) })} />
+    </Field>
+    <AdvancedRemote config={config} editable={editable} onConfig={onConfig} />
+  </>;
+}
+
+/** github.comment — the server needs a pull request and a body. */
+function CommentForm({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <>
+    <RepositoryField config={config} editable={editable} onConfig={onConfig} />
+    <Field label="Pull request number" hint="The pull request to comment on. The server requires it.">
+      <input className="input" type="number" min={1} value={configNumber(config, "pr") ?? ""} disabled={!editable} placeholder="42" onChange={(event) => onConfig({ pr: event.target.value === "" ? undefined : Number(event.target.value) })} />
+    </Field>
+    <Field label="Body" hint={TEMPLATE_HINT}>
+      <textarea className="input workflow-description" value={configText(config, "body")} disabled={!editable} placeholder="{{item.description}}" onChange={(event) => onConfig({ body: event.target.value })} />
+    </Field>
+    <AdvancedRemote config={config} editable={editable} onConfig={onConfig} />
+  </>;
+}
+
+/** github.fetch_issue — the server needs a positive issue number. */
+function FetchIssueForm({ config, editable, onConfig }: IntegrationFieldProps) {
+  return <>
+    <RepositoryField config={config} editable={editable} onConfig={onConfig} />
+    <Field label="Issue number" hint="The issue to read. The server requires a positive number.">
+      <input className="input" type="number" min={1} value={configNumber(config, "issue") ?? ""} disabled={!editable} placeholder="42" onChange={(event) => onConfig({ issue: event.target.value === "" ? undefined : Number(event.target.value) })} />
+    </Field>
+    <AdvancedRemote config={config} editable={editable} onConfig={onConfig} />
+  </>;
+}
+
+function IntegrationForm({ type, config, editable, onConfig }: IntegrationFieldProps & { type: string }) {
+  const form = INTEGRATION_META[type]?.form;
+  if (form === "open_pr") return <OpenPullRequestForm config={config} editable={editable} onConfig={onConfig} />;
+  if (form === "wait_ci") return <WaitForCIForm config={config} editable={editable} onConfig={onConfig} />;
+  if (form === "comment") return <CommentForm config={config} editable={editable} onConfig={onConfig} />;
+  return <FetchIssueForm config={config} editable={editable} onConfig={onConfig} />;
 }
 
 function OutputRows({ value, disabled, onChange }: { value: Record<string, unknown>; disabled: boolean; onChange: (value: Record<string, unknown>) => void }) {

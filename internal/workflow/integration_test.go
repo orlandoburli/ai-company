@@ -17,12 +17,14 @@ type fakeIntegrationGitHub struct {
 	creates  int
 	comments []integration.Comment
 	checks   []integration.Check
+	checked  bool
 }
 
 func (f *fakeIntegrationGitHub) GetPullRequest(context.Context, int) (integration.PullRequest, error) {
 	return f.pr, nil
 }
 func (f *fakeIntegrationGitHub) ListChecks(context.Context, int) ([]integration.Check, error) {
+	f.checked = true
 	return f.checks, nil
 }
 func (f *fakeIntegrationGitHub) CreatePullRequest(_ context.Context, in integration.PullRequestInput) (integration.PullRequest, error) {
@@ -158,5 +160,35 @@ func assertIntegrationFailure(t *testing.T, err error, want FailureKind, contain
 	var typed *IntegrationError
 	if !errors.As(err, &typed) || typed.Kind != want || !strings.Contains(err.Error(), contains) {
 		t.Fatalf("failure = %#v (%v), want %s containing %q", typed, err, want, contains)
+	}
+}
+
+func TestWaitCIUsesTheNodesOwnBranch(t *testing.T) {
+	// The node names the branch it waits on: the config's head is honoured,
+	// so a wait-CI node does not depend on the run's own branch.
+	gh := &fakeIntegrationGitHub{
+		pr:     integration.PullRequest{Number: 42, State: "open", Head: "feature/from-config"},
+		open:   true,
+		checks: []integration.Check{{Name: "tests", Status: "success"}},
+	}
+	svc := Services{GitHub: gh, Git: &fakeIntegrationGit{}}
+
+	res, err := RunIntegration(t.Context(), svc, IntegrationRequest{
+		Type:   "github.wait_ci",
+		Config: json.RawMessage(`{"repo":"acme/demo","head":"feature/from-config","timeout_s":1}`),
+		Branch: "the-run's-own-branch",
+	})
+	if err != nil {
+		t.Fatalf("RunIntegration: %v", err)
+	}
+	if res.Result == nil {
+		t.Fatal("expected a result")
+	}
+	// The pull request the fake holds belongs to the node's own branch, so
+	// finding it proves the config's head was the branch that was used: the
+	// run's own branch would have found nothing.
+	var out map[string]any
+	if err := json.Unmarshal(res.Result, &out); err != nil || out["pr"] != float64(42) {
+		t.Fatalf("the node's own branch was not used: result=%v err=%v", out, err)
 	}
 }

@@ -283,15 +283,21 @@ func integrationWaitCI(ctx context.Context, gh GitHubService, cfg integrationCon
 		}
 	}
 	if cfg.PR <= 0 {
-		if in.Branch == "" {
-			return IntegrationResult{}, integrationFailure(FailureCapability, "github.wait_ci requires pr or an execution branch")
+		// The branch the checks belong to: the node's own `head` when it names
+		// one, otherwise the branch the run is executing.
+		branch := strings.TrimSpace(cfg.Head)
+		if branch == "" {
+			branch = in.Branch
 		}
-		pr, found, err := gh.FindOpenPullRequest(ctx, in.Branch)
+		if branch == "" {
+			return IntegrationResult{}, integrationFailure(FailureCapability, "github.wait_ci requires pr, a branch, or an execution branch")
+		}
+		pr, found, err := gh.FindOpenPullRequest(ctx, branch)
 		if err != nil {
-			return IntegrationResult{}, integrationFailure(FailureTransient, "could not find the run's open pull request")
+			return IntegrationResult{}, integrationFailure(FailureTransient, "could not find the open pull request")
 		}
 		if !found {
-			return IntegrationResult{}, integrationFailure(FailureTransient, "no open pull request found for execution branch")
+			return IntegrationResult{}, integrationFailure(FailureTransient, "no open pull request found for "+branch)
 		}
 		cfg.PR = pr.Number
 	}
