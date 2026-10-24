@@ -308,30 +308,30 @@ func (s *seeder) createItem(ctx context.Context, projectID string, parentID *str
 func products() []productSeed {
 	return []productSeed{
 		{
-			name: "FazGiro", slug: "fazgiro",
-			// The one product with a real repository: the GitHub wave opens
-			// pull requests against it. The SSH URL keeps the token out of
-			// the process arguments.
-			repo: "git@github.com:orlandoburli/fazgiro.git", jira: "FG",
+			name: "ERP", slug: "erp",
+			// A real repository of the tenant's: the GitHub wave opens pull
+			// requests against it. The SSH URL keeps the token out of the
+			// process arguments.
+			repo: "git@github.com:orlandoburli/project-erp.git", jira: "ERP",
 			projects: []projectSeed{
 				{
-					name: "Plataforma", key: "FG",
+					name: "Plataforma", key: "ERP",
 					items: []itemSeed{
 						{
-							key: "safra", title: "Fechamento de safra", kind: "epic", status: "in_progress",
+							key: "fechamento", title: "Fechamento do período fiscal", kind: "epic", status: "in_progress",
 							prio: "p1", labels: []string{"billing"}, assigned: true,
-							body: "Consolidar custo, receita e produtividade por talhão ao fim da safra.",
+							body: "Consolidar custo, receita e produtividade por centro de custo ao fim do período.",
 							children: []itemSeed{
 								{
-									key: "notas", title: "Importar notas de produtor", kind: "task",
+									key: "notas", title: "Importar notas fiscais (XML)", kind: "task",
 									status: "done", prio: "p1", labels: []string{"import"},
-									body: "Leitura de XML da NF-e e vínculo com o produtor.",
+									body: "Leitura do XML da NF-e e vínculo com o título correspondente.",
 								},
 								{
-									key: "custo", title: "Consolidar custo por talhão", kind: "story",
+									key: "custo", title: "Consolidar custo por centro de custo", kind: "story",
 									status: "in_progress", prio: "p1", labels: []string{"reporting"},
 									dueDays: 5, assigned: true,
-									body: "Somar insumos, mão de obra e maquinário por talhão.",
+									body: "Somar insumos, mão de obra e encargos por centro de custo.",
 								},
 								{
 									key: "pdf", title: "Exportar fechamento em PDF", kind: "task",
@@ -353,20 +353,20 @@ func products() []productSeed {
 							body: "Hoje o login aceita tentativas ilimitadas.",
 						},
 						{
-							key: "offline", title: "Modo offline para apontamento de campo", kind: "spike",
-							status: "waiting_human", prio: "p2", labels: []string{"mobile"},
-							paused: "Precisa de decisão sobre conflito de sincronização",
-							body:   "Investigar IndexedDB + fila de sincronização.",
+							key: "conciliacao", title: "Conciliação bancária automática", kind: "spike",
+							status: "waiting_human", prio: "p2", labels: []string{"banking"},
+							paused: "Precisa de decisão sobre a fonte dos extratos",
+							body:   "Investigar a importação OFX e o casamento de PIX.",
 						},
 					},
 				},
 				{
-					name: "Integrações", key: "FGX",
+					name: "Integrações", key: "ERPX",
 					items: []itemSeed{
 						{
-							key: "sisbov", title: "Sincronizar rebanho com Sisbov", kind: "task",
+							key: "tef", title: "Sincronizar pagamentos com o TEF", kind: "task",
 							status: "waiting_human", prio: "p1", labels: []string{"integration"},
-							body: "Bloqueado no credenciamento do órgão.",
+							body: "Bloqueado no credenciamento do banco.",
 						},
 						{
 							key: "bancocentral", title: "Avaliar API de cotações do Banco Central", kind: "spike",
@@ -378,52 +378,52 @@ func products() []productSeed {
 			},
 		},
 		{
-			name: "Vendamatica", slug: "vendamatica",
-			repo: "git@github.com:orlandoburli/vendamatica.git", jira: "VM",
+			name: "Apiary", slug: "apiary",
+			repo: "git@github.com:orlandoburli/apiary.git", jira: "API",
 			projects: []projectSeed{
 				{
-					name: "CRM", key: "VM",
+					name: "Orquestração", key: "API",
 					items: []itemSeed{
 						{
-							key: "pipeline", title: "Pipeline de vendas por etapa", kind: "epic",
+							key: "fila", title: "Fila de agentes por prioridade", kind: "epic",
 							status: "in_progress", prio: "p0", labels: []string{"core"}, assigned: true,
-							body: "Kanban de oportunidades com etapas configuráveis por tenant.",
+							body: "Executar o próximo item pronto, com revisão humana nos pontos de decisão.",
 							children: []itemSeed{
 								{
-									key: "stages", title: "Configurar etapas por tenant", kind: "story",
+									key: "runners", title: "Configurar runners por agente", kind: "story",
 									status: "done", prio: "p0",
-									body: "CRUD de etapas, ordem e cor.",
+									body: "CRUD de runners, prioridade e credencial.",
 								},
 								{
-									key: "drag", title: "Mover oportunidade entre etapas", kind: "task",
-									status: "todo", prio: "p1", labels: []string{"frontend"},
-									blocked: []string{"stages"},
-									body:    "Drag and drop com persistência otimista e rollback em erro.",
+									key: "handoff", title: "Passar o trabalho entre agentes", kind: "task",
+									status: "todo", prio: "p1", labels: []string{"core"},
+									blocked: []string{"runners"},
+									body:    "Encaminhar com o contexto e a auditoria intactos.",
 								},
 								{
-									key: "stale", title: "Sinalizar oportunidade parada há 14 dias", kind: "task",
+									key: "stale", title: "Sinalizar etapa parada há 14 dias", kind: "task",
 									status: "backlog", prio: "p2", labels: []string{"automation"},
-									body: "E-mail diário com oportunidades sem movimento.",
+									body: "Notificação diária com etapas sem movimento.",
 								},
 							},
 						},
 						{
-							key: "dedupe", title: "Duplicidade de leads na importação de CSV", kind: "bug",
-							status: "in_progress", prio: "p0", labels: []string{"import", "bugs"},
+							key: "dedupe", title: "Duplicidade de jobs na reexecução", kind: "bug",
+							status: "in_progress", prio: "p0", labels: []string{"queue", "bugs"},
 							dueDays: 1, assigned: true,
-							body: "E-mails com maiúsculas criam um segundo lead.",
+							body: "A reexecução cria um segundo job em vez de retomar o existente.",
 						},
 						{
-							key: "winloss", title: "Relatório de win/loss por vendedor", kind: "story",
+							key: "custo", title: "Relatório de custo por modelo", kind: "story",
 							status: "backlog", prio: "p1", labels: []string{"reporting"},
-							blocked: []string{"pipeline"},
-							body:    "Taxa de conversão e motivo de perda por período.",
+							blocked: []string{"fila"},
+							body:    "Tokens e custo por runner e por agente.",
 						},
 						{
-							key: "pin", title: "Corrigir cálculo de comissão no fechamento", kind: "bug",
-							status: "todo", prio: "p1", labels: []string{"billing", "bugs"},
+							key: "pin", title: "Corrigir o cálculo de custo no fechamento", kind: "bug",
+							status: "todo", prio: "p1", labels: []string{"cost", "bugs"},
 							pinned: true, assigned: true,
-							body: "Comissão usa o valor bruto em vez do líquido. Pinado porque o fechamento é amanhã.",
+							body: "O custo usa o valor bruto em vez do líquido. Pinado porque o fechamento é amanhã.",
 						},
 					},
 				},
