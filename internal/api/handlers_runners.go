@@ -10,8 +10,8 @@ import (
 	"github.com/orlandoburli/ai-company/internal/tenancy"
 )
 
-// The runner registry is the HOW half of the agent registry: a CLI binary or
-// an API model, with the transport config the adapter needs. Reads are open to
+// The runner registry is the HOW half of the agent registry: a CLI binary,
+// with the transport config the adapter needs. Reads are open to
 // every member; writing the registry is a settings surface, so it is
 // owner/admin only — the same gate the agent registry uses.
 
@@ -90,7 +90,7 @@ func (s *Server) handleCreateRunner(w http.ResponseWriter, r *http.Request) {
 	kind := runner.Kind(strings.TrimSpace(req.Kind))
 	if !kind.Valid() {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_request",
-			"kind must be cli or api.")
+			"kind must be cli.")
 		return
 	}
 	cfg := normalizeJSONObject(req.Config)
@@ -160,7 +160,7 @@ func (s *Server) handlePatchRunner(w http.ResponseWriter, r *http.Request) {
 		kind = *patch.Kind
 		if !kind.Valid() {
 			writeError(w, http.StatusUnprocessableEntity, "invalid_request",
-				"kind must be cli or api.")
+				"kind must be cli.")
 			return
 		}
 	}

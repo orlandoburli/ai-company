@@ -367,3 +367,43 @@ func TestMigrationAddsTheJobSnapshotColumns(t *testing.T) {
 		t.Error("workflow_runs.variables_json is missing")
 	}
 }
+
+func TestMigrationRestrictsNewRunnerKindsToCLIAndPreservesLegacyRows(t *testing.T) {
+	db := freshDatabase(t)
+	applyMigrations(t, db, "0020")
+	if _, err := db.Exec(`INSERT INTO tenants (id, name, slug) VALUES ('T1', 'T1', 't1')`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO runners (id, tenant_id, name, kind, config_json)
+		VALUES ('R-LEGACY', 'T1', 'legacy-api', 'api', '{"provider":"anthropic","model":"legacy"}')`); err != nil {
+		t.Fatalf("seed legacy API runner: %v", err)
+	}
+	migration, err := os.ReadFile(filepath.Join(migrationsDir, "0027_runner_kind_cli_only.sql"))
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := db.Exec(string(migration)); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+
+	var kind string
+	if err := db.QueryRow(`SELECT kind FROM runners WHERE id='R-LEGACY'`).Scan(&kind); err != nil || kind != "api" {
+		t.Fatalf("legacy runner kind = %q, err = %v; want preserved api row", kind, err)
+	}
+	if _, err := db.Exec(`INSERT INTO runners (id, tenant_id, name, kind, config_json)
+		VALUES ('R-API', 'T1', 'new-api', 'api', '{}')`); err == nil {
+		t.Fatal("migration accepted a newly created API runner")
+	}
+	if _, err := db.Exec(`INSERT INTO runners (id, tenant_id, name, kind, config_json)
+		VALUES ('R-CLI', 'T1', 'new-cli', 'cli', '{"bin":"claude"}')`); err != nil {
+		t.Fatalf("migration rejected a CLI runner: %v", err)
+	}
+	var rlsEnabled, selectGrant bool
+	if err := db.QueryRow(`SELECT c.relrowsecurity, has_table_privilege('aic_app', 'runners', 'SELECT')
+		FROM pg_class c WHERE c.oid='runners'::regclass`).Scan(&rlsEnabled, &selectGrant); err != nil {
+		t.Fatalf("check registry protections: %v", err)
+	}
+	if !rlsEnabled || !selectGrant {
+		t.Fatalf("migration changed RLS/grants: RLS=%v SELECT grant=%v", rlsEnabled, selectGrant)
+	}
+}

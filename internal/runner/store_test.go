@@ -66,20 +66,6 @@ func (f *fixture) cliRunner(sc tenancy.Scope, name string) runner.Runner {
 	return r
 }
 
-func (f *fixture) apiRunner(sc tenancy.Scope, name string) runner.Runner {
-	f.t.Helper()
-	r, err := f.st.Create(context.Background(), sc, runner.NewRunner{
-		Name:          name,
-		Kind:          runner.KindAPI,
-		Config:        json.RawMessage(`{"provider":"openai","model":"gpt-4o-mini","key_env":"OPENAI_API_KEY","max_tokens":1024}`),
-		CredentialRef: "keychain:openai",
-	})
-	if err != nil {
-		f.t.Fatalf("create runner %q: %v", name, err)
-	}
-	return r
-}
-
 func (f *fixture) agent(sc tenancy.Scope, name string) agent.Agent {
 	f.t.Helper()
 	a, err := f.ast.CreateAgent(context.Background(), sc, agent.Agent{
@@ -253,11 +239,7 @@ func TestRunnerConfigValidation(t *testing.T) {
 		{"cli with a bad timeout", runner.KindCLI, `{"bin":"claude","timeout_sec":9999}`},
 		{"cli with a bad output format", runner.KindCLI, `{"bin":"claude","output_format":"yaml"}`},
 		{"cli with a bad env name", runner.KindCLI, `{"bin":"claude","env":{"lower":1}}`},
-		{"api without a provider", runner.KindAPI, `{"model":"gpt-4o-mini","key_env":"OPENAI_API_KEY"}`},
-		{"api without a model", runner.KindAPI, `{"provider":"openai","key_env":"OPENAI_API_KEY"}`},
-		{"api with an unknown provider", runner.KindAPI, `{"provider":"ollama","model":"llama","key_env":"K"}`},
-		{"api with a secret-looking key_env", runner.KindAPI, `{"provider":"openai","model":"gpt","key_env":"sk-123"}`},
-		{"api with a bad base url", runner.KindAPI, `{"provider":"openai","model":"gpt","key_env":"K","base_url":"ftp://x"}`},
+		{"api runner kind is no longer supported", runner.KindAPI, `{"provider":"openai","model":"gpt","key_env":"OPENAI_API_KEY"}`},
 		{"a config that is not an object", runner.KindCLI, `["claude"]`},
 		{"a config that is not JSON", runner.KindCLI, `{`},
 	}
@@ -286,11 +268,14 @@ func TestRunnerConfigValidation(t *testing.T) {
 		t.Errorf("bad name: %v, want ErrInvalid", err)
 	}
 
-	// The store refuses to leave a runner whose kind and config disagree.
+	// API is retained as a legacy stored value, but cannot be set in the registry.
 	r := f.cliRunner(f.t1, "dev")
 	kind := runner.KindAPI
+	if runner.KindAPI.Valid() {
+		t.Error("legacy API kind is valid for registry writes")
+	}
 	if _, err := f.st.Update(ctx, f.t1, r.ID, runner.Patch{Kind: &kind}); !errors.Is(err, runner.ErrInvalid) {
-		t.Errorf("kind change without a matching config: %v, want ErrInvalid", err)
+		t.Errorf("API kind patch: %v, want ErrInvalid", err)
 	}
 }
 
@@ -299,7 +284,7 @@ func TestRunnerChain(t *testing.T) {
 	ctx := context.Background()
 
 	first := f.cliRunner(f.t1, "dev")
-	second := f.apiRunner(f.t1, "pm")
+	second := f.cliRunner(f.t1, "pm")
 	a := f.agent(f.t1, "dev-agent")
 
 	// An agent starts with no chain.

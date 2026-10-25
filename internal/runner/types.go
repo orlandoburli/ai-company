@@ -24,17 +24,19 @@ import (
 	"time"
 )
 
-// Kind is the transport family. It matches the adapter kinds in
-// internal/agent/adapters: the runner's kind picks the adapter that runs it.
+// Kind is the runner registry transport family. Registry writes support CLI;
+// KindAPI remains as a legacy stored value so pre-existing agent jobs can still
+// select the API adapter.
 type Kind string
 
 const (
 	KindCLI Kind = "cli"
+	// KindAPI is retained only to read and execute legacy API runner snapshots.
 	KindAPI Kind = "api"
 )
 
 // Valid reports whether k is a supported transport kind.
-func (k Kind) Valid() bool { return k == KindCLI || k == KindAPI }
+func (k Kind) Valid() bool { return k == KindCLI }
 
 // Runner is one transport: how a job is actually run.
 type Runner struct {
@@ -98,11 +100,8 @@ type CLIConfig struct {
 	TimeoutSec   int               `json:"timeout_sec,omitempty"`
 }
 
-// APIConfig is a runner's config_json for kind=api.
-//
-// It mirrors agent.APIConfig. Provider is "openai" (or any OpenAI-compatible
-// base URL) or "anthropic". KeyEnv names the environment variable holding the
-// key; keys are never stored in the database and never returned by the API.
+// APIConfig describes the legacy runner config shape retained for reading old
+// rows. New API runners are no longer accepted by the registry.
 type APIConfig struct {
 	Provider  string  `json:"provider"`
 	Model     string  `json:"model"`

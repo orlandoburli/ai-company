@@ -122,12 +122,11 @@ func TestRunnerRegistryValidation(t *testing.T) {
 		t.Fatalf("cli without a bin: %d %s", res.status, res.body)
 	}
 
-	// An api runner without a model could never run.
-	bad = apiRunnerBody("no-model")
-	bad["config"] = map[string]any{"provider": "openai", "key_env": "OPENAI_API_KEY"}
+	// The registry no longer accepts API runner kinds.
+	bad = apiRunnerBody("legacy-api")
 	res = o.do("POST", "/api/runners", bad, o.ownerCookie)
-	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_config" {
-		t.Fatalf("api without a model: %d %s", res.status, res.body)
+	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_request" {
+		t.Fatalf("API runner kind: %d %s", res.status, res.body)
 	}
 
 	// A name that is not mentionable-shaped is refused.
@@ -141,18 +140,16 @@ func TestRunnerRegistryValidation(t *testing.T) {
 	bad = cliRunnerBody("pigeon")
 	bad["kind"] = "pigeon"
 	res = o.do("POST", "/api/runners", bad, o.ownerCookie)
-	if res.status != http.StatusUnprocessableEntity {
+	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_request" {
 		t.Fatalf("unknown kind: %d %s", res.status, res.body)
 	}
 
-	// A runner that exists may be patched into an unrunnable shape only if
-	// the config follows the kind.
-	runner := createRunner(t, o, apiRunnerBody("pm"))
-	res = o.do("PATCH", "/api/runners/"+runner["id"].(string), map[string]any{
-		"kind": "cli",
-	}, o.ownerCookie)
-	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_config" {
-		t.Fatalf("kind change without a matching config: %d %s", res.status, res.body)
+	// Patching an existing runner to the legacy API kind is rejected with the
+	// same house validation response.
+	runner := createRunner(t, o, cliRunnerBody("patch-to-api"))
+	res = o.do("PATCH", "/api/runners/"+runner["id"].(string), map[string]any{"kind": "api"}, o.ownerCookie)
+	if res.status != http.StatusUnprocessableEntity || errCode(t, res) != "invalid_request" {
+		t.Fatalf("patch to API kind: %d %s", res.status, res.body)
 	}
 }
 

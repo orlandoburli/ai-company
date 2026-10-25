@@ -184,23 +184,15 @@ func run() error {
 
 	// The ranking run: hourly, and once at startup. The base score decides;
 	// the model pass is optional and its absence is recorded as a degraded
-	// run rather than hidden. The model credential is the same one the pm
-	// agent uses — the keychain first, the environment as the fallback.
+	// run rather than hidden. Its CLI transport follows the same idea as a
+	// runner's: configure the binary and optional model independently.
 	var llmRanker ranking.LLMRanker
-	if key, err := rankingKey(ctx); err != nil {
-		log.Info("the ranking stays on the base score: no model credential", "error", err)
+	ranker, err := ranking.NewCLIRanker(rankingCLIOptionsFromEnv())
+	if err != nil {
+		log.Warn("the model ranking pass is unavailable", "error", err)
 	} else {
-		ranker, err := ranking.NewOpenAIRanker(ranking.OpenAIRankerOptions{
-			BaseURL: "https://api.openai.com",
-			Model:   "gpt-4o-mini",
-			APIKey:  key,
-		})
-		if err != nil {
-			log.Warn("the model ranking pass is unavailable", "error", err)
-		} else {
-			llmRanker = ranking.RunnerAdapter(ranker)
-			log.Info("the ranking uses the model pass, with the base score as its fallback")
-		}
+		llmRanker = ranking.RunnerAdapter(ranker)
+		log.Info("the ranking uses the configured CLI model pass, with the base score as its fallback")
 	}
 	go dispatch.NewScheduler(ranking.NewRunner(ranking.NewStore(db), nil, llmRanker), dispatch.Config{
 		Tenants: tenantSource,
@@ -334,25 +326,18 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// rankingKey resolves the model credential for the ranking pass: the login
-// keychain first (the service "ai-company", the account "openai:default"),
-// then the environment variable the pm agent already uses. The secret is
-// never written to the database or to a log line.
-func rankingKey(ctx context.Context) (string, error) {
-	if key, err := (integration.Credentials{}).Resolve(ctx, "ai-company/openai:default"); err == nil && key != "" {
-		return key, nil
-	}
-	if key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); key != "" {
-		return key, nil
-	}
-	return "", errors.New("no model credential in the keychain or the environment")
-}
-
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+func rankingCLIOptionsFromEnv() ranking.CLIRankerOptions {
+	return ranking.CLIRankerOptions{
+		Bin:   envOr("AIC_RANKING_CLI", ranking.DefaultCLIBinary),
+		Model: os.Getenv("AIC_RANKING_MODEL"),
+	}
 }
 
 func envBool(key string, fallback bool) bool {

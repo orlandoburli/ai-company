@@ -243,12 +243,12 @@ func bugfixGitHubTemplate(agents map[string]string) (seedTemplate, error) {
 
 // bugfixLocalTemplate is the Bugfix graph with CLI agents only.
 //
-// The designed Bugfix starts with the pm agent, which is an API agent: it
-// needs OPENAI_API_KEY, and without it the very first node fails. This
-// variant runs the same shape — a diamond under one implementation, joined by
-// a merge node, with two checkpoints — on the CLI agents, so the whole
-// engine path (two concurrent branches, a join, two human decisions) is
-// demonstrable on a machine with no API key.
+// The same shape as the Bugfix graph — a diamond under one implementation,
+// joined by a merge node, with two checkpoints — but without the GitHub
+// steps: it works on a repository with no remote, so the whole engine path
+// (two concurrent branches, a join, two human decisions) is demonstrable
+// anywhere. Every agent is a CLI persona now: the transports are the Claude
+// Code and OpenCode CLIs, and the product calls no model provider.
 func bugfixLocalTemplate(agents map[string]string) (seedTemplate, error) {
 	tpl, err := bugfixTemplate(agents)
 	if err != nil {

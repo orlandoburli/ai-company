@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,6 @@ var (
 	// reason, or a set that does not cover the candidates exactly once.
 	ErrInvalidOutput = errors.New("ranking: llm ranking returned invalid output")
 )
-
 
 // CLIRankerOptions configures a CLIRanker. This transport is the same idea as
 // a runner's CLI transport: invoke a configured binary with the prompt. Model
@@ -154,7 +154,7 @@ func (r *CLIRanker) Rank(ctx context.Context, candidates []Candidate) (LLMResult
 	cmd.Stdout = &output
 	// Provider/CLI diagnostics can contain secrets or candidate data. They are
 	// intentionally not copied into errors or logs.
-	cmd.Stderr = new(strings.Builder)
+	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
 		if callCtx.Err() != nil {
 			return LLMResult{}, fmt.Errorf("ranking: cli call: %w", callCtx.Err())
@@ -239,8 +239,8 @@ func cliEnvironment() []string {
 	env := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
-		env = append(env, key+"="+value)
-	}
+			env = append(env, key+"="+value)
+		}
 	}
 	return env
 }

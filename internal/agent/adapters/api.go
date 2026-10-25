@@ -16,10 +16,11 @@ import (
 	"github.com/orlandoburli/ai-company/internal/agent"
 )
 
-// Default model endpoints; APIConfig.BaseURL overrides them for tests and
-// for OpenAI-compatible self-hosted servers.
+// The endpoint of a model provider. There is no OpenAI default: the product's
+// transports are the Claude Code and OpenCode CLIs, and an HTTP provider has
+// to be named explicitly — a self-hosted server that speaks the OpenAI shape
+// (ollama, vLLM, LM Studio) is given its own base URL.
 const (
-	openAIDefaultBase    = "https://api.openai.com/v1"
 	anthropicDefaultBase = "https://api.anthropic.com/v1"
 	anthropicVersion     = "2023-06-01"
 
@@ -108,10 +109,9 @@ func (a *API) Run(ctx context.Context, job agent.Job, sink agent.EventSink) (*ag
 	base := strings.TrimSuffix(cfg.BaseURL, "/")
 	if base == "" {
 		if cfg.Provider == "openai" {
-			base = openAIDefaultBase
-		} else {
-			base = anthropicDefaultBase
+			return nil, invalid("the openai provider needs an explicit base_url — this product's transports are the Claude Code and OpenCode CLIs")
 		}
+		base = anthropicDefaultBase
 	}
 	path := "/chat/completions"
 	if cfg.Provider == "anthropic" {

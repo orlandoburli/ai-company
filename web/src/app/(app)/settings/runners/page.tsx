@@ -65,17 +65,17 @@ function transportSummary(runner: Runner) {
     const args = Array.isArray(config.args) ? config.args.map(String) : [];
     return <><strong className="mono">{String(config.bin ?? "(binary not set)")}</strong><div className="tiny muted runner-args">{args.length ? args.join(" · ") : "No arguments"}</div></>;
   }
-  return <><strong>{String(config.provider ?? "provider not set")}</strong><div className="tiny muted mono">{String(config.model ?? "model not set")}</div></>;
+  return <><strong>{String(config.bin ?? "binary not set")}</strong><div className="tiny muted mono">{Array.isArray(config.args) ? config.args.map(String).join(" ") : ""}</div></>;
 }
 
 function githubAccount(reference: string) {
   return reference.match(/(?:^|\/)github:([^/]+)$/i)?.[1] ?? "";
 }
 
-type RunnerForm = { name: string; kind: RunnerKind; bin: string; args: string; env: string; outputFormat: string; timeout: string; provider: string; model: string; baseUrl: string; keyEnv: string; maxTokens: string; credentialRef: string; budgetTokens: string; budgetCost: string; enabled: boolean };
+type RunnerForm = { name: string; kind: RunnerKind; bin: string; args: string; env: string; outputFormat: string; timeout: string; credentialRef: string; budgetTokens: string; budgetCost: string; enabled: boolean };
 function runnerForm(runner: Runner | null): RunnerForm {
   const c = runner?.config ?? {};
-  return { name: runner?.name ?? "", kind: runner?.kind ?? "cli", bin: String(c.bin ?? ""), args: Array.isArray(c.args) ? c.args.map(String).join("\n") : "", env: JSON.stringify(c.env ?? {}, null, 2), outputFormat: String(c.output_format ?? "stream-json"), timeout: String(c.timeout_sec ?? ""), provider: String(c.provider ?? "openai"), model: String(c.model ?? ""), baseUrl: String(c.base_url ?? ""), keyEnv: String(c.key_env ?? "OPENAI_API_KEY"), maxTokens: String(c.max_tokens ?? ""), credentialRef: runner?.credential_ref ?? "", budgetTokens: String(runner?.budget_tokens ?? 0), budgetCost: String(runner?.budget_cost_usd ?? 0), enabled: runner?.enabled ?? true };
+  return { name: runner?.name ?? "", kind: runner?.kind ?? "cli", bin: String(c.bin ?? ""), args: Array.isArray(c.args) ? c.args.map(String).join("\n") : "", env: JSON.stringify(c.env ?? {}, null, 2), outputFormat: String(c.output_format ?? "stream-json"), timeout: String(c.timeout_sec ?? ""), credentialRef: runner?.credential_ref ?? "", budgetTokens: String(runner?.budget_tokens ?? 0), budgetCost: String(runner?.budget_cost_usd ?? 0), enabled: runner?.enabled ?? true };
 }
 function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onClose: () => void; onSaved: () => Promise<void> }) {
   const [f, setF] = useState(() => runnerForm(runner));
@@ -85,12 +85,12 @@ function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onC
   async function submit(event: FormEvent) {
     event.preventDefault(); if (busy) return;
     let config: Record<string, unknown>;
-    if (f.kind === "cli") {
+    {
       let env: unknown;
       try { env = JSON.parse(f.env || "{}"); } catch { setError("CLI env must be a JSON object."); return; }
       if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((value) => typeof value !== "string")) { setError("CLI env must be a JSON object with string values."); return; }
       config = { bin: f.bin.trim(), args: f.args.split("\n").map((value) => value.trim()).filter(Boolean), env, output_format: f.outputFormat, ...(f.timeout.trim() ? { timeout_sec: Number(f.timeout) } : {}) };
-    } else config = { provider: f.provider, model: f.model.trim(), ...(f.baseUrl.trim() ? { base_url: f.baseUrl.trim() } : {}), key_env: f.keyEnv.trim(), ...(f.maxTokens.trim() ? { max_tokens: Number(f.maxTokens) } : {}) };
+    }
     const body: RunnerInput = { name: f.name.trim().toLowerCase(), kind: f.kind, config, credential_ref: f.credentialRef.trim(), budget_tokens: Number(f.budgetTokens) || 0, budget_cost_usd: Number(f.budgetCost) || 0, enabled: f.enabled };
     setBusy(true); setError("");
     try { if (runner) await api.updateRunner(runner.id, body); else await api.createRunner(body); await onSaved(); }
@@ -101,17 +101,13 @@ function RunnerEditor({ runner, onClose, onSaved }: { runner: Runner | null; onC
       {error ? <div className="error-note" role="alert">{error}</div> : null}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Runner name"><input className="input mono" required pattern="[a-z0-9][a-z0-9_-]{0,63}" value={f.name} onChange={(e) => set("name", e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))} placeholder="claude" /></Field>
-        <Field label="Kind"><select className="input" value={f.kind} onChange={(e) => set("kind", e.target.value as RunnerKind)}><option value="cli">CLI · local binary</option><option value="api">API · model provider</option></select></Field>
+        <Field label="Kind"><select className="input" value={f.kind} onChange={(e) => set("kind", e.target.value as RunnerKind)}><option value="cli">CLI · local binary</option></select></Field>
       </div>
-      {f.kind === "cli" ? <fieldset className="runner-config-fieldset"><legend>CLI transport</legend>
+      <fieldset className="runner-config-fieldset"><legend>CLI transport</legend>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Binary (bin)"><input className="input mono" required value={f.bin} onChange={(e) => set("bin", e.target.value)} placeholder="claude" /></Field><Field label="Output format"><select className="input" value={f.outputFormat} onChange={(e) => set("outputFormat", e.target.value)}><option value="stream-json">stream-json</option><option value="text">text</option></select></Field></div>
         <Field label="Arguments (one per line)"><textarea className="input mono" rows={3} value={f.args} onChange={(e) => set("args", e.target.value)} placeholder="--output-format\nstream-json" /></Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Environment (JSON object)"><textarea className="input mono" rows={3} value={f.env} onChange={(e) => set("env", e.target.value)} placeholder={'{"TERM":"dumb"}'} /></Field><Field label="Timeout (seconds)"><input className="input" type="number" min={0} max={3600} value={f.timeout} onChange={(e) => set("timeout", e.target.value)} placeholder="0 · default" /></Field></div>
-      </fieldset> : <fieldset className="runner-config-fieldset"><legend>API transport</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Provider"><select className="input" value={f.provider} onChange={(e) => set("provider", e.target.value)}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></Field><Field label="Model"><input className="input mono" required value={f.model} onChange={(e) => set("model", e.target.value)} placeholder="gpt-4.1" /></Field></div>
-        <Field label="Base URL (optional)"><input className="input mono" type="url" value={f.baseUrl} onChange={(e) => set("baseUrl", e.target.value)} placeholder="https://api.example.com" /></Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}><Field label="Key environment variable"><input className="input mono" required pattern="[A-Z_][A-Z0-9_]*" value={f.keyEnv} onChange={(e) => set("keyEnv", e.target.value.toUpperCase())} placeholder="OPENAI_API_KEY" /><span className="tiny muted">Name of the variable only. Never enter the key itself.</span></Field><Field label="Max tokens"><input className="input" type="number" min={0} max={200000} value={f.maxTokens} onChange={(e) => set("maxTokens", e.target.value)} placeholder="0 · provider default" /></Field></div>
-      </fieldset>}
+      </fieldset>
       <Field label="Credential reference" hint="the name of a secret held outside the system — a reference, never the secret. Format: `<service>/<account>`, e.g. `ai-company/github:apiary-reviewer`. The value is resolved from the OS keychain at the moment the runner is used.">
         <input className="input mono" aria-label="Credential reference" value={f.credentialRef} onChange={(e) => set("credentialRef", e.target.value)} placeholder="<service>/<account>" />
       </Field>

@@ -3,7 +3,6 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 )
@@ -30,12 +29,9 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// ValidateConfig checks a transport config against its kind. The rules are the
-// agent's own config rules, moved onto the transport with it:
-//
-//   - a cli runner needs a binary to run;
-//   - an api runner needs a provider and a model;
-//   - key_env names an environment variable, never a secret.
+// ValidateConfig checks a registry transport config. Only CLI runners may be
+// created or updated; the legacy API kind remains readable for already stored
+// jobs but is not a valid registry write.
 //
 // The config is opaque to the store — it is stored as JSON — but it is not
 // opaque to the runner's own kind, so a config that the adapter could never
@@ -87,29 +83,6 @@ func ValidateConfig(kind Kind, config json.RawMessage) error {
 			if !envNameRE.MatchString(k) {
 				return fmt.Errorf("%w: config.env key %q is not a valid environment variable name", ErrInvalid, k)
 			}
-		}
-	case KindAPI:
-		var cfg APIConfig
-		if err := strictUnmarshal(config, &cfg); err != nil {
-			return fmt.Errorf("%w: config: %v", ErrInvalid, err)
-		}
-		if cfg.Provider != "openai" && cfg.Provider != "anthropic" {
-			return fmt.Errorf("%w: config.provider must be \"openai\" or \"anthropic\"", ErrInvalid)
-		}
-		if strings.TrimSpace(cfg.Model) == "" {
-			return fmt.Errorf("%w: config.model is required for an api runner", ErrInvalid)
-		}
-		if !envNameRE.MatchString(cfg.KeyEnv) {
-			return fmt.Errorf("%w: config.key_env must name an environment variable (e.g. OPENAI_API_KEY)", ErrInvalid)
-		}
-		if cfg.BaseURL != "" {
-			u, err := url.Parse(cfg.BaseURL)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return fmt.Errorf("%w: config.base_url must be an http(s) URL", ErrInvalid)
-			}
-		}
-		if cfg.MaxTokens < 0 || cfg.MaxTokens > 200000 {
-			return fmt.Errorf("%w: config.max_tokens must be between 0 and 200000", ErrInvalid)
 		}
 	}
 	return nil
