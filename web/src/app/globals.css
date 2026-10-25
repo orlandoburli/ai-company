@@ -3101,7 +3101,17 @@ table.data td { padding: 8px 9.6px; border-bottom: 1px solid #eef2f7; font-size:
   overflow: hidden;
   padding-bottom: 22px;
 }
-.workflow-editor-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* The editor is a workbench, not a document: it fills the content area
+   instead of being a centred column with empty margins on either side. */
+.workflow-editor-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
 .workflow-editor-page > .workflow-editor-head,
 .workflow-editor-page > .workflow-meta-bar { flex: none; }
 

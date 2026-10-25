@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,26 +35,22 @@ import (
 // deterministic base score decides the queue (FR-PRI-12, FR-PRI-13).
 
 const (
-	// DefaultOpenAIBaseURL is the API root. It is overridable for
-	// OpenAI-compatible servers and for tests.
-	DefaultOpenAIBaseURL = "https://api.openai.com"
+	// DefaultCLIBinary is the ranking transport when no binary is configured.
+	DefaultCLIBinary = "claude"
 
-	// DefaultOpenAIMaxTokens caps the completion of one ranking call.
-	DefaultOpenAIMaxTokens = 1024
+	// DefaultLLMMaxTokens caps the estimated completion of one ranking call.
+	DefaultLLMMaxTokens = 1024
 
-	// DefaultOpenAITimeout bounds one ranking call.
-	DefaultOpenAITimeout = 30 * time.Second
+	// DefaultLLMTimeout bounds one ranking CLI call.
+	DefaultLLMTimeout = 30 * time.Second
 
 	// DefaultLLMBudget is the token budget one ranking request may spend when
-	// OpenAIRankerOptions.Budget is not set. A request that would exceed it
+	// CLIRankerOptions.Budget is not set. A request that would exceed it
 	// is not made at all: the run degrades to the base score.
 	DefaultLLMBudget = 8000
 
-	// llmResponseLimit caps how much of a provider response is read.
+	// llmResponseLimit caps how much model output is accepted from the CLI.
 	llmResponseLimit = 1 << 20
-
-	// llmErrorBodyLimit caps how much of an error response body is quoted.
-	llmErrorBodyLimit = 512
 )
 
 var (
@@ -68,22 +65,19 @@ var (
 	ErrInvalidOutput = errors.New("ranking: llm ranking returned invalid output")
 )
 
-// OpenAIRankerOptions configures an OpenAIRanker.
-type OpenAIRankerOptions struct {
-	// BaseURL is the API root. Empty means DefaultOpenAIBaseURL. A base that
-	// already ends in "/v1" is used as-is.
-	BaseURL string
-	// Model is the model to call. Required.
+
+// CLIRankerOptions configures a CLIRanker. This transport is the same idea as
+// a runner's CLI transport: invoke a configured binary with the prompt. Model
+// is optional; when set it is passed to the CLI as --model.
+type CLIRankerOptions struct {
+	// Bin is the CLI executable; empty means DefaultCLIBinary.
+	Bin string
+	// Model is optional and is passed as a CLI --model argument when non-empty.
 	Model string
-	// APIKey is the provider secret. It travels in the Authorization header
-	// only: never in a URL, a request body, an error message or a log line.
-	APIKey string
-	// Client is the HTTP client to use. Empty means a client with the
-	// ranker's timeout.
-	Client *http.Client
-	// MaxTokens caps the completion. Zero means DefaultOpenAIMaxTokens.
+	// MaxTokens is the completion estimate reserved by the ranking budget.
+	// Zero means DefaultLLMMaxTokens.
 	MaxTokens int
-	// Timeout bounds one call. Zero means DefaultOpenAITimeout.
+	// Timeout bounds one call. Zero means DefaultLLMTimeout.
 	Timeout time.Duration
 	// Budget is the number of tokens one request may spend (prompt plus
 	// completion). Zero means DefaultLLMBudget. A request that would exceed
@@ -91,69 +85,50 @@ type OpenAIRankerOptions struct {
 	Budget int
 }
 
-// OpenAIRanker ranks a ready set with an OpenAI-compatible chat completion.
-//
-// The request is a single completion call with no tools: the model can only
-// answer with an ordering. The ranker has no write path of any kind.
-type OpenAIRanker struct {
-	baseURL   string
+// CLIRanker ranks a ready set by invoking a local CLI process. It has no HTTP
+// provider or credential path.
+type CLIRanker struct {
+	bin       string
 	model     string
-	apiKey    string
-	client    *http.Client
 	maxTokens int
 	timeout   time.Duration
 	budget    int
 }
 
-// NewOpenAIRanker validates the options and returns a ranker.
-func NewOpenAIRanker(opts OpenAIRankerOptions) (*OpenAIRanker, error) {
+// NewCLIRanker validates the options and returns a ranker.
+func NewCLIRanker(opts CLIRankerOptions) (*CLIRanker, error) {
+	bin := strings.TrimSpace(opts.Bin)
+	if bin == "" {
+		bin = DefaultCLIBinary
+	}
+	if strings.ContainsRune(bin, 0) {
+		return nil, errors.New("ranking: cli binary contains an invalid character")
+	}
 	model := strings.TrimSpace(opts.Model)
-	if model == "" {
-		return nil, errors.New("ranking: llm model is required")
-	}
-	key := strings.TrimSpace(opts.APIKey)
-	if key == "" {
-		// The value is never echoed, not even in this error.
-		return nil, errors.New("ranking: llm api key is required")
-	}
-	base := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
-	if base == "" {
-		base = DefaultOpenAIBaseURL
-	}
 	maxTokens := opts.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = DefaultOpenAIMaxTokens
+		maxTokens = DefaultLLMMaxTokens
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
-		timeout = DefaultOpenAITimeout
+		timeout = DefaultLLMTimeout
 	}
 	budget := opts.Budget
 	if budget <= 0 {
 		budget = DefaultLLMBudget
 	}
-	client := opts.Client
-	if client == nil {
-		client = &http.Client{Timeout: timeout}
-	}
-	return &OpenAIRanker{
-		baseURL:   base,
+	return &CLIRanker{
+		bin:       bin,
 		model:     model,
-		apiKey:    key,
-		client:    client,
 		maxTokens: maxTokens,
 		timeout:   timeout,
 		budget:    budget,
 	}, nil
 }
 
-// Rank asks the model to order the candidates and validates the answer.
-//
-// It returns an ordering and nothing else. Every failure — a network error, a
-// non-2xx response, a timeout, a malformed body, an answer that does not
-// satisfy the output contract, or a request that would exceed the budget — is
-// an error, and never a partial ordering presented as complete.
-func (r *OpenAIRanker) Rank(ctx context.Context, candidates []Candidate) (LLMResult, error) {
+// Rank asks the configured CLI to order the candidates and validates its
+// output. The child receives only a small, non-secret environment allowlist.
+func (r *CLIRanker) Rank(ctx context.Context, candidates []Candidate) (LLMResult, error) {
 	if len(candidates) == 0 {
 		// Nothing to rank: no call, no spend.
 		return LLMResult{Model: r.model, Summary: "There are no ready items to rank; the queue is clear."}, nil
@@ -170,56 +145,31 @@ func (r *OpenAIRanker) Rank(ctx context.Context, candidates []Candidate) (LLMRes
 		return LLMResult{}, fmt.Errorf("%w: request needs about %d tokens, budget is %d", ErrOverBudget, estimate, r.budget)
 	}
 
-	body, err := marshalRequest(chatRequest{
-		Model: r.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: rankSystemPrompt},
-			{Role: "user", Content: user},
-		},
-		MaxTokens: r.maxTokens,
-	})
-	if err != nil {
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: encode request: %w", err)
-	}
-
 	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, r.chatURL(), bytes.NewReader(body))
-	if err != nil {
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	// The secret travels here and nowhere else.
-	req.Header.Set("Authorization", "Bearer "+r.apiKey)
-
-	resp, err := r.client.Do(req)
-	if err != nil {
-		if cerr := callCtx.Err(); cerr != nil {
-			return LLMResult{}, fmt.Errorf("ranking: llm ranking: provider call: %w", cerr)
+	args := cliArgs(r.bin, r.model, rankSystemPrompt+"\n\n"+user)
+	cmd := exec.CommandContext(callCtx, r.bin, args...)
+	cmd.Env = cliEnvironment()
+	var output limitedOutput
+	cmd.Stdout = &output
+	// Provider/CLI diagnostics can contain secrets or candidate data. They are
+	// intentionally not copied into errors or logs.
+	cmd.Stderr = new(strings.Builder)
+	if err := cmd.Run(); err != nil {
+		if callCtx.Err() != nil {
+			return LLMResult{}, fmt.Errorf("ranking: cli call: %w", callCtx.Err())
 		}
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: provider call: %w", err)
+		if output.err != nil {
+			return LLMResult{}, fmt.Errorf("ranking: cli output: %w", output.err)
+		}
+		return LLMResult{}, fmt.Errorf("ranking: cli call failed: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // closing a response body
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, llmResponseLimit))
-	if err != nil {
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: provider returned HTTP %d: %s", resp.StatusCode, r.redact(raw))
-	}
-
-	content, err := extractContent(raw)
-	if err != nil {
-		return LLMResult{}, fmt.Errorf("ranking: llm ranking: %w", err)
-	}
-	return r.validate(content, candidates)
+	return r.validate(output.String(), candidates)
 }
 
 // validate turns the model's answer into an ordering or into an error. It
 // never returns a partial ordering.
-func (r *OpenAIRanker) validate(content string, candidates []Candidate) (LLMResult, error) {
+func (r *CLIRanker) validate(content string, candidates []Candidate) (LLMResult, error) {
 	answer, err := decodeAnswer(content)
 	if err != nil {
 		return LLMResult{}, err
@@ -267,25 +217,45 @@ func (r *OpenAIRanker) validate(content string, candidates []Candidate) (LLMResu
 	return LLMResult{Model: r.model, Summary: summary, Entries: entries}, nil
 }
 
-// chatURL is the single endpoint the ranker talks to.
-func (r *OpenAIRanker) chatURL() string {
-	if strings.HasSuffix(r.baseURL, "/v1") {
-		return r.baseURL + "/chat/completions"
+// cliArgs uses the invocation conventions of the supported CLIs. Claude Code
+// accepts a prompt after -p; OpenCode accepts it after the run subcommand.
+func cliArgs(bin, model, prompt string) []string {
+	var args []string
+	if strings.EqualFold(filepath.Base(bin), "opencode") {
+		args = append(args, "run")
+	} else {
+		args = append(args, "-p", "--tools", "", "--output-format", "text")
 	}
-	return r.baseURL + "/v1/chat/completions"
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return append(args, prompt)
 }
 
-// redact keeps a provider error body quotable without ever repeating the
-// secret or an unbounded blob.
-func (r *OpenAIRanker) redact(raw []byte) string {
-	s := strings.ReplaceAll(string(raw), "\n", " ")
-	if r.apiKey != "" {
-		s = strings.ReplaceAll(s, r.apiKey, "REDACTED")
+// cliEnvironment mirrors the agent CLI transport's non-secret allowlist. In
+// particular, credentials such as OPENAI_API_KEY are never forwarded.
+func cliEnvironment() []string {
+	keys := []string{"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "USER", "SHELL", "TZ"}
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+		env = append(env, key+"="+value)
 	}
-	if len(s) > llmErrorBodyLimit {
-		s = s[:llmErrorBodyLimit] + "…"
 	}
-	return s
+	return env
+}
+
+type limitedOutput struct {
+	bytes.Buffer
+	err error
+}
+
+func (b *limitedOutput) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > llmResponseLimit {
+		b.err = errors.New("model output exceeds limit")
+		return 0, b.err
+	}
+	return b.Buffer.Write(p)
 }
 
 // RunnerAdapter adapts a strict ranker to the Runner's degradation
@@ -324,26 +294,13 @@ func (a runnerAdapter) Rank(ctx context.Context, candidates []Candidate) (LLMRes
 // budget check.
 func EstimateTokens(candidates []Candidate, maxTokens int) int {
 	if maxTokens <= 0 {
-		maxTokens = DefaultOpenAIMaxTokens
+		maxTokens = DefaultLLMMaxTokens
 	}
 	payload, err := buildLLMPayload(candidates)
 	if err != nil {
 		return maxTokens
 	}
 	return estimateTokens(rankSystemPrompt) + estimateTokens(buildUserMessage(payload)) + maxTokens
-}
-
-// chatRequest is the body of the single chat completion the ranker makes. It
-// carries no tools: the model has nothing to call and no way to write.
-type chatRequest struct {
-	Model     string        `json:"model"`
-	Messages  []chatMessage `json:"messages"`
-	MaxTokens int           `json:"max_tokens"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
 }
 
 // llmPayloadItem is one candidate as it reaches the model. The trusted facts
@@ -540,26 +497,6 @@ func decodeAnswer(content string) (*llmAnswer, error) {
 	return &answer, nil
 }
 
-// extractContent pulls the assistant message out of the provider envelope. A
-// response that is not a chat completion at all is a provider failure, not an
-// invalid answer.
-func extractContent(raw []byte) (string, error) {
-	var envelope struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return "", errors.New("llm ranking: malformed provider response")
-	}
-	if len(envelope.Choices) == 0 {
-		return "", errors.New("llm ranking: provider response has no choices")
-	}
-	return envelope.Choices[0].Message.Content, nil
-}
-
 // stripCodeFence removes a surrounding markdown fence, if any.
 func stripCodeFence(s string) string {
 	t := strings.TrimSpace(s)
@@ -587,19 +524,6 @@ func encodeJSONLine(v any) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(buf.String(), "\n"), nil
-}
-
-// marshalRequest encodes the request body. HTML escaping is off so the frame
-// delimiters stay readable on the wire; the sanitiser has already removed the
-// markup they could have been used for.
-func marshalRequest(req chatRequest) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(req); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // estimateTokens is the same rough estimate the context bundle uses: four

@@ -627,7 +627,7 @@ func ensureSeedRunners(ctx context.Context, runners *runner.Store, sc tenancy.Sc
 		config string
 	}{
 		{"claude", `{"bin":"claude","args":["-p","--output-format","stream-json","--verbose","--permission-mode","acceptEdits"],"output_format":"stream-json","timeout_sec":600}`},
-		{"opencode", `{"bin":"opencode","args":["run"],"output_format":"text","timeout_sec":600}`},
+		{"opencode", `{"bin":"opencode","args":["run","--model","opencode-go/minimax-m3.1-flash"],"output_format":"text","timeout_sec":600}`},
 	} {
 		_, found, err := runners.GetByName(ctx, sc, spec.name)
 		if err != nil {
