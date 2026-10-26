@@ -128,4 +128,7 @@ export const shared: SharedDictionary = {
   "error.code.invalid_credentials": "E-mail ou senha incorretos.",
   "error.code.no_tenant": "Esta conta ainda não faz parte de nenhuma empresa. Peça um convite ao proprietário.",
   "error.code.invalid_invite": "Este convite é inválido, expirou ou já foi usado. Peça um novo link.",
+  "copy.readOnly": "O acesso de convidado é somente leitura.",
+  "copy.choose": "Escolher…",
+  "copy.unassigned": "Sem responsável",
 };

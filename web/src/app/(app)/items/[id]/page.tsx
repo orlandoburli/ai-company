@@ -444,12 +444,13 @@ function durationWords(seconds: number, t: T): string {
 }
 
 /** The message for an API error: the screen's own wording for a code it knows,
- *  the server's own message for every other code. */
+ *  the shared wording for a code the product knows, the server's own message
+ *  for every other code. */
 function apiIssue(t: T, error: unknown, known: Record<string, TranslationKey> = {}): string {
   if (error instanceof ApiError) {
     const key = known[error.code];
     if (key) return t(key);
-    return `${error.code}: ${error.message}`;
+    return apiErrorMessage(error);
   }
   if (error instanceof Error) return error.message;
   return t("error.title");
@@ -618,7 +619,7 @@ function HeaderRow(props: {
               aria-label={t("field.assignee")}
               onChange={(e) => props.onAssignee(e.target.value)}
             >
-              <option value="">{t("item.unassigned")}</option>
+              <option value="">{t("copy.unassigned")}</option>
               {props.members.map((m) => (
                 <option key={m.user_id} value={m.user_id}>
                   {m.name}
@@ -1045,7 +1046,7 @@ function DependenciesPanel(props: {
                   value={pick}
                   onChange={(e) => setPick(e.target.value)}
                 >
-                  <option value="">{t("item.dependencies.choose")}</option>
+                  <option value="">{t("copy.choose")}</option>
                   {(candidates.data ?? [])
                     .filter(
                       (c) =>
@@ -1100,6 +1101,7 @@ function ListEdges(props: {
   onRemove: (depId: string) => Promise<void>;
   push: (kind: "error" | "info", text: string) => void;
 }) {
+  const t = useT();
   return (
     <div>
       <div className="tiny muted" style={{ marginBottom: 4 }}>
@@ -1131,10 +1133,10 @@ function ListEdges(props: {
                 <button
                   type="button"
                   className="btn btn--sm btn--ghost"
-                  aria-label={`Remove dependency on ${edge.other.title}`}
+                  aria-label={t("item.dependencies.removeAria", { title: edge.other.title })}
                   onClick={() => void props.onRemove(edge.id)}
                 >
-                  remove
+                  {t("item.dependencies.remove")}
                 </button>
               ) : null}
             </li>
@@ -1152,13 +1154,14 @@ function ScorePanel(props: {
   score: ItemScore | null;
   loading: boolean;
 }) {
+  const t = useT();
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Score</h2>
+        <h2>{t("item.score.title")}</h2>
         {props.score ? (
           <span className="tiny muted" style={{ marginLeft: "auto" }}>
-            weights {props.score.weights_version}
+            {t("item.score.weights", { version: props.score.weights_version })}
           </span>
         ) : null}
       </div>
@@ -1179,7 +1182,7 @@ function ScorePanel(props: {
                   padding: "7px 10px",
                 }}
               >
-                {explainIneligible(props.score.ineligible)}
+                {explainIneligible(t, props.score.ineligible)}
               </p>
             ) : null}
             <div style={{ marginBottom: 8 }}>
@@ -1187,7 +1190,7 @@ function ScorePanel(props: {
                 {props.score.base_score}
               </span>
               <span className="tiny muted" style={{ marginLeft: 8 }}>
-                base score
+                {t("item.score.base")}
               </span>
             </div>
             <FactorTable
@@ -1195,17 +1198,13 @@ function ScorePanel(props: {
               baseScore={props.score.base_score}
             />
             <p className="tiny muted" style={{ marginTop: 10 }}>
-              Why this number: the base score is the sum of each factor’s
-              contribution. Each factor takes its input (a label, a count, the
-              item’s age) times its weight — with nothing it contributes zero.
-              The same inputs always produce the same number, which is what
-              makes it reproducible.
+              {t("item.score.explain")}
             </p>
           </>
         ) : (
           <EmptyState
-            title="No score available"
-            body="The score panel could not be loaded for this item."
+            title={t("item.score.empty.title")}
+            body={t("item.score.empty.body")}
           />
         )}
       </div>
@@ -1213,18 +1212,18 @@ function ScorePanel(props: {
   );
 }
 
-function explainIneligible(reason: string): string {
+function explainIneligible(t: T, reason: string): string {
   switch (reason) {
     case "closed":
-      return "Closed items (done or cancelled) are not dispatched, so the score is informational only.";
+      return t("item.score.ineligible.closed");
     case "paused":
-      return "Paused — a human removed this from dispatch. Unpause to make it eligible again.";
+      return t("item.score.ineligible.paused");
     case "blocked":
-      return "Blocked — an open blocked-by dependency must be resolved first.";
+      return t("item.score.ineligible.blocked");
     case "epic":
-      return "Epic — this item has open sub-items, so it is not dispatched itself.";
+      return t("item.score.ineligible.epic");
     default:
-      return `Not eligible (${reason}).`;
+      return t("item.score.ineligible.other", { reason });
   }
 }
 
@@ -1237,6 +1236,7 @@ function ActivityTimeline(props: {
   memberName: Map<string, string>;
   onRetry: () => void;
 }) {
+  const t = useT();
   const sorted = useMemo(
     () =>
       [...props.entries].sort(
@@ -1260,8 +1260,8 @@ function ActivityTimeline(props: {
   if (sorted.length === 0) {
     return (
       <EmptyState
-        title="No activity yet"
-        body="Changes to this item — status moves, edits, queue overrides — are recorded here with who made them."
+        title={t("item.activity.empty.title")}
+        body={t("item.activity.empty.body")}
       />
     );
   }
@@ -1273,7 +1273,7 @@ function ActivityTimeline(props: {
           <li key={e.id}>
             <div className="tiny muted">{formatDateTime(e.created_at)}</div>
             <div>
-              {actorName(e, props.memberName)} {activitySentence(e.action, e.before, e.after)}
+              {actorName(e, props.memberName, t)} {activitySentence(e.action, e.before, e.after)}
             </div>
             <AfterDiff entry={e} />
           </li>
@@ -1283,13 +1283,13 @@ function ActivityTimeline(props: {
   );
 }
 
-function actorName(e: ActivityEntry, memberName: Map<string, string>): string {
-  if (e.actor_kind === "system") return "The system";
-  if (e.actor_kind === "agent") return "An agent";
+function actorName(e: ActivityEntry, memberName: Map<string, string>, t: T): string {
+  if (e.actor_kind === "system") return t("item.activity.actor.system");
+  if (e.actor_kind === "agent") return t("item.activity.actor.agent");
   const name = e.actor_user_id
     ? firstName(memberName.get(e.actor_user_id) ?? "")
     : "";
-  return name ? <strong>{name}</strong> as unknown as string : "Someone";
+  return name ? <strong>{name}</strong> as unknown as string : t("item.activity.actor.someone");
 }
 
 function AfterDiff({ entry }: { entry: ActivityEntry }) {

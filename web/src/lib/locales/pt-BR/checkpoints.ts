@@ -33,7 +33,6 @@ export const checkpoints: CheckpointsDictionary = {
   "checkpoints.card.decisionRecorded": "Decisão registrada",
   "checkpoints.card.winningDecision": "already_decided · decisão vencedora",
   "checkpoints.card.timeUnavailable": "Horário indisponível",
-  "checkpoints.card.readOnly": "O acesso de convidado é somente leitura.",
   /* --- as ações de decisão ---------------------------------------------------------- */
   "checkpoints.actions.title": "Direção estruturada",
   "checkpoints.actions.hint": "Os valores são salvos com esta volta",
@@ -49,7 +48,6 @@ export const checkpoints: CheckpointsDictionary = {
   "checkpoints.actions.hintComplete": "Preencha primeiro os campos estruturados obrigatórios.",
   "checkpoints.actions.hintNotes": "As notas da decisão são obrigatórias.",
   "checkpoints.actions.hintFeedback": "O feedback é obrigatório.",
-  "checkpoints.actions.choose": "Escolher…",
   "checkpoints.actions.recorded": "Ponto de decisão {decision} registrado.",
   "checkpoints.actions.alreadyDecided": "already_decided — {message} · decisão vencedora: {winning}",
   "checkpoints.actions.alreadyDecidedNoText": "already_decided — {message} · o servidor informa que outra decisão venceu; atualize a página para carregar os detalhes dela.",

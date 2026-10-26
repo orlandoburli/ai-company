@@ -6,12 +6,14 @@ import { useAsync } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { ErrorBlock, Skeleton } from "@/components/primitives";
 import { ChatPanel } from "@/components/chat";
+import { useT } from "@/lib/i18n";
 
 /**
  * Full-page chat for one thread. Reaches back to the owning item for a
  * breadcrumb; the chat itself is the shared ChatPanel.
  */
 export function ChatRouteClient({ threadId }: { threadId: string }) {
+  const t = useT();
   const { canWrite } = useSession();
   const threadQ = useAsync(
     () => api.getThread(threadId).then((r) => r.thread),
@@ -32,21 +34,21 @@ export function ChatRouteClient({ threadId }: { threadId: string }) {
     <div style={{ maxWidth: 980, margin: "0 auto" }}>
       <p className="tiny muted" style={{ margin: "0 0 6px" }}>
         <Link href="/board" className="rowlink">
-          Board
+          {t("board.title")}
         </Link>
         {item ? (
           <>
             {" / "}
             <Link href={`/items/${item.id}`} className="rowlink">
-              item #{item.number}
+              {t("chat.breadcrumb.item", { number: item.number })}
             </Link>
           </>
         ) : threadQ.data ? (
-          " / item (unavailable)"
+          ` / ${t("chat.breadcrumb.unavailable")}`
         ) : null}
       </p>
       <div className="pagehead">
-        <h1>Chat</h1>
+        <h1>{t("chat.title")}</h1>
         {item ? (
           <span className="pagehead__sub">
             #{item.number} · {item.title}
@@ -60,7 +62,7 @@ export function ChatRouteClient({ threadId }: { threadId: string }) {
 
       {threadQ.error ? (
         <ErrorBlock
-          title="That chat thread could not load."
+          title={t("chat.loadFailed")}
           message={threadQ.error.message}
           retry={() => void threadQ.reload()}
         />

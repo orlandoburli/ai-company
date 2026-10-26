@@ -31,7 +31,6 @@ export const checkpoints = {
   "checkpoints.card.decisionRecorded": "Decision recorded",
   "checkpoints.card.winningDecision": "already_decided · winning decision",
   "checkpoints.card.timeUnavailable": "Time unavailable",
-  "checkpoints.card.readOnly": "Guest access is read-only.",
   /* --- the decision actions ---------------------------------------------------- */
   "checkpoints.actions.title": "Structured direction",
   "checkpoints.actions.hint": "Values are saved with this lap",
@@ -47,7 +46,6 @@ export const checkpoints = {
   "checkpoints.actions.hintComplete": "Complete the required structured fields first.",
   "checkpoints.actions.hintNotes": "Decision notes are required.",
   "checkpoints.actions.hintFeedback": "Feedback is required.",
-  "checkpoints.actions.choose": "Choose…",
   "checkpoints.actions.recorded": "Checkpoint {decision} recorded.",
   "checkpoints.actions.alreadyDecided": "already_decided — {message} · winning decision: {winning}",
   "checkpoints.actions.alreadyDecidedNoText": "already_decided — {message} · the server reports another decision won; refresh to load its details.",

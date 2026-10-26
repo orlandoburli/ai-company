@@ -1,5 +1,10 @@
 import type { Item, Priority, Status } from "./types";
-import { getCurrentLang, translate } from "./locales";
+import { getCurrentLang, translate, type TranslationKey, type TranslateValues } from "./locales";
+
+/** The string for a key, in the language on screen. */
+function tr<K extends TranslationKey>(key: K, values?: TranslateValues<K>): string {
+  return translate(getCurrentLang(), key, values);
+}
 
 /**
  * The status names, in the language on screen. They are the product's shared
@@ -37,22 +42,22 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 };
 
 /** Short score factor name for display. Matches internal/priority/score.go keys. */
-export const FACTOR_LABELS: Record<string, string> = {
-  priority: "Priority",
-  bug: "Bug label",
-  unblocks: "Unblocks",
-  open_pr: "Open PR",
-  age: "Age",
+const FACTOR_KEYS: Record<string, TranslationKey> = {
+  priority: "item.factor.priority",
+  bug: "item.factor.bug",
+  unblocks: "item.factor.unblocks",
+  open_pr: "item.factor.openPr",
+  age: "item.factor.age",
 };
 
 export function factorLabel(key: string): string {
-  return (
-    FACTOR_LABELS[key] ??
-    key
-      .replace(/^hard_label_/, "Label ")
-      .replace(/_/g, " ")
-      .replace(/^\w/, (c) => c.toUpperCase())
-  );
+  const known = FACTOR_KEYS[key];
+  if (known) return tr(known);
+  if (key.startsWith("hard_label_")) return `${tr("item.factor.label")} ${key.slice("hard_label_".length)}`;
+  return key
+    .replace(/^hard_label_/, "Label ")
+    .replace(/_/g, " ")
+    .replace(/^\w/, (c) => c.toUpperCase());
 }
 
 export function formatDate(value?: string): string {
@@ -123,44 +128,44 @@ export function activitySentence(
   const diff = diffSummary(before, after);
   switch (action) {
     case "item.created":
-      return "created this item";
+      return tr("item.activity.created");
     case "item.deleted":
-      return "deleted this item";
+      return tr("item.activity.deleted");
     case "item.updated":
-      return diff ? `updated ${diff}` : "edited details";
+      return diff ? tr("item.activity.updated", { diff }) : tr("item.activity.edited");
     case "item.status_changed": {
       const b = fieldOf(before, "status");
       const a = fieldOf(after, "status");
-      if (b && a) return `moved status ${b} → ${a}`;
-      if (a) return `moved status to ${a}`;
-      return "changed status";
+      if (b && a) return tr("item.activity.statusChanged", { from: b, to: a });
+      if (a) return tr("item.activity.statusChangedTo", { to: a });
+      return tr("item.activity.statusChangedGeneric");
     }
     case "item.paused":
-      return diff ? `paused (${diff})` : "paused this item";
+      return diff ? tr("item.activity.paused", { diff }) : tr("item.activity.pausedGeneric");
     case "item.unpaused":
-      return "unpaused this item";
+      return tr("item.activity.unpaused");
     case "item.pinned":
-      return "pinned this item to rank 1";
+      return tr("item.activity.pinned");
     case "item.unpinned":
-      return "unpinned this item";
+      return tr("item.activity.unpinned");
     case "item.dependency_added":
-      return `added a dependency: blocked by ${diff || "another item"}`;
+      return tr("item.activity.dependencyAdded", { diff: diff || tr("item.activity.dependencyOther") });
     case "item.dependency_removed":
-      return `removed a dependency: ${diff || "edge"}`;
+      return tr("item.activity.dependencyRemoved", { diff: diff || tr("item.activity.dependencyEdge") });
     case "product.created":
-      return "created a product";
+      return tr("item.activity.productCreated");
     case "product.updated":
-      return diff ? `updated a product ${diff}` : "edited a product";
+      return diff ? tr("item.activity.productUpdated", { diff }) : tr("item.activity.productEdited");
     case "product.deleted":
-      return "deleted a product";
+      return tr("item.activity.productDeleted");
     case "project.created":
-      return "created a project";
+      return tr("item.activity.projectCreated");
     case "project.updated":
-      return diff ? `updated a project ${diff}` : "edited a project";
+      return diff ? tr("item.activity.projectUpdated", { diff }) : tr("item.activity.projectEdited");
     case "project.deleted":
-      return "deleted a project";
+      return tr("item.activity.projectDeleted");
     default:
-      return diff ? `${action.replace(/_/g, " ")} ${diff}` : action.replace(/_/g, " ");
+      return diff ? tr("item.activity.other", { action: action.replace(/_/g, " "), diff }) : action.replace(/_/g, " ");
   }
 }
 

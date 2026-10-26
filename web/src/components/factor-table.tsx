@@ -2,6 +2,7 @@
 
 import type { ScoreFactor } from "@/lib/types";
 import { factorLabel } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 
 /**
  * The reproducible factor breakdown behind a base score: input, weight and
@@ -14,14 +15,15 @@ export function FactorTable({
   factors: ScoreFactor[];
   baseScore: number;
 }) {
+  const t = useT();
   return (
     <table className="factors">
       <thead>
         <tr>
-          <th scope="col">Factor</th>
-          <th scope="col">Input</th>
-          <th scope="col">Weight</th>
-          <th scope="col">Contribution</th>
+          <th scope="col">{t("item.factor.factor")}</th>
+          <th scope="col">{t("item.factor.input")}</th>
+          <th scope="col">{t("item.factor.weight")}</th>
+          <th scope="col">{t("item.factor.contribution")}</th>
         </tr>
       </thead>
       <tbody>
@@ -38,7 +40,7 @@ export function FactorTable({
         ))}
         <tr>
           <td colSpan={3} style={{ fontWeight: 600 }}>
-            Base score
+            {t("item.factor.base")}
           </td>
           <td style={{ fontWeight: 600 }}>{baseScore}</td>
         </tr>

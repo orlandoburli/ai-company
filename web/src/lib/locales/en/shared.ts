@@ -126,6 +126,9 @@ export const shared = {
   "error.code.invalid_credentials": "Email or password is incorrect.",
   "error.code.no_tenant": "This account is not a member of any company yet. Ask its owner for an invitation.",
   "error.code.invalid_invite": "This invitation is invalid, expired or has already been used. Ask for a new link.",
+  "copy.readOnly": "Guest access is read-only.",
+  "copy.choose": "Choose…",
+  "copy.unassigned": "Unassigned",
 } as const;
 
 /** The shared strings with their literal types. */

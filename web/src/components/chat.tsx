@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import {
   api,
+  ApiError,
   isTerminalJobState,
   type Agent,
   type Job,
@@ -32,6 +33,11 @@ import {
   Toasts,
   apiErrorMessage,
 } from "@/components/primitives";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/lib/locales";
+
+/** The translator, for the helpers that live outside a component. */
+type T = ReturnType<typeof useT>;
 
 /**
  * Item chat: message timeline, @agent mention composer, live streaming agent
@@ -42,6 +48,35 @@ import {
 const JOB_HISTORY = 30;
 const MAX_LOG_TAIL = 60;
 
+/** The states a run can be in, in the language on screen. */
+const JOB_STATE_KEYS: Record<string, TranslationKey> = {
+  queued: "chat.jobState.queued",
+  running: "chat.jobState.running",
+  succeeded: "chat.jobState.succeeded",
+  failed: "chat.jobState.failed",
+  cancelled: "chat.jobState.cancelled",
+};
+
+function jobStateLabel(t: T, state: string): string {
+  const key = JOB_STATE_KEYS[state];
+  return key ? t(key) : state.replaceAll("_", " ");
+}
+
+/**
+ * The message for an API error: the screen's own wording for a code it knows,
+ * the shared wording for a code the product knows, the server's own message
+ * for every other code.
+ */
+function apiIssue(t: T, error: unknown, known: Record<string, TranslationKey> = {}): string {
+  if (error instanceof ApiError) {
+    const key = known[error.code];
+    if (key) return t(key);
+    return apiErrorMessage(error);
+  }
+  if (error instanceof Error) return error.message;
+  return t("error.title");
+}
+
 export function ChatPanel(props: {
   threadId: string;
   canWrite: boolean;
@@ -50,6 +85,7 @@ export function ChatPanel(props: {
   /** Link to the full-page version, shown when embedded in the item tab. */
   fullHref?: string;
 }) {
+  const t = useT();
   const { toasts, push } = useToasts();
   const { me } = useSession();
   const threadId = props.threadId;
@@ -111,16 +147,16 @@ export function ChatPanel(props: {
       mergeMessages(r.messages);
       msgOk = true;
     } catch (err) {
-      setMessagesErr(err instanceof Error ? err.message : "Load failed.");
+      setMessagesErr(apiIssue(t, err));
     }
     try {
       const r = await api.threadJobs(threadId, JOB_HISTORY);
       setJobs(r.jobs);
     } catch (err) {
-      setJobsErr(err instanceof Error ? err.message : "Load failed.");
+      setJobsErr(apiIssue(t, err));
     }
     if (msgOk) void refreshAfterJobDone();
-  }, [threadId, mergeMessages, refreshAfterJobDone]);
+  }, [threadId, mergeMessages, refreshAfterJobDone, t]);
 
   useEffect(() => {
     setMessages(null);
@@ -197,9 +233,9 @@ export function ChatPanel(props: {
       try {
         const r = await api.cancelJob(job.id);
         streamCb.onJobUpdated(r.job);
-        push("info", "Cancel requested for the run.");
+        push("info", t("chat.cancelRequested"));
       } catch (err) {
-        push("error", apiErrorMessage(err));
+        push("error", apiIssue(t, err));
       } finally {
         setCancelling((c) => {
           const next = new Set(c);
@@ -218,17 +254,17 @@ export function ChatPanel(props: {
       <div className="chat__tools spread">
         <span className="tiny muted">
           {canWrite
-            ? "Mention an agent with @name to route work."
-            : "Read-only view — guests can read the chat but not write."}
+            ? t("chat.hint.write")
+            : t("chat.hint.readOnly")}
         </span>
         <span className="stack" style={{ gap: 6 }}>
           {props.fullHref ? (
             <Link
               className="btn btn--sm btn--ghost"
               href={props.fullHref}
-              aria-label="Open chat as a full page"
+              aria-label={t("chat.fullPage.aria")}
             >
-              Full page
+              {t("chat.fullPage")}
             </Link>
           ) : null}
           {canWrite ? (
@@ -237,7 +273,7 @@ export function ChatPanel(props: {
               className="btn btn--sm"
               onClick={() => setRunOpen(true)}
             >
-              Run agent
+              {t("chat.runAgent")}
             </button>
           ) : null}
         </span>
@@ -252,14 +288,14 @@ export function ChatPanel(props: {
           </div>
         ) : messagesErr ? (
           <ErrorBlock
-            title="The conversation could not load."
+            title={t("chat.conversation.loadFailed")}
             message={messagesErr}
             retry={() => void load()}
           />
         ) : rows.length === 0 ? (
           <EmptyState
-            title="No messages yet"
-            body="Write the first message and mention an agent with @name — every enabled, mentioned agent gets its own run. The reply streams back here."
+            title={t("chat.empty.title")}
+            body={t("chat.empty.body")}
           />
         ) : (
           <ul className="chat__list">
@@ -289,7 +325,7 @@ export function ChatPanel(props: {
         )}
         {jobsErr ? (
           <ErrorBlock
-            title="Run history could not load."
+            title={t("chat.history.loadFailed")}
             message={jobsErr}
             retry={() => void load()}
           />
@@ -307,8 +343,7 @@ export function ChatPanel(props: {
         />
       ) : (
         <p className="tiny muted" style={{ margin: "6px 2px 0" }}>
-          Members can post messages and run agents. Resize the panel or open the
-          full page to read comfortably.
+          {t("chat.readOnlyHint")}
         </p>
       )}
 
@@ -343,6 +378,7 @@ const MessageRow = memo(function MessageRow(props: {
   userName: (id: string) => string;
   agentName: (id: string) => string;
 }) {
+  const t = useT();
   const m = props.msg;
 
   if (m.author_kind === "system") {
@@ -353,7 +389,7 @@ const MessageRow = memo(function MessageRow(props: {
         </span>
         <div className="msg__main">
           <div className="msg__head">
-            <span className="role role--system">system</span>
+            <span className="role role--system">{t("chat.role.system")}</span>
             <span className="tiny muted">{formatDateTime(m.created_at)}</span>
           </div>
           <div className="msg__body muted">{renderMarkdown(m.body_md)}</div>
@@ -372,9 +408,9 @@ const MessageRow = memo(function MessageRow(props: {
         <div className="msg__main">
           <div className="msg__head">
             <span className="role role--agent">
-              {name ? `@${name}` : "agent"}
+              {name ? `@${name}` : t("chat.role.agent")}
             </span>
-            <span className="role role--kind">agent</span>
+            <span className="role role--kind">{t("chat.role.agent")}</span>
             <span className="tiny muted">{formatDateTime(m.created_at)}</span>
           </div>
           <div className="msg__body">{renderMarkdown(m.body_md)}</div>
@@ -392,9 +428,9 @@ const MessageRow = memo(function MessageRow(props: {
       </span>
       <div className="msg__main">
         <div className="msg__head">
-          <span className="role role--human">{name || "someone"}</span>
-          {isYou ? <span className="tiny muted">(you)</span> : null}
-          <span className="role role--kind">member</span>
+          <span className="role role--human">{name || t("chat.role.someone")}</span>
+          {isYou ? <span className="tiny muted">{t("chat.role.you")}</span> : null}
+          <span className="role role--kind">{t("chat.role.member")}</span>
           <span className="tiny muted">{formatDateTime(m.created_at)}</span>
         </div>
         <div className="msg__body">{renderMarkdown(m.body_md)}</div>
@@ -412,6 +448,7 @@ const JobRow = memo(function JobRow(props: {
   cancelling: boolean;
   onCancel: () => void;
 }) {
+  const t = useT();
   const { job } = props;
   const open = job.state === "queued" || job.state === "running";
   const cls =
@@ -433,13 +470,13 @@ const JobRow = memo(function JobRow(props: {
       <div className="msg__main">
         <div className="msg__head">
           <span className="role role--agent">
-            {props.agentName ? `@${props.agentName}` : "agent"}
+            {props.agentName ? `@${props.agentName}` : t("chat.role.agent")}
           </span>
           <span className={`jobchip ${cls}`}>
             <span className="jobchip__dot" aria-hidden />
-            {job.state}
+            {jobStateLabel(t, job.state)}
           </span>
-          <span className="tiny muted elapsed">{elapsedText(job, props.now)}</span>
+          <span className="tiny muted elapsed">{elapsedText(job, props.now, t)}</span>
         </div>
         {job.error ? (
           <div className="msg__body jobrow__error" role="alert">
@@ -458,10 +495,10 @@ const JobRow = memo(function JobRow(props: {
               type="button"
               className="btn btn--sm btn--ghost btn--danger"
               disabled={props.cancelling}
-              aria-label={`Cancel the run by @${props.agentName}`}
+              aria-label={t("chat.cancel.aria", { agent: props.agentName })}
               onClick={props.onCancel}
             >
-              {props.cancelling ? "Cancelling…" : "Cancel"}
+              {props.cancelling ? t("chat.cancelling") : t("chat.cancel")}
             </button>
           </div>
         ) : null}
@@ -478,6 +515,7 @@ function Composer(props: {
   onMessage: (m: Message) => void;
   onJobs: (jobs: Job[]) => void;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -533,7 +571,10 @@ function Composer(props: {
       if (r.jobs.length > 0) props.onJobs(r.jobs);
     } catch (err) {
       // Server envelopes (unknown_agent, agent_disabled, …) surface verbatim.
-      setSendError(apiErrorMessage(err));
+      setSendError(apiIssue(t, err, {
+        unknown_agent: "chat.err.unknownAgent",
+        agent_disabled: "chat.err.agentDisabled",
+      }));
     } finally {
       setPosting(false);
     }
@@ -586,10 +627,10 @@ function Composer(props: {
           <div
             className="mention"
             role="listbox"
-            aria-label="Mention an agent"
+            aria-label={t("chat.mention.aria")}
           >
             <div className="tiny muted" style={{ padding: "4px 10px 2px" }}>
-              Mention an agent
+              {t("chat.mention.title")}
             </div>
             {candidates.map((a, i) => (
               <button
@@ -610,12 +651,12 @@ function Composer(props: {
                   className="tiny muted"
                   style={{ marginLeft: "auto", flex: "none" }}
                 >
-                  {a.runners?.[0]?.name ?? "no runner"}
+                  {a.runners?.[0]?.name ?? t("chat.noRunner")}
                 </span>
               </button>
             ))}
             <div className="tiny muted" style={{ padding: "2px 10px 4px" }}>
-              ↑↓ to move · Enter to pick · Esc to dismiss
+              {t("chat.mention.hint")}
             </div>
           </div>
         ) : noAgents ? (
@@ -624,17 +665,17 @@ function Composer(props: {
               className="tiny muted"
               style={{ padding: "6px 10px", display: "block" }}
             >
-              No enabled agents yet. Add and enable one in Settings → Agents.
+              {t("chat.mention.noAgents")}
             </span>
           </div>
         ) : null}
         <textarea
           ref={taRef}
           className="input composer__input"
-          placeholder="Write to the thread… type @ to mention an agent"
+          placeholder={t("chat.placeholder")}
           rows={2}
           value={draft}
-          aria-label="Message"
+          aria-label={t("chat.messageAria")}
           onChange={(e) => {
             setDraft(e.target.value);
             updateMention(e.target.value, e.target.selectionStart ?? 0);
@@ -645,8 +686,7 @@ function Composer(props: {
       </div>
       <div className="composer__foot spread">
         <span className="tiny muted">
-          Enter to send · Shift+Enter for a new line · @name routes the message
-          to an agent
+          {t("chat.composer.hint")}
         </span>
         <button
           type="button"
@@ -654,7 +694,7 @@ function Composer(props: {
           disabled={!canSend}
           onClick={() => void send()}
         >
-          {posting ? "Sending…" : "Send"}
+          {posting ? t("chat.sending") : t("chat.send")}
         </button>
       </div>
     </div>
@@ -670,6 +710,7 @@ function RunAgentDialog(props: {
   onStarted: (job: Job, message: Message | null) => void;
   push: (kind: "error" | "info", text: string) => void;
 }) {
+  const t = useT();
   const [agentId, setAgentId] = useState(props.enabledAgents[0]?.id ?? "");
   const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
@@ -686,10 +727,10 @@ function RunAgentDialog(props: {
         instructions: instructions.trim() ? instructions.trim() : undefined,
       });
       props.onStarted(r.job, r.message);
-      props.push("info", "Run queued.");
+      props.push("info", t("chat.runQueued"));
     } catch (err) {
       // queue_full & friends arrive verbatim from the server envelope.
-      setError(apiErrorMessage(err));
+      setError(apiIssue(t, err, { queue_full: "chat.err.queueFull" }));
       setBusy(false);
     }
   }
@@ -698,20 +739,19 @@ function RunAgentDialog(props: {
 
   return (
     <Dialog
-      title="Run an agent"
-      description="The agent gets the thread context and its soul file. Optional instructions are recorded as your message on the thread."
+      title={t("chat.runDialog.title")}
+      description={t("chat.runDialog.description")}
       onClose={props.onClose}
       width={480}
     >
       {props.enabledAgents.length === 0 ? (
         <>
           <p className="tiny muted" style={{ marginTop: 0 }}>
-            No enabled agents yet. Add and enable one in Settings → Agents
-            first.
+            {t("chat.runDialog.noAgents")}
           </p>
           <div className="dialog__row">
             <button type="button" className="btn" onClick={props.onClose}>
-              Close
+              {t("chat.runDialog.close")}
             </button>
           </div>
         </>
@@ -723,7 +763,7 @@ function RunAgentDialog(props: {
             </div>
           ) : null}
           <div className="field">
-            <label htmlFor="run-agent">Agent</label>
+            <label htmlFor="run-agent">{t("chat.runDialog.agent")}</label>
             <select
               id="run-agent"
               className="input"
@@ -732,34 +772,33 @@ function RunAgentDialog(props: {
             >
               {props.enabledAgents.map((a) => (
                 <option key={a.id} value={a.id}>
-                  @{a.name} — {a.role} ({a.runners?.map((runner) => runner.name).join(" → ") || "no runner"})
+                  @{a.name} — {a.role} ({a.runners?.map((runner) => runner.name).join(" → ") || t("chat.noRunner")})
                 </option>
               ))}
             </select>
             {agent ? (
               <span className="tiny muted">
-                Role {agent.role} · runs at most {agent.concurrency_limit} at a
-                time.
+                {t("chat.runDialog.roleHint", { role: agent.role, count: agent.concurrency_limit })}
               </span>
             ) : null}
           </div>
           <div className="field">
-            <label htmlFor="run-instructions">Instructions (optional)</label>
+            <label htmlFor="run-instructions">{t("chat.runDialog.instructions")}</label>
             <textarea
               id="run-instructions"
               className="input"
               rows={4}
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
-              placeholder="What should the agent focus on this run?"
+              placeholder={t("chat.runDialog.instructionsPlaceholder")}
             />
           </div>
           <div className="dialog__row">
             <button type="button" className="btn" onClick={props.onClose}>
-              Cancel
+              {t("field.cancel")}
             </button>
             <button type="submit" className="btn btn--primary" disabled={busy}>
-              {busy ? "Queuing…" : "Run agent"}
+              {busy ? t("chat.runDialog.queuing") : t("chat.runAgent")}
             </button>
           </div>
         </form>
@@ -788,7 +827,7 @@ function useNames(
   return useMemo(() => ({ userName, agentName }), [userName, agentName]);
 }
 
-function elapsedText(job: Job, now: number): string {
+function elapsedText(job: Job, now: number, t: T): string {
   const from = job.started_at
     ? Date.parse(job.started_at)
     : Date.parse(job.created_at);
@@ -799,9 +838,9 @@ function elapsedText(job: Job, now: number): string {
   const ss = s % 60;
   if (mm >= 60) {
     const h = Math.floor(mm / 60);
-    return `${h}h${mm % 60}m elapsed`;
+    return t("chat.elapsed.hours", { hours: h, minutes: mm % 60 });
   }
-  return `${mm}:${String(ss).padStart(2, "0")} elapsed`;
+  return t("chat.elapsed.clock", { minutes: mm, seconds: String(ss).padStart(2, "0") });
 }
 
 /** Last few output lines of a running job, for the live-stream bubble. */

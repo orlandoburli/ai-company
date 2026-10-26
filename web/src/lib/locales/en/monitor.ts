@@ -8,7 +8,6 @@ export const monitor = {
   "monitor.started": "started {when}",
   "monitor.cancelRun": "Cancel run",
   "monitor.cancelRequested": "Run cancellation requested.",
-  "monitor.readOnly": "Guest access is read-only.",
   "monitor.itemUnavailable": "Item details are unavailable: {error}",
   "monitor.templateUnavailable": "Template metadata unavailable; using the run snapshot where possible.",
   /* --- the run variables ---------------------------------------------------- */

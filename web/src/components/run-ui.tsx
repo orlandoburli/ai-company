@@ -91,13 +91,14 @@ function interventionKindLabel(t: T, kind: string): string {
 
 /**
  * The message for an API error: the screen's own wording for a code it knows,
- * the server's own message for every other code.
+ * the shared wording for a code the product knows, the server's own message
+ * for every other code.
  */
 function apiIssue(t: T, error: unknown, known: Record<string, TranslationKey> = {}): string {
   if (error instanceof ApiError) {
     const key = known[error.code];
     if (key) return t(key);
-    return `${error.code} — ${apiErrorMessage(error)}`;
+    return apiErrorMessage(error);
   }
   if (error instanceof Error) return error.message;
   return t("error.title");
@@ -259,7 +260,7 @@ export function CheckpointActions({ checkpoint, onDecided, compact = false }: { 
         <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired || !decisionText.trim()} onClick={() => void decide("reject")} title={!decisionText.trim() ? t("checkpoints.actions.hintFeedback") : missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.reject")}</button>
         <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired} onClick={() => void decide("abort")} title={missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.abort")}</button>
       </div>
-    </> : <p className="tiny muted">{t("checkpoints.card.readOnly")}</p>}
+    </> : <p className="tiny muted">{t("copy.readOnly")}</p>}
     <Toasts toasts={toasts} />
   </div>;
 }
@@ -267,7 +268,7 @@ export function CheckpointActions({ checkpoint, onDecided, compact = false }: { 
 function CheckpointField({ spec, value, onChange, disabled }: { spec: CheckpointFieldSpec; value: unknown; onChange: (v: unknown) => void; disabled: boolean }) {
   const t = useT();
   if (spec.type === "boolean") return <label className="checkpoint-field"><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />{spec.label}{spec.required ? " *" : ""}</label>;
-  if (spec.type === "enum") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><select className="input" disabled={disabled} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}><option value="">{t("checkpoints.actions.choose")}</option>{(spec.options ?? []).map((option) => <option key={option}>{option}</option>)}</select></Field>;
+  if (spec.type === "enum") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><select className="input" disabled={disabled} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}><option value="">{t("copy.choose")}</option>{(spec.options ?? []).map((option) => <option key={option}>{option}</option>)}</select></Field>;
   if (spec.type === "text") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><textarea className="input" required={spec.required} disabled={disabled} value={value == null ? "" : String(value)} rows={3} onChange={(e) => onChange(e.target.value)} /></Field>;
   return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><input className="input" type={spec.type === "number" ? "number" : "text"} required={spec.required} disabled={disabled} value={value == null ? "" : String(value)} onChange={(e) => onChange(spec.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} /></Field>;
 }
@@ -662,7 +663,7 @@ export function RunMonitor({ runId }: { runId: string }) {
          {!checkpoint && activeStep.result?.artifacts?.length ? <Artifacts artifacts={activeStep.result.artifacts} /> : null}
         <Manifest title={t("monitor.inspector.memoryManifest")} entries={activeStep.memory_manifest ?? []} /><Manifest title={t("monitor.inspector.contextManifest")} entries={activeStep.context_manifest ?? []} />
         <details className="raw-tail"><summary>{t("monitor.inspector.rawTail", { count: logs.filter((log) => log.step_run_id === activeStep.id).length })}</summary><pre>{logs.filter((log) => log.step_run_id === activeStep.id).slice(-80).map((log) => `[${log.seq}] ${log.message}`).join("\n") || t("monitor.inspector.noLogs")}</pre></details>
-        {canWrite ? <div className="intervention-box"><h4>{t("monitor.interventions.title")}</h4><p className="tiny muted">{t("monitor.interventions.hint")}</p><label className="field"><span>{t("monitor.interventions.instruction")}</span><textarea className="input" rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} disabled={!canRunIntervention} placeholder={activeStep.state === "running" ? t("monitor.interventions.placeholderRunning") : t("monitor.interventions.placeholderRedo")} /></label><div className="run-actions"><button className="btn btn--sm" disabled={!canWrite || !activeStep || activeStep.state !== "running" || busy || terminal} onClick={() => void intervention("inject")}>{t("monitor.interventions.inject")}</button><button className="btn btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("redo")}>{t("monitor.interventions.redo")}</button><button className="btn btn--danger btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("stop")}>{t("monitor.interventions.stop")}</button></div></div> : <p className="tiny muted">{t("monitor.readOnly")}</p>}
+        {canWrite ? <div className="intervention-box"><h4>{t("monitor.interventions.title")}</h4><p className="tiny muted">{t("monitor.interventions.hint")}</p><label className="field"><span>{t("monitor.interventions.instruction")}</span><textarea className="input" rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} disabled={!canRunIntervention} placeholder={activeStep.state === "running" ? t("monitor.interventions.placeholderRunning") : t("monitor.interventions.placeholderRedo")} /></label><div className="run-actions"><button className="btn btn--sm" disabled={!canWrite || !activeStep || activeStep.state !== "running" || busy || terminal} onClick={() => void intervention("inject")}>{t("monitor.interventions.inject")}</button><button className="btn btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("redo")}>{t("monitor.interventions.redo")}</button><button className="btn btn--danger btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("stop")}>{t("monitor.interventions.stop")}</button></div></div> : <p className="tiny muted">{t("copy.readOnly")}</p>}
       </> : <EmptyState title={t("monitor.inspector.empty.title")} body={t("monitor.inspector.empty.body")} />}</div></section>
       <aside className="section intervention-history"><header className="section__head"><h2>{t("monitor.activity.title")}</h2><span className="tiny muted">{t("monitor.activity.checkpointEvents", { count: checkpoints.length })}</span></header><div className="section__body run-stack"><h4>{t("monitor.activity.interventionOrder")}</h4>{interventions.length ? [...interventions].sort((a, b) => a.seq - b.seq).map((action) => <div className="intervention-row" key={action.id}><span className="mono">#{action.seq}</span><strong>{interventionKindLabel(t, action.kind)}</strong><span className="muted">{action.body_md || action.node_id || t("monitor.activity.run")}</span><span className="tiny muted">{action.delivered_at ? t("monitor.activity.delivered") : t("monitor.activity.queued")}</span></div>) : <p className="tiny muted">{t("monitor.activity.noInterventions")}</p>}
         <h4>{t("monitor.activity.checkpointEventsTitle")}</h4>{checkpoints.map((cp) => <div className="intervention-row" key={cp.id}><span className="mono">{t("monitor.graph.lap", { lap: cp.lap })}</span><StateChip state={cp.state} /><span>{cp.decision_md || briefHeadline(cp.summary_md) || cp.node_id}</span></div>)}<Link href="/checkpoints" className="rowlink tiny">{t("monitor.activity.openInbox")}</Link>
