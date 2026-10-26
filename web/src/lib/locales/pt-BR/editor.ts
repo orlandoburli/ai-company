@@ -250,15 +250,12 @@ export const editor: EditorDictionary = {
   "editor.deleteDraft.message": "Excluir o modelo de rascunho “{name}”? Não é possível desfazer.",
   "editor.deleteDraft.confirm": "Excluir",
   /* --- o grafo inicial ---------------------------------------------------------------------------------- */
-  "editor.starter.reviewName": "briefing de revisão",
-  "editor.starter.reviewPrompt": "Revise o item e resuma o trabalho necessário.",
-  "editor.starter.approveName": "aprovação do plano",
-  "editor.starter.implementName": "implementação",
-  "editor.starter.implementPrompt": "Implemente o plano aprovado.",
   /* --- os pequenos detalhes ---------------------------------------------------------------------------- */
   "editor.disabledPrefix": "Desabilitado · ",
   "editor.chain.default": "padrão",
   "editor.chain.notSet": "não definido",
   "editor.chain.noRunner": "Este agente não tem runner, então não pode ser despachado.",
   "editor.chain.chooseAgent": "Escolha um agente para ver seus runners padrão e de reserva.",
+  "editor.starter.startName": "Início",
+  "editor.starter.endName": "Fim",
 };

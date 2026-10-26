@@ -248,17 +248,14 @@ export const editor = {
   "editor.deleteDraft.message": "Delete the draft template “{name}”? This cannot be undone.",
   "editor.deleteDraft.confirm": "Delete",
   /* --- the starter graph --------------------------------------------------------------------------------- */
-  "editor.starter.reviewName": "review brief",
-  "editor.starter.reviewPrompt": "Review the item and summarize the work needed.",
-  "editor.starter.approveName": "approve plan",
-  "editor.starter.implementName": "implement",
-  "editor.starter.implementPrompt": "Implement the approved plan.",
   /* --- the small pieces ------------------------------------------------------------------------------------ */
   "editor.disabledPrefix": "Disabled · ",
   "editor.chain.default": "default",
   "editor.chain.notSet": "not set",
   "editor.chain.noRunner": "This agent has no runner, so it cannot be dispatched.",
   "editor.chain.chooseAgent": "Choose an agent to see its default and fallback runners.",
+  "editor.starter.startName": "Start",
+  "editor.starter.endName": "End",
 } as const;
 
 /** The editor strings with their literal types. */

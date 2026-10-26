@@ -402,24 +402,18 @@ function nodeWidth(node: WorkflowNode): number {
   return isTerminator(node.kind) ? TERMINATOR_W : CARD_W;
 }
 function starterGraph(agentId = "", agentRole = "dev"): WorkflowGraph {
-  // The flow says where it begins and where it ends, the way the seeded
-  // templates do: a start hands over to the first agent, the end takes the
-  // last word.
+  // A new template is the person's work, not ours: it starts with the two
+  // boundaries and nothing else — no review, no approval, no implementation.
+  // The flow says where it begins and where it ends; the steps are theirs.
   const lang = getCurrentLang();
-  const start = newNode("start", { x: 52, y: 140 });
-  const first = newNode("agent", { x: 372, y: 140 });
-  const gate = newNode("checkpoint", { x: 744, y: 140 });
-  const second = newNode("agent", { x: 1116, y: 140 });
-  const end = newNode("end", { x: 1540, y: 140 });
-  first.name = translate(lang, "editor.starter.reviewName"); first.config = { agent_id: agentId, prompt_tmpl: translate(lang, "editor.starter.reviewPrompt"), outputs: { findings_md: "string" } };
-  gate.name = translate(lang, "editor.starter.approveName");
-  second.name = translate(lang, "editor.starter.implementName"); second.config = { agent_id: agentId, prompt_tmpl: translate(lang, "editor.starter.implementPrompt"), outputs: {} }; second.workspace = "worktree";
-  if (agentId) { first.type = `agent.${agentRole}`; second.type = `agent.${agentRole}`; }
-  return { schema_version: 1, nodes: [start, first, gate, second, end], edges: [
-    { id: makeId(), from: { node: start.id, port: "main" }, to: { node: first.id, port: "in" } },
-    { id: makeId(), from: { node: first.id, port: "main" }, to: { node: gate.id, port: "in" } },
-    { id: makeId(), from: { node: gate.id, port: "approved" }, to: { node: second.id, port: "in" } },
-    { id: makeId(), from: { node: second.id, port: "main" }, to: { node: end.id, port: "in" } },
+  const start = newNode("start", { x: 120, y: 140 });
+  const end = newNode("end", { x: 520, y: 140 });
+  start.name = translate(lang, "editor.starter.startName");
+  end.name = translate(lang, "editor.starter.endName");
+  void agentId;
+  void agentRole;
+  return { schema_version: 1, nodes: [start, end], edges: [
+    { id: makeId(), from: { node: start.id, port: "main" }, to: { node: end.id, port: "in" } },
   ] };
 }
 function isPublished(template: WorkflowTemplate | WorkflowTemplateSummary): boolean {
@@ -454,7 +448,12 @@ export function WorkflowsPage() {
     try {
       const agent = agents.data?.agents.find((candidate) => candidate.enabled);
       const graph = starterGraph(agent?.id ?? "", agent?.role || "dev");
-      const response = await api.createWorkflowTemplate({ name: t("workflows.createName"), applies_to: "", max_concurrency: 4, graph });
+      // A tenant may not have two templates with the same name and version, so
+      // a new one gets a name that is free.
+      const taken = new Set((templates.data?.templates ?? []).map((template) => template.name));
+      let name = t("workflows.createName");
+      for (let index = 2; taken.has(name); index += 1) name = `${t("workflows.createName")} ${index}`;
+      const response = await api.createWorkflowTemplate({ name, applies_to: "", max_concurrency: 4, graph });
       router.push(`/workflows/${response.template.id}`);
     } catch (error) { push("error", listErrorText(error, t)); }
   }
