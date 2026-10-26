@@ -367,7 +367,7 @@ function ProjectTree({
         <li key={n.project.id}>
           <Link
             href={`/board?project_id=${n.project.id}`}
-            className="tree-row"
+            className={`tree-row ${depth > 0 ? "tree-row--nested" : ""}`}
             aria-current={active === n.project.id || undefined}
             style={{ paddingLeft: 6 }}
             onClick={onNavigate}
@@ -380,7 +380,7 @@ function ProjectTree({
             </span>
           </Link>
           {n.children.length > 0 ? (
-            <div style={{ paddingLeft: 12 }}>
+            <div className="tree-nest">
               <ProjectTree nodes={n.children} active={active} depth={depth + 1} onNavigate={onNavigate} />
             </div>
           ) : null}

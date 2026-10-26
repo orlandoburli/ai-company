@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
-import type { Member, Role } from "@/lib/types";
+import type { Member, Project, Role } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import {
   CopyButton,
@@ -146,6 +146,165 @@ function TenantForm() {
 
 /* --- products & projects -------------------------------------------------------- */
 
+/** A project and the projects that sit under it. */
+interface ProjectBranch {
+  project: Project;
+  children: ProjectBranch[];
+}
+
+/**
+ * The projects of a product, arranged by the parent each one names. A project
+ * whose parent is not among them stays at the top: it is still a project of
+ * this product, and hiding it would lose work.
+ */
+function buildProjectTree(projects: Project[]): ProjectBranch[] {
+  const known = new Set(projects.map((project) => project.id));
+  const under = new Map<string, Project[]>();
+  const roots: Project[] = [];
+  for (const project of projects) {
+    const parent = project.parent_id;
+    if (parent && known.has(parent)) {
+      const list = under.get(parent) ?? [];
+      list.push(project);
+      under.set(parent, list);
+    } else {
+      roots.push(project);
+    }
+  }
+  // The walk remembers where it has been: a parent chain that loops (the
+  // server refuses to write one, but old rows may carry one) must not spin.
+  const branch = (project: Project, seen: Set<string>): ProjectBranch => {
+    const next = new Set(seen).add(project.id);
+    const children = (under.get(project.id) ?? []).filter((child) => !seen.has(child.id));
+    return { project, children: children.map((child) => branch(child, next)) };
+  };
+  // A loop leaves no root at all; every project then stays at the top rather
+  // than disappearing from the list.
+  const top = roots.length ? roots : projects;
+  return top.map((project) => branch(project, new Set()));
+}
+
+/** The small name-and-key form a project — or a subproject — is created with. */
+function NewProjectForm(props: {
+  namePlaceholder: string;
+  nameLabel: string;
+  keyLabel: string;
+  submitLabel: string;
+  onSubmit: (name: string, key: string) => void | Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    try {
+      await props.onSubmit(name.trim(), key.trim());
+      setName("");
+      setKey("");
+    } catch {
+      /* the caller reports the failure; the form keeps what was typed */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="stack project-form" onSubmit={submit} style={{ flexWrap: "wrap" }}>
+      <input
+        className="input input--inline"
+        placeholder={props.namePlaceholder}
+        aria-label={props.nameLabel}
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <input
+        className="input input--inline mono"
+        placeholder="KEY"
+        aria-label={props.keyLabel}
+        style={{ width: 90 }}
+        value={key}
+        onChange={(e) => setKey(e.target.value.toUpperCase())}
+      />
+      <button type="submit" className="btn btn--sm" disabled={busy || !name.trim()}>
+        {props.submitLabel}
+      </button>
+    </form>
+  );
+}
+
+/** One project in the tree, with the projects that sit under it. */
+function ProjectRow(props: {
+  branch: ProjectBranch;
+  depth: number;
+  canEdit: boolean;
+  onCreate: (parent: Project, name: string, key: string) => void | Promise<void>;
+  onDelete: (project: Project) => void | Promise<void>;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const project = props.branch.project;
+  return (
+    <li className="project-row">
+      <div className="spread project-row__line">
+        <span className="project-row__name">
+          {props.depth > 0 ? (
+            <span className="project-row__elbow" aria-hidden>
+              ↳
+            </span>
+          ) : null}
+          {project.name}
+          {project.key ? <span className="mono muted"> · {project.key}</span> : null}
+        </span>
+        {props.canEdit ? (
+          <span className="stack project-row__actions">
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              aria-expanded={open}
+              onClick={() => setOpen((value) => !value)}
+            >
+              {t("settings.products.newSubproject")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost btn--danger"
+              onClick={() => props.onDelete(project)}
+            >
+              {t("settings.products.delete")}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      {open && props.canEdit ? (
+        <NewProjectForm
+          namePlaceholder={t("settings.products.newSubproject")}
+          nameLabel={t("settings.products.subprojectNameFor", { name: project.name })}
+          keyLabel={t("settings.products.subprojectKeyFor", { name: project.name })}
+          submitLabel={t("settings.products.addSubproject")}
+          onSubmit={(name, key) => props.onCreate(project, name, key)}
+        />
+      ) : null}
+      {props.branch.children.length ? (
+        <ul className="project-tree project-tree--nested">
+          {props.branch.children.map((child) => (
+            <ProjectRow
+              key={child.project.id}
+              branch={child}
+              depth={props.depth + 1}
+              canEdit={props.canEdit}
+              onCreate={props.onCreate}
+              onDelete={props.onDelete}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
 function ProductsSection() {
   const t = useT();
   const { me, refresh } = useSession();
@@ -165,10 +324,6 @@ function ProductsSection() {
   const [repoUrl, setRepoUrl] = useState("");
   const [jiraKey, setJiraKey] = useState("");
   const [busyProduct, setBusyProduct] = useState(false);
-
-  // Per-product project creation state: id → {name, key}
-  const [projName, setProjName] = useState<Record<string, string>>({});
-  const [projKey, setProjKey] = useState<Record<string, string>>({});
 
   async function createProduct(e: FormEvent) {
     e.preventDefault();
@@ -193,18 +348,32 @@ function ProductsSection() {
     }
   }
 
-  async function createProject(productId: string) {
-    if (!projName[productId]?.trim()) return;
+  /** A project of the product: a first-level one, with no parent. */
+  async function createProject(productId: string, name: string, key: string) {
     try {
       await api.createProject({
         product_id: productId,
-        name: projName[productId].trim(),
-        key: projKey[productId]?.trim() || undefined,
+        name,
+        key: key || undefined,
       });
-      setProjName((p) => ({ ...p, [productId]: "" }));
-      setProjKey((p) => ({ ...p, [productId]: "" }));
       await projects.reload();
       push("info", t("settings.products.projectCreated"));
+    } catch (err) {
+      push("error", apiErrorMessage(err));
+    }
+  }
+
+  /** A project under another one: the parent decides where it belongs. */
+  async function createSubproject(parent: Project, name: string, key: string) {
+    try {
+      await api.createProject({
+        product_id: parent.product_id,
+        parent_id: parent.id,
+        name,
+        key: key || undefined,
+      });
+      await projects.reload();
+      push("info", t("settings.products.subprojectCreated"));
     } catch (err) {
       push("error", apiErrorMessage(err));
     }
@@ -249,6 +418,7 @@ function ProductsSection() {
         ) : (
           products.data.map((p) => {
             const ps = (projects.data ?? []).filter((x) => x.product_id === p.id);
+            const tree = buildProjectTree(ps);
             return (
               <div
                 key={p.id}
@@ -295,55 +465,31 @@ function ProductsSection() {
                 <div className="tiny muted" style={{ marginTop: 8 }}>
                   {t("settings.products.projects")} {ps.length === 0 ? t("settings.products.none") : `(${ps.length})`}
                 </div>
-                <ul style={{ margin: "4px 0 8px", paddingLeft: 18 }}>
-                  {ps.map((x) => (
-                    <li key={x.id} className="stack tiny" style={{ justifyContent: "space-between" }}>
-                      <span>
-                        {x.name}
-                        {x.key ? <span className="mono muted"> · {x.key}</span> : null}
-                      </span>
-                      {canEdit ? (
-                      <button
-                          type="button"
-                          className="btn btn--sm btn--ghost btn--danger"
-                          onClick={() => void deleteProject(x.id)}
-                        >
-                          {t("settings.products.delete")}
-                        </button>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
+                {tree.length ? (
+                  <ul className="project-tree">
+                    {tree.map((branch) => (
+                      <ProjectRow
+                        key={branch.project.id}
+                        branch={branch}
+                        depth={0}
+                        canEdit={canEdit}
+                        onCreate={createSubproject}
+                        onDelete={(project) => deleteProject(project.id)}
+                      />
+                    ))}
+                  </ul>
+                ) : null}
                 {canEdit ? (
-                  <div className="stack" style={{ flexWrap: "wrap" }}>
-                    <input
-                      className="input input--inline"
-                      placeholder={t("settings.products.newProject")}
-                      aria-label={t("settings.products.projectNameFor", { name: p.name })}
-                      value={projName[p.id] ?? ""}
-                      onChange={(e) =>
-                        setProjName((m) => ({ ...m, [p.id]: e.target.value }))
-                      }
-                    />
-                    <input
-                      className="input input--inline mono"
-                      placeholder="KEY"
-                      aria-label={t("settings.products.projectKeyFor", { name: p.name })}
-                      style={{ width: 90 }}
-                      value={projKey[p.id] ?? ""}
-                      onChange={(e) =>
-                        setProjKey((m) => ({ ...m, [p.id]: e.target.value.toUpperCase() }))
-                      }
-                    />
-                    <button
-                      type="button"
-                      className="btn btn--sm"
-                      disabled={!projName[p.id]?.trim()}
-                      onClick={() => void createProject(p.id)}
-                    >
-                      {t("settings.products.addProject")}
-                    </button>
-                  </div>
+                  <p className="tiny muted project-nesting-hint">{t("settings.products.nestingHint")}</p>
+                ) : null}
+                {canEdit ? (
+                  <NewProjectForm
+                    namePlaceholder={t("settings.products.newProject")}
+                    nameLabel={t("settings.products.projectNameFor", { name: p.name })}
+                    keyLabel={t("settings.products.projectKeyFor", { name: p.name })}
+                    submitLabel={t("settings.products.addProject")}
+                    onSubmit={(name, key) => createProject(p.id, name, key)}
+                  />
                 ) : null}
               </div>
             );

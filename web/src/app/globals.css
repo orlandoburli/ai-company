@@ -615,6 +615,11 @@ textarea.input {
 
 .table-wrap {
   overflow-x: auto;
+  /* The table may be wider than the screen, but only the table scrolls: the
+     wrapper and its ancestors must never be widened by it, or the whole page
+     scrolls sideways. */
+  min-width: 0;
+  max-width: 100%;
 }
 
 table.data {
@@ -703,7 +708,16 @@ table.data tr.is-selected td {
   padding: 20px 28px 48px;
   max-width: 1400px;
   width: 100%;
+  min-width: 0;
 }
+
+/* A flex or grid child defaults to min-width:auto, so a wide table inside it
+   stretches the whole column. Every box between the page and the table is
+   told it may shrink. */
+.content > *,
+.section,
+.section__head,
+.run-table-wrap { min-width: 0; max-width: 100%; }
 
 @media (max-width: 900px) {
   .shell {
@@ -927,6 +941,67 @@ table.data tr.is-selected td {
   font-size: 12.5px;
   color: var(--muted);
   flex: none;
+}
+
+/* A project under another one sits in its own lane: the guide line and the
+   extra indent say where the nesting begins. */
+.tree-nest {
+  margin-left: 10px;
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+}
+
+.tree-row--nested .tree-row__name {
+  font-weight: 500;
+}
+
+/* --- the product tree in the settings --------------------------------------- */
+.project-tree {
+  list-style: none;
+  margin: 4px 0 6px;
+  padding: 0;
+}
+
+.project-tree--nested {
+  margin: 1px 0 2px 15px;
+  padding-left: 11px;
+  border-left: 1px solid var(--border);
+}
+
+.project-row {
+  list-style: none;
+}
+
+.project-row__line {
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.project-row__name {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+
+.project-row__elbow {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-row__actions {
+  gap: 4px;
+  flex: none;
+}
+
+.project-form {
+  margin: 5px 0 3px;
+}
+
+.project-nesting-hint {
+  margin: 2px 0 6px;
 }
 
 .progress {
@@ -1189,6 +1264,8 @@ table.data tr.is-selected td {
 
 .section__body {
   padding: 14px 16px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .metric {
@@ -2226,8 +2303,12 @@ table.data + table.data {
   .monitor-grid, .monitor-grid--lower { grid-template-columns: minmax(0, 1fr); }
   .stream-section { max-height: 360px; }
 }
-@media (max-width: 600px) {
+@media (max-width: 760px) {
   .run-pagehead { align-items: flex-start; }
+  .run-head-actions { justify-content: flex-start; width: 100%; margin: 2px 0 0; }
+}
+
+@media (max-width: 600px) {
   .run-head-actions { justify-content: flex-start; width: 100%; margin: 2px 0 0; }
   .result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-filter-count { width: 100%; margin: 0; }
@@ -2334,6 +2415,13 @@ table.data + table.data {
 .workflow-state { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid transparent; border-radius: var(--theme-border-radius-pill); background: var(--theme-warning-bg-subtle); color: var(--theme-warning); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .workflow-state i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
 .workflow-state--published { color: var(--theme-success); background: var(--theme-success-bg-subtle); }
+/* A retired template is quiet on purpose: it is parked, not an alarm. */
+.workflow-state--retired { color: var(--muted); background: var(--bg-raised); }
+.workflow-state--retired i { box-shadow: none; }
+.workflow-template-card--retired .workflow-template-name { color: var(--muted); }
+.workflow-retired-note { border-left-color: var(--border-strong); background: transparent; }
+.workflow-run-retired { margin: 8px 0 7px; }
+.workflow-run-templates { display: grid; gap: 4px; }
 .msg--job .jobchip--run { color: var(--theme-warning); background: var(--theme-warning-bg-subtle); }
 .run-node:has(.jobchip--run) { border-left-color: var(--theme-primary); }
 .run-node:has(.jobchip--warn) { border-left-color: var(--theme-warning); }
@@ -3022,6 +3110,8 @@ table.data td { padding: 8px 9.6px; border-bottom: 1px solid #eef2f7; font-size:
 .board-card__title { margin-bottom: 8px; }
 .board-card__row { color: #8495ab; font-size: 12px; }
 .workflow-state--published { color: var(--theme-success); background: var(--theme-success-bg-subtle); }
+.workflow-state--retired { color: var(--muted); background: var(--bg-raised); }
+.workflow-state--retired i { box-shadow: none; }
 
 /* Workflow cards, metrics, monitor panels, and settings sections. */
 .workflow-template-card { border: 0; border-radius: 6px; background: #ffffff; box-shadow: var(--theme-card-box-shadow); }

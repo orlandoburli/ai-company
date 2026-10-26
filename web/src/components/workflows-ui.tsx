@@ -425,6 +425,10 @@ function starterGraph(agentId = "", agentRole = "dev"): WorkflowGraph {
 function isPublished(template: WorkflowTemplate | WorkflowTemplateSummary): boolean {
   return Boolean(template.published_at || ("published" in template && template.published) || ("status" in template && template.status === "published"));
 }
+/** A retired template keeps its history but no longer runs. */
+function isRetired(template: WorkflowTemplate | WorkflowTemplateSummary): boolean {
+  return Boolean(template.disabled_at);
+}
 function errorText(error: unknown): string {
   return `${error instanceof ApiError ? `${error.code} — ` : ""}${apiErrorMessage(error)}`;
 }
@@ -463,12 +467,42 @@ export function WorkflowsPage() {
       router.push(`/workflows/${response.template.id}`);
     } catch (error) { push("error", listErrorText(error, t)); }
   }
-  async function action(template: WorkflowTemplateSummary, kind: "publish" | "version" | "delete") {
-    if (kind === "delete" && !await confirm({ title: t("workflows.deleteConfirm.title"), message: t("workflows.deleteConfirm.message", { name: template.name }), confirmLabel: t("workflows.confirmDelete"), destructive: true })) return;
+  async function action(template: WorkflowTemplateSummary, kind: "publish" | "version" | "delete" | "retire" | "restore") {
+    if (kind === "delete") {
+      const retired = isRetired(template);
+      const ok = await confirm({
+        title: retired ? t("workflows.deleteRetiredConfirm.title") : t("workflows.deleteConfirm.title"),
+        message: retired ? t("workflows.deleteRetiredConfirm.message", { name: template.name }) : t("workflows.deleteConfirm.message", { name: template.name }),
+        confirmLabel: t("workflows.confirmDelete"),
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    if (kind === "retire") {
+      const ok = await confirm({
+        title: t("workflows.retireConfirm.title"),
+        message: t("workflows.retireConfirm.message", { name: template.name }),
+        confirmLabel: t("workflows.confirmRetire"),
+      });
+      if (!ok) return;
+    }
+    if (kind === "restore") {
+      const ok = await confirm({
+        title: t("workflows.restoreConfirm.title"),
+        message: t("workflows.restoreConfirm.message", { name: template.name }),
+        confirmLabel: t("workflows.confirmRestore"),
+      });
+      if (!ok) return;
+    }
     try {
       if (kind === "publish") { await api.publishWorkflowTemplate(template.id); push("info", t("workflows.publishedToast")); }
       if (kind === "version") { const result = await api.createWorkflowVersion(template.id); router.push(`/workflows/${result.template.id}`); return; }
-      if (kind === "delete") { await api.deleteWorkflowTemplate(template.id); push("info", t("workflows.deletedToast")); }
+      if (kind === "retire") { await api.disableWorkflowTemplate(template.id); push("info", t("workflows.retiredToast")); }
+      if (kind === "restore") { await api.enableWorkflowTemplate(template.id); push("info", t("workflows.restoredToast")); }
+      if (kind === "delete") {
+        await api.deleteWorkflowTemplate(template.id);
+        push("info", isRetired(template) ? t("workflows.retiredDeletedToast") : t("workflows.deletedToast"));
+      }
       await templates.reload();
     } catch (error) { push("error", listErrorText(error, t)); }
   }
@@ -479,19 +513,22 @@ export function WorkflowsPage() {
     </header>
     {templates.loading && !templates.data ? <div className="workflow-list-grid"><Skeleton h={150} /><Skeleton h={150} /><Skeleton h={150} /></div> : templates.error && !templates.data ? <ErrorBlock title={t("workflows.unavailable")} message={listErrorText(templates.error, t)} retry={() => void templates.reload()} /> : rows.length === 0 ? <EmptyState title={t("workflows.empty.title")} body={t("workflows.empty.body")} action={isManager ? <button className="btn btn--primary" onClick={() => void create()}>{t("workflows.createTemplate")}</button> : undefined} /> : <div className="workflow-list-grid">{rows.map((template, index) => {
       const published = isPublished(template);
-      return <article className="workflow-template-card" key={template.id} style={{ animationDelay: `${index * 45}ms` }}>
-         <div className="workflow-template-top"><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? t("workflows.published") : t("workflows.draft")}</span><span className="mono tiny">v{template.version ?? 1}</span></div>
+      const retired = isRetired(template);
+      return <article className={`workflow-template-card ${retired ? "workflow-template-card--retired" : ""}`} key={template.id} style={{ animationDelay: `${index * 45}ms` }}>
+         <div className="workflow-template-top"><span className={`workflow-state ${published ? "workflow-state--published" : ""} ${retired ? "workflow-state--retired" : ""}`}><i />{retired ? t("workflows.retired") : published ? t("workflows.published") : t("workflows.draft")}</span><span className="mono tiny">v{template.version ?? 1}</span></div>
         <Link className="workflow-template-name" href={`/workflows/${template.id}`}>{template.name}</Link>
          <div className="workflow-template-meta"><span>{template.applies_to?.trim() ? template.applies_to.split(",").map((part) => part.trim()).filter(Boolean).join(" · ") : t("workflows.anyItemKind")}</span><span>{template.created_at ? new Date(template.created_at).toLocaleDateString(lang) : t("workflows.graph")}</span></div>
          <div className="workflow-template-foot"><Link className="btn btn--sm" href={`/workflows/${template.id}`}>{published ? t("workflows.viewGraph") : t("workflows.openEditor")} →</Link>
           <div className="stack workflow-template-actions">
             {isManager ? <>
-               {!published ? <><button className="btn btn--sm" onClick={() => router.push(`/workflows/${template.id}`)}>{t("workflows.edit")}</button><button className="btn btn--sm btn--primary" onClick={() => void action(template, "publish")}>{t("workflows.publish")}</button><button className="btn btn--sm btn--ghost btn--danger" onClick={() => void action(template, "delete")}>{t("workflows.delete")}</button></> : <button className="btn btn--sm" title={t("workflows.frozenHint")} onClick={() => void action(template, "version")}>{t("workflows.newVersion")}</button>}
+               {!published && !retired ? <><button className="btn btn--sm" onClick={() => router.push(`/workflows/${template.id}`)}>{t("workflows.edit")}</button><button className="btn btn--sm btn--primary" onClick={() => void action(template, "publish")}>{t("workflows.publish")}</button><button className="btn btn--sm btn--ghost btn--danger" onClick={() => void action(template, "delete")}>{t("workflows.delete")}</button></> : null}
+               {published && !retired ? <><button className="btn btn--sm" title={t("workflows.frozenHint")} onClick={() => void action(template, "version")}>{t("workflows.newVersion")}</button><button className="btn btn--sm btn--ghost" onClick={() => void action(template, "retire")}>{t("workflows.retire")}</button></> : null}
+               {retired ? <><button className="btn btn--sm" onClick={() => void action(template, "restore")}>{t("workflows.restore")}</button><button className="btn btn--sm btn--ghost btn--danger" onClick={() => void action(template, "delete")}>{t("workflows.delete")}</button></> : null}
                <button className="btn btn--sm btn--ghost" onClick={() => void clone(template)}>{t("workflows.duplicate")}</button>
              </> : <span className="tiny muted">{t("workflows.readOnly")}</span>}
           </div>
         </div>
-         {published ? <p className="workflow-frozen-note">{t("workflows.frozenHint")}</p> : null}
+         {retired ? <p className="workflow-frozen-note workflow-retired-note">{t("workflows.retiredHint")}</p> : published ? <p className="workflow-frozen-note">{t("workflows.publishedLocked")}</p> : null}
       </article>;
     })}</div>}
     {templates.error && templates.data ? <ErrorBlock title={t("workflows.couldNotRefresh")} message={listErrorText(templates.error, t)} retry={() => void templates.reload()} /> : null}
@@ -518,6 +555,7 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const itemsQ = useAsync(() => api.listItems({ limit: 200 }), []);
   const productsQ = useAsync(() => api.listProducts(), []);
   const projectsQ = useAsync(() => api.listProjects(), []);
+  const templatesQ = useAsync(() => api.listWorkflowTemplates(), []);
   const [template, setTemplate] = useState<WorkflowTemplate | null>(null);
   const [graph, setGraph] = useState<WorkflowGraph>({ schema_version: 1, nodes: [], edges: [] });
   const [saved, setSaved] = useState<WorkflowTemplateInput | null>(null);
@@ -530,15 +568,40 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   const [pageError, setPageError] = useState("");
   const [runPicker, setRunPicker] = useState(false);
   const [runItem, setRunItem] = useState("");
+  const [runTemplate, setRunTemplate] = useState("");
   const [runResult, setRunResult] = useState("");
   const [runVariables, setRunVariables] = useState<[string, string][]>([]);
   const [fitVersion, setFitVersion] = useState(0);
   const dirty = Boolean(saved && (JSON.stringify({ ...meta, graph }) !== JSON.stringify(saved)));
   const published = Boolean(template && isPublished(template));
-  const editable = Boolean(manager && !published);
+  const retired = Boolean(template && isRetired(template));
+  const editable = Boolean(manager && !published && !retired);
   const agentMap = useMemo(() => new Map((agentsQ.data?.agents ?? []).map((agent) => [agent.id, agent])), [agentsQ.data]);
   const repository = useMemo(() => defaultRepository(itemsQ.data?.items ?? [], projectsQ.data?.projects ?? [], productsQ.data?.products ?? [], meta.applies_to), [itemsQ.data, projectsQ.data, productsQ.data, meta.applies_to]);
   const renderedGraph = useMemo(() => applyLayout(graph, layoutGraph(graph)), [graph]);
+  /**
+   * The workflows that may run: published and not retired. One entry per
+   * name — the server runs the newest published version of a workflow — so
+   * the picker never offers a retired template. When the list does not
+   * arrive, the workflow on screen is the one that would run.
+   */
+  const runOptions = useMemo(() => {
+    const live = (templatesQ.data?.templates ?? []).filter((entry) => isPublished(entry) && !isRetired(entry));
+    const newest = new Map<string, WorkflowTemplateSummary>();
+    for (const entry of live) {
+      const current = newest.get(entry.name);
+      if (!current || (entry.version ?? 0) > (current.version ?? 0)) newest.set(entry.name, entry);
+    }
+    if (newest.size) return [...newest.values()].sort((a, b) => a.name.localeCompare(b.name));
+    if (template && published && !retired) {
+      return [{ id: template.id, name: template.name, version: template.version, applies_to: template.applies_to }];
+    }
+    return [];
+  }, [templatesQ.data, template, published, retired]);
+  const chosenTemplate = useMemo(
+    () => runOptions.find((entry) => entry.id === runTemplate) ?? runOptions.find((entry) => entry.id === templateId) ?? runOptions[0],
+    [runOptions, runTemplate, templateId],
+  );
 
   useEffect(() => {
     if (!query.data?.template) return;
@@ -590,6 +653,10 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     }, dirty ? 420 : 0);
     return () => window.clearTimeout(timer);
   }, [graph, template?.id, dirty, t]);
+
+  // A different workflow may apply to different kinds of item, so the item
+  // chosen for the previous one no longer applies.
+  useEffect(() => { setRunItem(""); }, [chosenTemplate?.id]);
 
   const updateNode = useCallback((id: string, update: (node: WorkflowNode) => WorkflowNode) => {
     setGraph((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === id ? update(node) : node) }));
@@ -648,6 +715,17 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     try { const result = await api.createWorkflowVersion(template.id); router.push(`/workflows/${result.template.id}`); }
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); setBusy(false); }
   }
+  /** Brings a retired workflow back: it runs again, still frozen for edits. */
+  async function restore() {
+    if (!template || !manager || busy) return;
+    setBusy(true); setPageError("");
+    try {
+      const result = await api.enableWorkflowTemplate(template.id);
+      setTemplate(result.template);
+      push("info", t("editor.restored"));
+    } catch (error) { setPageError(errorText(error)); push("error", errorText(error)); }
+    finally { setBusy(false); }
+  }
   async function deleteDraft() {
     if (!template || !manager || published || busy) return;
     if (!await confirm({ title: t("editor.deleteDraft.title"), message: t("editor.deleteDraft.message", { name: template.name }), confirmLabel: t("editor.deleteDraft.confirm"), destructive: true })) return;
@@ -656,10 +734,11 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); setBusy(false); }
   }
   async function startRun() {
-    if (!template || !runItem || !canWrite || busy) return;
+    const runner = chosenTemplate;
+    if (!template || !runItem || !runner || !canWrite || busy || retired) return;
     setBusy(true); setPageError("");
     const variables = Object.fromEntries(runVariables.map(([key, value]) => [key.trim(), value]).filter(([key]) => key));
-    try { const result = await api.startItemRun(runItem, template.id, variables); setRunResult(result.run.id); push("info", t("editor.run.startedToast")); }
+    try { const result = await api.startItemRun(runItem, runner.id, variables); setRunResult(result.run.id); push("info", t("editor.run.startedToast")); }
     catch (error) { setPageError(errorText(error)); push("error", errorText(error)); }
     finally { setBusy(false); }
   }
@@ -677,19 +756,22 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
   if (!template) return null;
   const selectedNode = selection?.type === "node" ? graph.nodes.find((node) => node.id === selection.id) : undefined;
   const selectedEdge = selection?.type === "edge" ? graph.edges.find((edge) => edge.id === selection.id) : undefined;
-  const eligibleItems = (itemsQ.data?.items ?? []).filter((item) => !meta.applies_to.trim() || meta.applies_to.split(",").map((kind) => kind.trim()).filter(Boolean).includes(item.kind));
+  // The items a run may start on follow the workflow that will run.
+  const runAppliesTo = chosenTemplate?.applies_to ?? meta.applies_to;
+  const eligibleItems = (itemsQ.data?.items ?? []).filter((item) => !runAppliesTo.trim() || runAppliesTo.split(",").map((kind) => kind.trim()).filter(Boolean).includes(item.kind));
 
   return <div className="workflow-editor-page">
     <header className="workflow-editor-head">
-      <div className="workflow-editor-title"><Link href="/workflows" className="tiny muted">{t("editor.back")}</Link><div className="workflow-title-line"><span className="workflow-mark">↗</span><div><div className="workflow-eyebrow">{t("editor.eyebrow")}</div><h1>{meta.name || t("editor.untitled")}</h1></div><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? t("editor.state.published", { version: template.version ?? 1 }) : t("editor.state.draft")}</span>{dirty && !published ? <span className="workflow-unsaved"><i />{t("editor.state.unsaved")}</span> : null}</div>
+      <div className="workflow-editor-title"><Link href="/workflows" className="tiny muted">{t("editor.back")}</Link><div className="workflow-title-line"><span className="workflow-mark">↗</span><div><div className="workflow-eyebrow">{t("editor.eyebrow")}</div><h1>{meta.name || t("editor.untitled")}</h1></div><span className={`workflow-state ${published ? "workflow-state--published" : ""} ${retired ? "workflow-state--retired" : ""}`}><i />{retired ? t("editor.state.retired", { version: template.version ?? 1 }) : published ? t("editor.state.published", { version: template.version ?? 1 }) : t("editor.state.draft")}</span>{dirty && !published ? <span className="workflow-unsaved"><i />{t("editor.state.unsaved")}</span> : null}</div>
         <p>{t("editor.header.hint")}</p>
       </div>
       <div className="workflow-header-actions">
         {!published && manager ? <button className="btn btn--primary" disabled={busy || !dirty} onClick={() => void save()}>{busy ? t("editor.saving") : t("editor.save")}</button> : null}
-        {published && manager ? <button className="btn btn--primary" disabled={busy} onClick={() => void newVersion()}>{t("editor.newVersion")}</button> : null}
+        {published && !retired && manager ? <button className="btn btn--primary" disabled={busy} onClick={() => void newVersion()}>{t("editor.newVersion")}</button> : null}
         {!published && manager ? <button className="btn" disabled={busy} onClick={() => void publish()}>{t("editor.publish")}</button> : null}
         {manager && !published ? <button className="btn btn--ghost btn--danger" disabled={busy} onClick={() => void deleteDraft()}>{t("editor.delete")}</button> : null}
-        {published ? <span className="workflow-lock-note">{t("editor.frozen")}</span> : null}
+        {retired && manager ? <><button className="btn btn--ghost" disabled={busy} onClick={() => void newVersion()}>{t("editor.newVersion")}</button><button className="btn btn--primary" disabled={busy} onClick={() => void restore()}>{t("editor.restore")}</button></> : null}
+        {retired ? <span className="workflow-lock-note">{t("editor.retired")}</span> : published ? <span className="workflow-lock-note">{t("editor.frozen")}</span> : null}
       </div>
     </header>
     {pageError ? <div className="error-note workflow-page-error" role="alert">{pageError}</div> : null}
@@ -732,10 +814,20 @@ export function WorkflowEditor({ templateId }: { templateId: string }) {
         </div>
         <div className="workflow-runbox"><div className="workflow-runbox-head"><span className="workflow-kind-icon workflow-kind-icon--agent">▶</span><div><strong>{t("editor.run.title")}</strong><small>{t("editor.run.hint")}</small></div></div>
           <p className="workflow-cost-warning">{t("editor.run.costWarning")}</p>
+          {retired ? (
+            /* A retired workflow does not run. The button stays, disabled, and
+               the line below says why. */
+            <><p className="workflow-run-retired tiny muted">{t("editor.run.retired")}</p><button className="btn btn--primary btn--sm workflow-run-button" disabled title={t("editor.run.retired")}>{t("editor.run.chooseItem")}</button></>
+          ) : (
+            <>
           {runResult ? <div className="workflow-run-success">{t("editor.run.started")}<Link href={`/runs/${runResult}`}>{t("editor.run.openMonitor")}</Link></div> : null}
-          {!runPicker ? <button className="btn btn--primary btn--sm workflow-run-button" disabled={!canWrite || !published} onClick={() => setRunPicker(true)}>{published ? t("editor.run.chooseItem") : t("editor.run.publishToRun")}</button> : <div className="workflow-run-picker"><select className="input" value={runItem} disabled={itemsQ.loading || !canWrite} onChange={(event) => setRunItem(event.target.value)}><option value="">{itemsQ.loading ? t("editor.run.loadingItems") : t("editor.run.chooseItemPlaceholder")}</option>{eligibleItems.map((item) => <option key={item.id} value={item.id}>#{item.number} · {item.title}</option>)}</select>{itemsQ.error ? <span className="tiny muted">{t("editor.run.itemsError", { error: errorText(itemsQ.error) })}</span> : null}{!itemsQ.loading && !itemsQ.error && !eligibleItems.length ? <span className="tiny muted">{t("editor.run.noItems")}</span> : null}
+          {!runPicker ? <button className="btn btn--primary btn--sm workflow-run-button" disabled={!canWrite || !published} onClick={() => setRunPicker(true)}>{published ? t("editor.run.chooseItem") : t("editor.run.publishToRun")}</button> : <div className="workflow-run-picker">
+            <div className="workflow-run-templates"><select className="input" aria-label={t("editor.run.template")} value={chosenTemplate?.id ?? ""} disabled={!canWrite || !runOptions.length} onChange={(event) => setRunTemplate(event.target.value)}>{runOptions.length ? runOptions.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} · v{entry.version ?? 1}</option>) : <option value="">{t("editor.run.noTemplates")}</option>}</select><span className="tiny muted">{t("editor.run.templateHint")}</span>{templatesQ.error ? <span className="tiny muted">{t("editor.run.templatesUnavailable", { error: errorText(templatesQ.error) })}</span> : null}</div>
+            <select className="input" value={runItem} disabled={itemsQ.loading || !canWrite} onChange={(event) => setRunItem(event.target.value)}><option value="">{itemsQ.loading ? t("editor.run.loadingItems") : t("editor.run.chooseItemPlaceholder")}</option>{eligibleItems.map((item) => <option key={item.id} value={item.id}>#{item.number} · {item.title}</option>)}</select>{itemsQ.error ? <span className="tiny muted">{t("editor.run.itemsError", { error: errorText(itemsQ.error) })}</span> : null}{!itemsQ.loading && !itemsQ.error && !eligibleItems.length ? <span className="tiny muted">{t("editor.run.noItems")}</span> : null}
             <div className="workflow-run-vars"><div className="spread"><strong>{t("editor.run.variables")}</strong><span className="tiny muted">{t("editor.run.variablesHint")}</span></div>{runVariables.map(([key, value], index) => <div className="workflow-run-var-row" key={`${index}-${key}`}><input className="input mono" aria-label={t("editor.aria.variableName")} value={key} placeholder={t("editor.placeholder.variableName")} onChange={(event) => setRunVariables((current) => current.map((row, i) => i === index ? [event.target.value, row[1]] : row))} /><input className="input" aria-label={t("editor.aria.variableValue", { key })} value={value} placeholder={t("editor.placeholder.variableValue")} onChange={(event) => setRunVariables((current) => current.map((row, i) => i === index ? [row[0], event.target.value] : row))} /><button className="workflow-remove-row" aria-label={t("editor.aria.removeVariable", { key })} onClick={() => setRunVariables((current) => current.filter((_, i) => i !== index))}>×</button></div>)}<button type="button" className="btn btn--sm" onClick={() => setRunVariables((current) => [...current, ["", ""]])}>{t("editor.run.addVariable")}</button><span className="tiny muted">{t("editor.run.variablesNote")}</span>{variablesQ.error ? <span className="tiny muted">{t("editor.run.variablesError", { error: errorText(variablesQ.error) })}</span> : null}</div>
-            <div className="stack"><button className="btn btn--primary btn--sm" disabled={!runItem || busy || !canWrite} onClick={() => void startRun()}>{busy ? t("editor.run.starting") : t("editor.run.start")}</button><button className="btn btn--sm" onClick={() => setRunPicker(false)}>{t("field.cancel")}</button></div></div>}
+            <div className="stack"><button className="btn btn--primary btn--sm" disabled={!runItem || !chosenTemplate || busy || !canWrite} onClick={() => void startRun()}>{busy ? t("editor.run.starting") : t("editor.run.start")}</button><button className="btn btn--sm" onClick={() => setRunPicker(false)}>{t("field.cancel")}</button></div></div>}
+            </>
+          )}
           {!canWrite ? <p className="tiny muted">{t("editor.run.readOnly")}</p> : null}
         </div>
       </aside>

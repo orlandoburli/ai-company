@@ -106,7 +106,8 @@ export interface Product {
 export interface Project {
   id: string;
   product_id: string;
-  parent_id?: string;
+  /** The project this one sits under; absent for a top-level project. */
+  parent_id?: string | null;
   name: string;
   key?: string;
   status: string;

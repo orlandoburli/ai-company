@@ -440,6 +440,12 @@ export const api = {
     del(`/api/workflow-templates/${encodeURIComponent(id)}`),
   publishWorkflowTemplate: (id: string) =>
     post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/publish`),
+  /** Retires a published template: it keeps its history, stops running, and may be deleted. */
+  disableWorkflowTemplate: (id: string) =>
+    post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/disable`),
+  /** Brings a retired template back: it runs again. */
+  enableWorkflowTemplate: (id: string) =>
+    post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/enable`),
   createWorkflowVersion: (id: string) =>
     post<{ template: WorkflowTemplate }>(`/api/workflow-templates/${encodeURIComponent(id)}/versions`),
   validateWorkflowTemplate: (graph: WorkflowGraph) =>
@@ -667,6 +673,8 @@ export interface WorkflowGraph { schema_version?: number; nodes: WorkflowNode[];
 export interface WorkflowProblem { code: string; message: string; node_id?: string; edge_id?: string; }
 export interface WorkflowTemplateSummary {
   id: string; name: string; applies_to?: string; version?: number; published_at?: string | null;
+  /** Set when the template is retired; null while it is live. */
+  disabled_at?: string | null;
   max_concurrency?: number; created_at?: string;
 }
 export interface WorkflowTemplateInput {
@@ -675,6 +683,8 @@ export interface WorkflowTemplateInput {
 export interface WorkflowTemplate {
   id: string; name: string; applies_to?: string; version?: number; published?: boolean;
   published_at?: string | null; status?: string; max_concurrency?: number; graph?: WorkflowGraph; created_at?: string; updated_at?: string;
+  /** Set when the template is retired; null while it is live. */
+  disabled_at?: string | null;
 }
 export interface Run {
   id: string; item_id: string; template_id: string; template_version: number; state: RunState;
