@@ -164,6 +164,10 @@ const (
 	CodeEndNodeEdges        = "end_node_edges"
 	CodeUnexpectedEntryNode = "unexpected_entry_node"
 	CodeUnreachableEndNode  = "unreachable_end_node"
+	// What a graph still needs before it can be published: it has to say
+	// where the flow begins and where it ends.
+	CodeMissingStartNode = "missing_start_node"
+	CodeMissingEndNode   = "missing_end_node"
 )
 
 // ValidationError describes one invalid part of a template.
@@ -240,6 +244,11 @@ func knownKind(kind NodeKind) bool {
 }
 
 // Validate checks schema, node and edge shapes, reachability, ports and config.
+//
+// It is the shape of the graph, not its completeness: a draft is free to be
+// incomplete — an empty canvas is a legitimate place to begin — so a graph
+// with no start point, no end point or no nodes at all is valid here. What a
+// graph still needs before it can be published is ValidateComplete's business.
 func (t *Template) Validate() error {
 	if t == nil || t.SchemaVersion != 1 {
 		version := 0
@@ -249,7 +258,10 @@ func (t *Template) Validate() error {
 		return validationError(CodeSchemaVersion, "schema_version must be 1 (got %d)", version)
 	}
 	if len(t.Nodes) == 0 {
-		return validationError(CodeEmptyGraph, "workflow graph has no nodes")
+		// A blank canvas is a draft, not a broken graph: the editor
+		// autosaves it while the person is still drawing. The graph has to
+		// be complete before it is published — see ValidateComplete.
+		return nil
 	}
 
 	nodes := make(map[string]Node, len(t.Nodes))

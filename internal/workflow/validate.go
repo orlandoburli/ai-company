@@ -14,6 +14,49 @@ type Problem struct {
 	EdgeID  string `json:"edge_id,omitempty"`
 }
 
+// ValidateComplete checks that the graph is complete enough to publish.
+//
+// A published workflow begins and ends: it has exactly one start node,
+// exactly one end node, and at least one node at all. A draft may be
+// incomplete — the editor autosaves it while the person is still drawing —
+// but a published template is the definition of a run, so it has to say where
+// the flow begins and where it ends.
+//
+// The shape comes first: a graph broken in shape is broken in a way the person
+// has to fix before its endpoints matter.
+func (t *Template) ValidateComplete() error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	problems := t.CompletenessProblems()
+	if len(problems) == 0 {
+		return nil
+	}
+	return &ValidationError{Code: problems[0].Code, Message: problems[0].Message}
+}
+
+// CompletenessProblems reports what the graph still needs before it can be
+// published. An empty list means the graph is publishable.
+//
+// Every problem names what is missing and what to do about it: the person
+// reads them in the editor's panel and knows what to draw next.
+func (t *Template) CompletenessProblems() []Problem {
+	if t == nil {
+		return []Problem{{Code: CodeSchemaVersion, Message: "schema_version must be 1 (got 0)"}}
+	}
+	var problems []Problem
+	if len(t.Nodes) == 0 {
+		problems = append(problems, Problem{Code: CodeEmptyGraph, Message: "this workflow has no nodes yet; add a node before publishing"})
+	}
+	if len(t.startNodeIDs()) == 0 {
+		problems = append(problems, Problem{Code: CodeMissingStartNode, Message: "this workflow has no start point; add a start node before publishing"})
+	}
+	if len(t.endNodeIDs()) == 0 {
+		problems = append(problems, Problem{Code: CodeMissingEndNode, Message: "this workflow has no end point; add an end node before publishing"})
+	}
+	return problems
+}
+
 // ValidateAll reports every problem with the graph, not just the first.
 //
 // Validate remains the source of truth for validation rules and messages. We
@@ -108,6 +151,8 @@ func repairValidationError(t *Template, validation *ValidationError, problem Pro
 		t.SchemaVersion = 1
 		return true
 	case CodeEmptyGraph:
+		// The completeness rule owns this code now: an empty graph is a
+		// blank draft, and there is nothing in it to repair.
 		return false
 	case CodeInvalidNodeID:
 		for i := range t.Nodes {

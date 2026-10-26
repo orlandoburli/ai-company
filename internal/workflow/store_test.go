@@ -35,8 +35,18 @@ func wfSetup(t *testing.T) *wfFixture {
 	}
 	return &wfFixture{db: app, st: workflow.NewStore(app), t1: tenancy.Scope{TenantID: "T1", UserID: "U-T1", Role: tenancy.RoleOwner}, t2: tenancy.Scope{TenantID: "T2", UserID: "U-T2", Role: tenancy.RoleOwner}}
 }
+
+// graph is a complete workflow: it begins and it ends, so it can be
+// published.
 func graph() workflow.Template {
-	return workflow.Template{SchemaVersion: 1, Nodes: []workflow.Node{{ID: "n", Kind: workflow.NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(`{"agent_id":"A"}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch}}, Edges: []workflow.Edge{}}
+	return workflow.Template{SchemaVersion: 1, Nodes: []workflow.Node{
+		{ID: "n_start", Kind: workflow.NodeStart, Name: "start", Type: "flow.start", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+		{ID: "n", Kind: workflow.NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(`{"agent_id":"A"}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+		{ID: "n_end", Kind: workflow.NodeEnd, Name: "end", Type: "flow.end", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+	}, Edges: []workflow.Edge{
+		{ID: "e1", From: workflow.PortRef{Node: "n_start", Port: "main"}, To: workflow.PortRef{Node: "n", Port: "in"}},
+		{ID: "e2", From: workflow.PortRef{Node: "n", Port: "main"}, To: workflow.PortRef{Node: "n_end", Port: "in"}},
+	}}
 }
 func (f *wfFixture) template(t *testing.T, sc tenancy.Scope) workflow.TemplateRow {
 	t.Helper()
@@ -149,6 +159,74 @@ func TestWorkflowTemplateLifecycleAndTenantIsolation(t *testing.T) {
 	}
 	if err = f.st.DeleteTemplate(ctx, f.t1, retiring.ID); err != nil {
 		t.Fatalf("delete disabled published template: %v", err)
+	}
+}
+
+// A draft is free to be incomplete; a published workflow is not. The store
+// saves the draft, refuses to publish it, and says which of the two ends the
+// graph is missing.
+func TestWorkflowTemplateDraftsAreIncompleteUntilPublished(t *testing.T) {
+	f := wfSetup(t)
+	ctx := context.Background()
+
+	// A blank canvas is a legitimate place to begin: the draft saves.
+	draft, err := f.st.CreateTemplate(ctx, f.t1, workflow.NewTemplate{
+		Name: "blank", Graph: workflow.Template{SchemaVersion: 1}, CreatedBy: f.t1.UserID,
+	})
+	if err != nil {
+		t.Fatalf("create a blank draft: %v", err)
+	}
+	if draft.PublishedAt != nil {
+		t.Fatalf("draft: %+v", draft)
+	}
+	// Publishing it is refused, and the reason names what is missing.
+	_, err = f.st.PublishTemplate(ctx, f.t1, draft.ID)
+	var validation *workflow.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("publish a blank draft error = %v, want *workflow.ValidationError", err)
+	}
+	if validation.Code != workflow.CodeEmptyGraph {
+		t.Fatalf("publish a blank draft code = %q, want %q", validation.Code, workflow.CodeEmptyGraph)
+	}
+	if !strings.Contains(validation.Message, "no nodes") {
+		t.Fatalf("publish a blank draft message = %q, want it to name the missing nodes", validation.Message)
+	}
+	// The refusal did not publish it.
+	after, err := f.st.GetTemplate(ctx, f.t1, draft.ID)
+	if err != nil || after.PublishedAt != nil {
+		t.Fatalf("draft after a refused publish: %+v %v", after, err)
+	}
+
+	// A draft with work but no start point saves too, and its publish says
+	// what is missing.
+	incomplete := workflow.Template{SchemaVersion: 1, Nodes: []workflow.Node{{
+		ID: "n", Kind: workflow.NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1,
+		Config: json.RawMessage(`{"agent_id":"A"}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch,
+	}}}
+	partial, err := f.st.CreateTemplate(ctx, f.t1, workflow.NewTemplate{
+		Name: "no-start", Graph: incomplete, CreatedBy: f.t1.UserID,
+	})
+	if err != nil {
+		t.Fatalf("create an incomplete draft: %v", err)
+	}
+	_, err = f.st.PublishTemplate(ctx, f.t1, partial.ID)
+	if !errors.As(err, &validation) || validation.Code != workflow.CodeMissingStartNode {
+		t.Fatalf("publish a draft without a start point: %v", err)
+	}
+	if !strings.Contains(validation.Message, "no start point") {
+		t.Fatalf("publish a draft without a start point message = %q, want it to name the missing start point", validation.Message)
+	}
+
+	// A complete template publishes.
+	complete, err := f.st.CreateTemplate(ctx, f.t1, workflow.NewTemplate{
+		Name: "complete", Graph: graph(), CreatedBy: f.t1.UserID,
+	})
+	if err != nil {
+		t.Fatalf("create a complete template: %v", err)
+	}
+	published, err := f.st.PublishTemplate(ctx, f.t1, complete.ID)
+	if err != nil || published.PublishedAt == nil {
+		t.Fatalf("publish a complete template: %+v %v", published, err)
 	}
 }
 

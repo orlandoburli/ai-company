@@ -219,7 +219,13 @@ func (s *Server) handleValidateWorkflowTemplate(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid_request", "The graph is malformed or contains unknown fields.")
 		return
 	}
+	// The panel tells the person what the workflow still needs: the shape
+	// problems the shared validator finds, and what a publish would still
+	// refuse — a missing start point, a missing end point. A draft is
+	// allowed to be incomplete, so the panel says what is missing rather
+	// than refusing to answer.
 	problems := workflow.ValidateAll(&graph)
+	problems = append(problems, graph.CompletenessProblems()...)
 	if problems == nil {
 		problems = []workflow.Problem{}
 	}
@@ -323,6 +329,12 @@ func (s *Server) handlePublishWorkflowTemplate(w http.ResponseWriter, r *http.Re
 	}
 	row, err := s.workflows.PublishTemplate(r.Context(), sc, r.PathValue("id"))
 	if err != nil {
+		if isWorkflowValidationError(err) {
+			// The template does not begin and end: the refusal says which
+			// of the two is missing.
+			writeTemplateInvalid(w, err)
+			return
+		}
 		s.writeWorkflowTemplateError(w, err)
 		return
 	}

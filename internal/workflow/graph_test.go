@@ -134,7 +134,6 @@ func TestValidationErrors(t *testing.T) {
 		code  string
 	}{
 		{"schema version", &badSchema, CodeSchemaVersion},
-		{"empty graph", &Template{SchemaVersion: 1}, CodeEmptyGraph},
 		{"duplicate node id", &duplicateNode, CodeDuplicateNodeID},
 		{"empty node id", emptyNodeID, CodeInvalidNodeID},
 		{"unknown endpoint", &unknownEndpoint, CodeUnknownNode},
@@ -176,6 +175,21 @@ func TestValidationErrors(t *testing.T) {
 				t.Fatalf("error code = %q, want %q (error: %v)", validation.Code, tt.code, err)
 			}
 		})
+	}
+}
+
+// A draft is allowed to be incomplete: the editor autosaves a blank canvas
+// while the person is still drawing. What the graph still needs is checked
+// when it is published, not when it is drafted.
+func TestValidateAcceptsAnIncompleteDraft(t *testing.T) {
+	blank := &Template{SchemaVersion: 1}
+	if err := blank.Validate(); err != nil {
+		t.Fatalf("Validate(blank canvas) = %v, want nil", err)
+	}
+	startWithoutEnd := graphWithNodes(node("n_start", NodeStart, `{}`), node("n_work", NodeAgent, `{"agent_id":"a"}`))
+	startWithoutEnd.Edges = []Edge{edge("e1", "n_start", "main", "n_work", "in")}
+	if err := startWithoutEnd.Validate(); err != nil {
+		t.Fatalf("Validate(a start with no end) = %v, want nil", err)
 	}
 }
 

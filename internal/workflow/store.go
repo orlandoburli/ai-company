@@ -145,6 +145,12 @@ func scanTemplate(r rowScanner) (TemplateRow, error) {
 	x.DisabledAt = nullableTime(disabled)
 	return x, nil
 }
+
+// CreateTemplate stores a draft.
+//
+// The graph is checked for shape, not for completeness: a draft is free to be
+// incomplete — the editor autosaves a blank canvas — and what it still needs
+// is checked when the template is published.
 func (s *Store) CreateTemplate(ctx context.Context, sc tenancy.Scope, in NewTemplate) (TemplateRow, error) {
 	if err := in.Graph.Validate(); err != nil {
 		return TemplateRow{}, err
@@ -179,6 +185,11 @@ func (s *Store) GetTemplate(ctx context.Context, sc tenancy.Scope, id string) (T
 	})
 	return out, err
 }
+
+// UpdateTemplate saves a draft.
+//
+// Like CreateTemplate it checks the shape of the graph, not its
+// completeness: an incomplete draft is a legitimate save.
 func (s *Store) UpdateTemplate(ctx context.Context, sc tenancy.Scope, id string, p TemplatePatch) (TemplateRow, error) {
 	var out TemplateRow
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
@@ -224,19 +235,46 @@ func (s *Store) UpdateTemplate(ctx context.Context, sc tenancy.Scope, id string,
 	}
 	return out, nil
 }
+
+// PublishTemplate publishes a template: the graph is frozen as the
+// definition of every run that uses it.
+//
+// A published workflow begins and ends, so the graph is checked before the
+// row is published: exactly one start node, exactly one end node, and at
+// least one node at all. A draft may be incomplete — the editor autosaves it
+// — but a published template is refused until it says where the flow begins
+// and where it ends, and the refusal says which of the two is missing.
 func (s *Store) PublishTemplate(ctx context.Context, sc tenancy.Scope, id string) (TemplateRow, error) {
 	var out TemplateRow
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
-		var e error
-		out, e = scanTemplate(tx.QueryRowContext(ctx, `UPDATE workflow_templates SET published_at=now() WHERE id=$1 AND published_at IS NULL AND disabled_at IS NULL RETURNING `+templateCols, id))
-		if errors.Is(e, sql.ErrNoRows) {
-			out, e = scanTemplate(tx.QueryRowContext(ctx, `SELECT `+templateCols+` FROM workflow_templates WHERE id=$1`, id))
-		}
+		current, e := scanTemplate(tx.QueryRowContext(ctx, `SELECT `+templateCols+` FROM workflow_templates WHERE id=$1`, id))
 		if errors.Is(e, sql.ErrNoRows) {
 			return ErrNotFound
 		}
-		if e == nil && out.DisabledAt != nil {
+		if e != nil {
+			return e
+		}
+		if current.DisabledAt != nil {
 			return ErrTemplateDisabled
+		}
+		if current.PublishedAt != nil {
+			// Already published: publishing again changes nothing.
+			out = current
+			return nil
+		}
+		var graph Template
+		if e := json.Unmarshal(current.GraphJSON, &graph); e != nil {
+			return fmt.Errorf("decode workflow template graph: %w", e)
+		}
+		if e := graph.ValidateComplete(); e != nil {
+			return e
+		}
+		out, e = scanTemplate(tx.QueryRowContext(ctx, `UPDATE workflow_templates SET published_at=now() WHERE id=$1 AND published_at IS NULL AND disabled_at IS NULL RETURNING `+templateCols, id))
+		if errors.Is(e, sql.ErrNoRows) {
+			out, e = scanTemplate(tx.QueryRowContext(ctx, `SELECT `+templateCols+` FROM workflow_templates WHERE id=$1`, id))
+			if errors.Is(e, sql.ErrNoRows) {
+				return ErrNotFound
+			}
 		}
 		return e
 	})

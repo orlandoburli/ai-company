@@ -421,6 +421,11 @@ func latestStep(steps []StepRun, nodeID, path string) (StepRun, bool) {
 // flow does, and reaching it finishes the run. A graph without an end node
 // never reaches one — such a run completes the way it always did, when
 // every one of its nodes is terminal.
+//
+// The fallback is a safety net, not a licence: a published template always
+// has exactly one start node and exactly one end node (see
+// Template.ValidateComplete), so a graph without them only reaches the
+// engine as legacy data or as a snapshot taken before the rule existed.
 func endReached(t *Template, steps []StepRun) bool {
 	endID, ok := t.EndNode()
 	if !ok {

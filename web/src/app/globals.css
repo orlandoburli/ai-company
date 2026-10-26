@@ -1000,6 +1000,45 @@ table.data tr.is-selected td {
   margin: 5px 0 3px;
 }
 
+/* --- the product form: the same one creates a product and edits one ----- */
+.product-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 14px;
+  align-items: start;
+}
+
+/* The repository spans the whole row: it is the product's link to GitHub,
+   and it deserves the room to be read. */
+.product-form__wide {
+  grid-column: 1 / -1;
+}
+
+.product-form__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.product-create {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.product-create__title {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-strong);
+}
+
+@media (max-width: 560px) {
+  .product-form { grid-template-columns: minmax(0, 1fr); }
+}
+
 .project-nesting-hint {
   margin: 2px 0 6px;
 }

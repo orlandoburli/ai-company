@@ -1,11 +1,11 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useConfirm } from "@/lib/confirm";
 import { useSession } from "@/lib/session";
-import type { Member, Project, Role } from "@/lib/types";
+import type { Member, Product, Project, Role } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 import {
   CopyButton,
@@ -145,6 +145,202 @@ function TenantForm() {
 }
 
 /* --- products & projects -------------------------------------------------------- */
+
+/** The values a product is written with. */
+interface ProductFields {
+  name: string;
+  slug: string;
+  repo: string;
+  jira: string;
+}
+
+/**
+ * The form a product is written in — the same one creates a product and
+ * edits one. The repository is the product's link to GitHub, so it gets a
+ * label of its own and says what it is for; the slug is the product's key,
+ * so it is normalised the way the company names things.
+ */
+function ProductForm(props: {
+  fields: ProductFields;
+  onChange: (fields: ProductFields) => void;
+  onSubmit: () => void;
+  busy: boolean;
+  submitLabel: string;
+  busyLabel: string;
+  cancelLabel?: string;
+  onCancel?: () => void;
+  /** Makes the field ids unique when two forms share the page. */
+  idPrefix: string;
+}) {
+  const t = useT();
+  const { fields } = props;
+  const set = (patch: Partial<ProductFields>) => props.onChange({ ...fields, ...patch });
+
+  return (
+    <form
+      className="product-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        props.onSubmit();
+      }}
+    >
+      <div className="field">
+        <label htmlFor={`${props.idPrefix}-name`}>{t("settings.products.productName")}</label>
+        <input
+          id={`${props.idPrefix}-name`}
+          className="input"
+          value={fields.name}
+          onChange={(e) => set({ name: e.target.value })}
+          required
+        />
+      </div>
+      <div className="field">
+        <label htmlFor={`${props.idPrefix}-slug`}>{t("settings.products.slugLabel")}</label>
+        <input
+          id={`${props.idPrefix}-slug`}
+          className="input mono"
+          value={fields.slug}
+          onChange={(e) => set({ slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-") })}
+          required
+        />
+        <span className="tiny muted">{t("settings.products.slugHint")}</span>
+      </div>
+      <div className="field product-form__wide">
+        <label htmlFor={`${props.idPrefix}-repo`}>{t("settings.products.repoLabel")}</label>
+        <input
+          id={`${props.idPrefix}-repo`}
+          className="input mono"
+          value={fields.repo}
+          onChange={(e) => set({ repo: e.target.value })}
+          placeholder={t("settings.products.repoPlaceholder")}
+        />
+        <span className="tiny muted">{t("settings.products.repoHint")}</span>
+      </div>
+      <div className="field">
+        <label htmlFor={`${props.idPrefix}-jira`}>{t("settings.products.jiraLabel")}</label>
+        <input
+          id={`${props.idPrefix}-jira`}
+          className="input mono"
+          value={fields.jira}
+          onChange={(e) => set({ jira: e.target.value })}
+        />
+        <span className="tiny muted">{t("settings.products.jiraHint")}</span>
+      </div>
+      <div className="product-form__actions">
+        {props.onCancel ? (
+          <button type="button" className="btn" onClick={props.onCancel}>
+            {props.cancelLabel ?? t("settings.products.cancel")}
+          </button>
+        ) : null}
+        <button type="submit" className="btn btn--primary" disabled={props.busy}>
+          {props.busy ? props.busyLabel : props.submitLabel}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * The dialog that edits a product. It opens the same form the new-product
+ * form uses, filled with the product's own values, and saves through the
+ * update endpoint — only the fields that changed are sent, so an untouched
+ * repository is never rewritten.
+ */
+function EditProductDialog(props: {
+  product: Product;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const t = useT();
+  const confirm = useConfirm();
+  const product = props.product;
+  const [fields, setFields] = useState<ProductFields>({
+    name: product.name,
+    slug: product.slug,
+    repo: product.repo_url ?? "",
+    jira: product.jira_project_key ?? "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    if (busy) return;
+    const next = {
+      name: fields.name.trim(),
+      slug: fields.slug.trim(),
+      repo: fields.repo.trim(),
+      jira: fields.jira.trim(),
+    };
+    if (!next.name || !next.slug) {
+      setError(t("settings.products.required"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    // The slug is the product's key. Renaming it renames the product, so the
+    // person is told what that means before it happens.
+    if (next.slug !== product.slug) {
+      const ok = await confirm({
+        title: t("settings.products.slugChange.title"),
+        message: t("settings.products.slugChange.message"),
+        confirmLabel: t("settings.products.saveChanges"),
+      });
+      if (!ok) {
+        setBusy(false);
+        return;
+      }
+    }
+    // Only what changed is sent: the endpoint leaves an absent field alone,
+    // so an untouched repository is never rewritten.
+    const body: {
+      name?: string;
+      slug?: string;
+      repo_url?: string;
+      jira_project_key?: string;
+    } = {};
+    if (next.name !== product.name) body.name = next.name;
+    if (next.slug !== product.slug) body.slug = next.slug;
+    if (next.repo !== (product.repo_url ?? "")) body.repo_url = next.repo;
+    if (next.jira !== (product.jira_project_key ?? "")) body.jira_project_key = next.jira;
+    if (Object.keys(body).length === 0) {
+      props.onClose();
+      return;
+    }
+    try {
+      await api.updateProduct(product.id, body);
+      props.onSaved();
+    } catch (err) {
+      setError(productErrorMessage(err, next.slug !== product.slug, t));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title={t("settings.products.editTitle", { name: product.name })}
+      description={t("settings.products.editDescription")}
+      onClose={props.onClose}
+      width={560}
+    >
+      {error ? (
+        <div className="error-note" role="alert" style={{ marginBottom: 12 }}>
+          {error}
+        </div>
+      ) : null}
+      <ProductForm
+        fields={fields}
+        onChange={setFields}
+        onSubmit={() => void save()}
+        busy={busy}
+        submitLabel={t("settings.products.saveChanges")}
+        busyLabel={t("settings.products.saving")}
+        cancelLabel={t("settings.products.cancel")}
+        onCancel={props.onClose}
+        idPrefix={`edit-${product.id}`}
+      />
+    </Dialog>
+  );
+}
 
 /** A project and the projects that sit under it. */
 interface ProjectBranch {
@@ -319,26 +515,32 @@ function ProductsSection() {
     [],
   );
   const canEdit = me?.tenant.role !== "guest";
-  const [productName, setProductName] = useState("");
-  const [productSlug, setProductSlug] = useState("");
-  const [repoUrl, setRepoUrl] = useState("");
-  const [jiraKey, setJiraKey] = useState("");
+  const [productFields, setProductFields] = useState<ProductFields>({
+    name: "",
+    slug: "",
+    repo: "",
+    jira: "",
+  });
   const [busyProduct, setBusyProduct] = useState(false);
+  const [editing, setEditing] = useState<Product | null>(null);
 
-  async function createProduct(e: FormEvent) {
-    e.preventDefault();
+  async function createProduct() {
+    if (busyProduct) return;
+    const name = productFields.name.trim();
+    const slug = productFields.slug.trim();
+    if (!name || !slug) {
+      push("error", t("settings.products.required"));
+      return;
+    }
     setBusyProduct(true);
     try {
       await api.createProduct({
-        name: productName.trim(),
-        slug: productSlug.trim(),
-        repo_url: repoUrl.trim() || undefined,
-        jira_project_key: jiraKey.trim() || undefined,
+        name,
+        slug,
+        repo_url: productFields.repo.trim() || undefined,
+        jira_project_key: productFields.jira.trim() || undefined,
       });
-      setProductName("");
-      setProductSlug("");
-      setRepoUrl("");
-      setJiraKey("");
+      setProductFields({ name: "", slug: "", repo: "", jira: "" });
       await products.reload();
       push("info", t("settings.products.created"));
     } catch (err) {
@@ -453,15 +655,29 @@ function ProductsSection() {
                     ) : null}
                   </div>
                   {canEdit ? (
-                    <button
-                      type="button"
-                      className="btn btn--sm btn--ghost btn--danger"
-                      onClick={() => void deleteProduct(p.id)}
-                    >
-                      {t("settings.products.delete")}
-                    </button>
+                    <span className="stack" style={{ gap: 6 }}>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => setEditing(p)}
+                      >
+                        {t("settings.products.edit")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost btn--danger"
+                        onClick={() => void deleteProduct(p.id)}
+                      >
+                        {t("settings.products.delete")}
+                      </button>
+                    </span>
                   ) : null}
                 </div>
+                {!p.repo_url ? (
+                  <p className="tiny muted" style={{ margin: "6px 0 0" }}>
+                    {t("settings.products.noRepository")}
+                  </p>
+                ) : null}
                 <div className="tiny muted" style={{ marginTop: 8 }}>
                   {t("settings.products.projects")} {ps.length === 0 ? t("settings.products.none") : `(${ps.length})`}
                 </div>
@@ -496,59 +712,31 @@ function ProductsSection() {
           })
         )}
         {canEdit ? (
-          <form
-            onSubmit={createProduct}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 130px 1fr 120px auto",
-              gap: 8,
-              alignItems: "center",
-              borderTop: "1px solid var(--border)",
-              paddingTop: 12,
-            }}
-          >
-            <input
-              className="input input--inline"
-              placeholder={t("settings.products.productName")}
-              aria-label={t("settings.products.newProductName")}
-              value={productName}
-              onChange={(e) => setProductName(e.target.value)}
-              required
+          <div className="product-create">
+            <p className="product-create__title">{t("settings.products.new")}</p>
+            <ProductForm
+              fields={productFields}
+              onChange={setProductFields}
+              onSubmit={() => void createProduct()}
+              busy={busyProduct}
+              submitLabel={t("settings.products.addProduct")}
+              busyLabel={t("settings.products.adding")}
+              idPrefix="new-product"
             />
-            <input
-              className="input input--inline mono"
-              placeholder={t("settings.products.slug")}
-              aria-label={t("settings.products.newProductSlug")}
-              value={productSlug}
-              onChange={(e) =>
-                setProductSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-"))
-              }
-              required
-            />
-            <input
-              className="input input--inline"
-              placeholder={t("settings.products.repoUrl")}
-              aria-label={t("settings.products.newRepoUrl")}
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-            />
-            <input
-              className="input input--inline"
-              placeholder={t("settings.products.jiraKey")}
-              aria-label={t("settings.products.newJiraKey")}
-              value={jiraKey}
-              onChange={(e) => setJiraKey(e.target.value)}
-            />
-            <button
-              type="submit"
-              className="btn btn--sm btn--primary"
-              disabled={busyProduct}
-            >
-              {busyProduct ? t("settings.products.adding") : t("settings.products.addProduct")}
-            </button>
-          </form>
+          </div>
         ) : null}
       </div>
+      {editing ? (
+        <EditProductDialog
+          product={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            void products.reload();
+            push("info", t("settings.products.updated"));
+          }}
+        />
+      ) : null}
       <Toasts toasts={toasts} />
     </div>
   );
@@ -880,6 +1068,18 @@ function CreateInviteDialog(props: {
 }
 
 /* --- error messages ------------------------------------------------------------- */
+
+/**
+ * The message a failed product edit shows. The failure this form can cause
+ * with its own meaning — a key another product already holds — is named
+ * rather than swallowed by a generic sentence.
+ */
+function productErrorMessage(err: unknown, slugChanged: boolean, t: ReturnType<typeof useT>): string {
+  if (err instanceof ApiError && err.code === "conflict" && slugChanged) {
+    return t("settings.products.slugTaken");
+  }
+  return apiErrorMessage(err);
+}
 
 function translateTenant(err: unknown): string {
   return apiErrorMessage(err);

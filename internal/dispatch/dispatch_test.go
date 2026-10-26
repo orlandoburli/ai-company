@@ -88,11 +88,17 @@ func newDispatchFixture(t *testing.T, agentLimit int) *dispatchFixture {
 		t.Fatal(err)
 	}
 	wfs := workflow.NewStore(app)
-	graph := workflow.Template{SchemaVersion: 1, Nodes: []workflow.Node{{
-		ID: "work", Kind: workflow.NodeAgent, Name: "Work", Type: "agent.worker", TypeVersion: 1,
-		Config:  json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentRow.ID)),
-		OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch,
-	}}, Edges: []workflow.Edge{}}
+	// The template has to begin and end to be published at all.
+	graph := workflow.Template{SchemaVersion: 1, Nodes: []workflow.Node{
+		{ID: "start", Kind: workflow.NodeStart, Name: "Start", Type: "flow.start", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+		{ID: "work", Kind: workflow.NodeAgent, Name: "Work", Type: "agent.worker", TypeVersion: 1,
+			Config:  json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentRow.ID)),
+			OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+		{ID: "end", Kind: workflow.NodeEnd, Name: "End", Type: "flow.end", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: workflow.OnErrorStop, Workspace: workflow.WorkspaceScratch},
+	}, Edges: []workflow.Edge{
+		{ID: "start-work", From: workflow.PortRef{Node: "start", Port: "main"}, To: workflow.PortRef{Node: "work", Port: "in"}},
+		{ID: "work-end", From: workflow.PortRef{Node: "work", Port: "main"}, To: workflow.PortRef{Node: "end", Port: "in"}},
+	}}
 	tpl, err := wfs.CreateTemplate(context.Background(), scope, workflow.NewTemplate{Name: "dispatch", AppliesTo: "task", Graph: graph, CreatedBy: userID})
 	if err != nil {
 		t.Fatal(err)

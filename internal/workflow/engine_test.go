@@ -74,10 +74,15 @@ func (f *engineFixture) createRun(t *testing.T, graph Template) Run {
 func TestStartRunRefusesDisabledTemplateAsConfigurationFailure(t *testing.T) {
 	f := newEngineFixture(t)
 	ctx := context.Background()
-	graph := Template{SchemaVersion: 1, Nodes: []Node{{
-		ID: "n", Kind: NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1,
-		Config: json.RawMessage(`{"agent_id":"agent"}`), OnError: OnErrorStop,
-	}}, Edges: []Edge{}}
+	// The template has to begin and end to be published at all.
+	graph := Template{SchemaVersion: 1, Nodes: []Node{
+		{ID: "start", Kind: NodeStart, Name: "start", Type: "flow.start", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "n", Kind: NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1, Config: json.RawMessage(`{"agent_id":"agent"}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+		{ID: "end", Kind: NodeEnd, Name: "end", Type: "flow.end", TypeVersion: 1, Config: json.RawMessage(`{}`), OnError: OnErrorStop, Workspace: WorkspaceScratch},
+	}, Edges: []Edge{
+		{ID: "start-n", From: PortRef{Node: "start", Port: "main"}, To: PortRef{Node: "n", Port: "in"}},
+		{ID: "n-end", From: PortRef{Node: "n", Port: "main"}, To: PortRef{Node: "end", Port: "in"}},
+	}}
 	tpl, err := f.store.CreateTemplate(ctx, f.sc, NewTemplate{Name: "retired", Graph: graph, CreatedBy: f.sc.UserID})
 	if err != nil {
 		t.Fatal(err)

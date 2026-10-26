@@ -138,9 +138,20 @@ func (h *runsHarness) item(cookie string) string {
 	return it.json(h.t)["item"].(map[string]any)["id"].(string)
 }
 
+// checkpointTemplate is a complete workflow: it begins and it ends, so it can
+// be published.
 func checkpointTemplate(name string) map[string]any {
 	return map[string]any{"name": name, "applies_to": "bug", "max_concurrency": 2, "graph": map[string]any{
-		"schema_version": 1, "nodes": []any{map[string]any{"id": "n_gate", "kind": "checkpoint", "name": "review", "type": "human.review", "type_version": 1, "config": map[string]any{"question": "Review this", "policy": "retry_step", "fields": []any{map[string]any{"key": "target", "type": "string", "label": "Target branch"}}}, "on_error": "stop_workflow", "workspace": "scratch"}}, "edges": []any{},
+		"schema_version": 1,
+		"nodes": []any{
+			map[string]any{"id": "n_start", "kind": "start", "name": "start", "type": "flow.start", "type_version": 1, "config": map[string]any{}, "on_error": "stop_workflow", "workspace": "scratch"},
+			map[string]any{"id": "n_gate", "kind": "checkpoint", "name": "review", "type": "human.review", "type_version": 1, "config": map[string]any{"question": "Review this", "policy": "retry_step", "fields": []any{map[string]any{"key": "target", "type": "string", "label": "Target branch"}}}, "on_error": "stop_workflow", "workspace": "scratch"},
+			map[string]any{"id": "n_end", "kind": "end", "name": "end", "type": "flow.end", "type_version": 1, "config": map[string]any{}, "on_error": "stop_workflow", "workspace": "scratch"},
+		},
+		"edges": []any{
+			map[string]any{"id": "e1", "from": map[string]any{"node": "n_start", "port": "main"}, "to": map[string]any{"node": "n_gate", "port": "in"}},
+			map[string]any{"id": "e2", "from": map[string]any{"node": "n_gate", "port": "approved"}, "to": map[string]any{"node": "n_end", "port": "in"}},
+		},
 	}}
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/orlandoburli/ai-company/internal/memory"
@@ -151,16 +152,22 @@ func (h *workflowHarness) addMember(tenantID, email string, role tenancy.Role) s
 	return res.cookie
 }
 
+// templateBody is a complete workflow: it begins and it ends, so it can be
+// published.
 func templateBody(name string) map[string]any {
 	return map[string]any{
 		"name": name, "applies_to": "bug", "max_concurrency": 4,
 		"graph": map[string]any{
 			"schema_version": 1,
-			"nodes": []any{map[string]any{
-				"id": "n_agent", "kind": "agent", "name": "implement", "type": "agent.dev", "type_version": 1,
-				"config": map[string]any{"agent_id": "agent-1"}, "on_error": "stop_workflow", "workspace": "scratch",
-			}},
-			"edges": []any{},
+			"nodes": []any{
+				map[string]any{"id": "n_start", "kind": "start", "name": "start", "type": "flow.start", "type_version": 1, "config": map[string]any{}, "on_error": "stop_workflow", "workspace": "scratch"},
+				map[string]any{"id": "n_agent", "kind": "agent", "name": "implement", "type": "agent.dev", "type_version": 1, "config": map[string]any{"agent_id": "agent-1"}, "on_error": "stop_workflow", "workspace": "scratch"},
+				map[string]any{"id": "n_end", "kind": "end", "name": "end", "type": "flow.end", "type_version": 1, "config": map[string]any{}, "on_error": "stop_workflow", "workspace": "scratch"},
+			},
+			"edges": []any{
+				map[string]any{"id": "e1", "from": map[string]any{"node": "n_start", "port": "main"}, "to": map[string]any{"node": "n_agent", "port": "in"}},
+				map[string]any{"id": "e2", "from": map[string]any{"node": "n_agent", "port": "main"}, "to": map[string]any{"node": "n_end", "port": "in"}},
+			},
 		},
 	}
 }
@@ -198,7 +205,11 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	}
 
 	bad := templateBody("Invalid")
-	bad["graph"] = map[string]any{"schema_version": 1, "nodes": []any{}, "edges": []any{}}
+	// A graph with an unknown kind is broken in shape: no draft can hold it.
+	bad["graph"] = map[string]any{"schema_version": 1, "nodes": []any{map[string]any{
+		"id": "n_agent", "kind": "not-a-kind", "name": "implement", "type": "agent.dev", "type_version": 1,
+		"config": map[string]any{"agent_id": "agent-1"}, "on_error": "stop_workflow", "workspace": "scratch",
+	}}, "edges": []any{}}
 	invalid := h.do("POST", "/api/workflow-templates", bad, ownerCookie)
 	if invalid.status != http.StatusUnprocessableEntity || workflowErrCode(t, invalid) != "template_invalid" {
 		t.Fatalf("invalid graph: %d %s", invalid.status, invalid.body)
@@ -285,6 +296,62 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	}
 }
 
+// A draft may be incomplete; a published workflow may not. The publish
+// endpoint refuses a template that does not begin and end, and it says which
+// of the two is missing.
+func TestWorkflowTemplatePublishNeedsBothEndpoints(t *testing.T) {
+	h := newWorkflowHarness(t)
+	ownerCookie, _, _ := h.register("owner@example.com", "Acme", "acme")
+
+	// A blank canvas is a legitimate place to begin: the draft saves.
+	blank := map[string]any{"name": "Blank", "graph": map[string]any{"schema_version": 1, "nodes": []any{}, "edges": []any{}}}
+	created := h.do("POST", "/api/workflow-templates", blank, ownerCookie)
+	if created.status != http.StatusCreated {
+		t.Fatalf("create a blank draft: %d %s", created.status, created.body)
+	}
+	id := created.json(t)["template"].(map[string]any)["id"].(string)
+
+	published := h.do("POST", "/api/workflow-templates/"+id+"/publish", nil, ownerCookie)
+	if published.status != http.StatusUnprocessableEntity || workflowErrCode(t, published) != "template_invalid" {
+		t.Fatalf("publish a blank draft: %d %s", published.status, published.body)
+	}
+	message := published.json(t)["error"].(map[string]any)["message"].(string)
+	if !strings.Contains(message, "no nodes") {
+		t.Fatalf("publish refusal = %q, want it to name the missing nodes", message)
+	}
+
+	// A draft with work but no start point: the publish names the missing
+	// start point.
+	work := map[string]any{"name": "Work", "graph": map[string]any{
+		"schema_version": 1,
+		"nodes":          []any{map[string]any{"id": "n_agent", "kind": "agent", "name": "implement", "type": "agent.dev", "type_version": 1, "config": map[string]any{"agent_id": "agent-1"}, "on_error": "stop_workflow", "workspace": "scratch"}},
+		"edges":          []any{},
+	}}
+	partial := h.do("POST", "/api/workflow-templates", work, ownerCookie)
+	if partial.status != http.StatusCreated {
+		t.Fatalf("create an incomplete draft: %d %s", partial.status, partial.body)
+	}
+	partialID := partial.json(t)["template"].(map[string]any)["id"].(string)
+	refused := h.do("POST", "/api/workflow-templates/"+partialID+"/publish", nil, ownerCookie)
+	if refused.status != http.StatusUnprocessableEntity || workflowErrCode(t, refused) != "template_invalid" {
+		t.Fatalf("publish a draft without a start point: %d %s", refused.status, refused.body)
+	}
+	message = refused.json(t)["error"].(map[string]any)["message"].(string)
+	if !strings.Contains(message, "no start point") {
+		t.Fatalf("publish refusal = %q, want it to name the missing start point", message)
+	}
+
+	// The complete template publishes.
+	complete := h.do("POST", "/api/workflow-templates", templateBody("Complete"), ownerCookie)
+	if complete.status != http.StatusCreated {
+		t.Fatalf("create a complete template: %d %s", complete.status, complete.body)
+	}
+	completeID := complete.json(t)["template"].(map[string]any)["id"].(string)
+	if ok := h.do("POST", "/api/workflow-templates/"+completeID+"/publish", nil, ownerCookie); ok.status != http.StatusOK {
+		t.Fatalf("publish a complete template: %d %s", ok.status, ok.body)
+	}
+}
+
 func TestWorkflowTemplateValidateEndpoint(t *testing.T) {
 	h := newWorkflowHarness(t)
 	cookie, _, _ := h.register("validate@example.com", "Acme", "acme")
@@ -324,6 +391,22 @@ func TestWorkflowTemplateValidateEndpoint(t *testing.T) {
 	valid := h.do("POST", path, map[string]any{"graph": validGraph}, cookie)
 	if valid.status != http.StatusOK || len(valid.json(t)["problems"].([]any)) != 0 {
 		t.Fatalf("validate valid graph: %d %s", valid.status, valid.body)
+	}
+
+	// A blank canvas is not a broken graph: the panel says what the
+	// workflow still needs — a start point and an end point.
+	blank := h.do("POST", path, map[string]any{"graph": map[string]any{"schema_version": 1, "nodes": []any{}, "edges": []any{}}}, cookie)
+	if blank.status != http.StatusOK {
+		t.Fatalf("validate a blank graph: %d %s", blank.status, blank.body)
+	}
+	codes := map[string]bool{}
+	for _, raw := range blank.json(t)["problems"].([]any) {
+		codes[raw.(map[string]any)["code"].(string)] = true
+	}
+	for _, code := range []string{workflow.CodeMissingStartNode, workflow.CodeMissingEndNode} {
+		if !codes[code] {
+			t.Fatalf("a blank graph reported %v, want %q among them", codes, code)
+		}
 	}
 	if malformed := h.doRaw("POST", path, `{"graph":`, cookie); malformed.status != http.StatusBadRequest || workflowErrCode(t, malformed) != "invalid_request" {
 		t.Fatalf("malformed validate request: %d %s", malformed.status, malformed.body)

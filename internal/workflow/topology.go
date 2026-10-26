@@ -21,6 +21,12 @@ func (t *Template) Node(id string) (Node, bool) {
 
 // EntryNodes returns node ids with no incoming edges, except cycle-return edges
 // into loop nodes, in sorted order.
+//
+// It is the fallback the flow starts from when the graph names no start
+// node. The fallback is a safety net, not a licence: a published template
+// always has exactly one start node and exactly one end node (see
+// Template.ValidateComplete), so a graph without them only reaches the engine
+// as legacy data or as a snapshot taken before the rule existed.
 func (t *Template) EntryNodes() []string {
 	if t == nil {
 		return nil

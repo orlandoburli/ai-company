@@ -237,3 +237,100 @@ func TestValidateAllNamesTheOffendingNode(t *testing.T) {
 		t.Fatalf("the problem names %q, want n_start2", problems[0].NodeID)
 	}
 }
+
+// A published workflow begins and ends. The completeness check is the gate
+// between a draft and a publish, and every refusal names what is missing.
+func TestValidateCompleteRefusesAnIncompleteGraph(t *testing.T) {
+	start := node("n_start", NodeStart, `{}`)
+	secondStart := node("n_start2", NodeStart, `{}`)
+	end := node("n_end", NodeEnd, `{}`)
+	secondEnd := node("n_end2", NodeEnd, `{}`)
+	work := node("n_work", NodeAgent, `{"agent_id":"a"}`)
+
+	noNodes := &Template{SchemaVersion: 1}
+	noStart := graphWithNodes(work, end)
+	noStart.Edges = []Edge{edge("e1", "n_work", "main", "n_end", "in")}
+	noEnd := graphWithNodes(start, work)
+	noEnd.Edges = []Edge{edge("e1", "n_start", "main", "n_work", "in")}
+	twoStarts := graphWithNodes(start, secondStart, work)
+	twoStarts.Edges = []Edge{
+		edge("e1", "n_start", "main", "n_work", "in"),
+		edge("e2", "n_start2", "main", "n_work", "in"),
+	}
+	twoEnds := graphWithNodes(start, work, end, secondEnd)
+	twoEnds.Edges = []Edge{
+		edge("e1", "n_start", "main", "n_work", "in"),
+		edge("e2", "n_work", "main", "n_end", "in"),
+		edge("e3", "n_work", "main", "n_end2", "in"),
+	}
+	complete := graphWithNodes(start, work, end)
+	complete.Edges = []Edge{
+		edge("e1", "n_start", "main", "n_work", "in"),
+		edge("e2", "n_work", "main", "n_end", "in"),
+	}
+
+	tests := []struct {
+		name  string
+		graph *Template
+		code  string
+		says  string
+	}{
+		{"no nodes", noNodes, CodeEmptyGraph, "no nodes"},
+		{"no start", noStart, CodeMissingStartNode, "no start point"},
+		{"no end", noEnd, CodeMissingEndNode, "no end point"},
+		{"two starts", twoStarts, CodeDuplicateStartNode, ""},
+		{"two ends", twoEnds, CodeDuplicateEndNode, ""},
+		{"complete", complete, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.graph.ValidateComplete()
+			if tt.code == "" {
+				if err != nil {
+					t.Fatalf("ValidateComplete() error = %v, want nil", err)
+				}
+				return
+			}
+			var validation *ValidationError
+			if !errors.As(err, &validation) {
+				t.Fatalf("ValidateComplete() error = %v, want *ValidationError", err)
+			}
+			if validation.Code != tt.code {
+				t.Fatalf("error code = %q, want %q (error: %v)", validation.Code, tt.code, err)
+			}
+			if tt.says != "" && !strings.Contains(validation.Message, tt.says) {
+				t.Fatalf("the message does not say %q: %v", tt.says, err)
+			}
+		})
+	}
+}
+
+// The panel asks for everything the workflow still needs, not just the first
+// thing: a blank canvas has no start point and no end point.
+func TestCompletenessProblemsReportEveryMissingPiece(t *testing.T) {
+	problems := (&Template{SchemaVersion: 1}).CompletenessProblems()
+	codes := make(map[string]bool, len(problems))
+	for _, problem := range problems {
+		codes[problem.Code] = true
+		if problem.Message == "" {
+			t.Fatalf("problem %#v has no message", problem)
+		}
+	}
+	for _, code := range []string{CodeEmptyGraph, CodeMissingStartNode, CodeMissingEndNode} {
+		if !codes[code] {
+			t.Fatalf("problems = %#v, want %q among them", problems, code)
+		}
+	}
+}
+
+// A graph that names both ends and holds them together is publishable.
+func TestCompletenessProblemsOfACompleteGraph(t *testing.T) {
+	graph := graphWithNodes(node("n_start", NodeStart, `{}`), node("n_work", NodeAgent, `{"agent_id":"a"}`), node("n_end", NodeEnd, `{}`))
+	graph.Edges = []Edge{
+		edge("e1", "n_start", "main", "n_work", "in"),
+		edge("e2", "n_work", "main", "n_end", "in"),
+	}
+	if problems := graph.CompletenessProblems(); len(problems) != 0 {
+		t.Fatalf("CompletenessProblems() = %#v, want none", problems)
+	}
+}
