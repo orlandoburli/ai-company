@@ -256,6 +256,4 @@ export const editor: EditorDictionary = {
   "editor.chain.notSet": "não definido",
   "editor.chain.noRunner": "Este agente não tem runner, então não pode ser despachado.",
   "editor.chain.chooseAgent": "Escolha um agente para ver seus runners padrão e de reserva.",
-  "editor.starter.startName": "Início",
-  "editor.starter.endName": "Fim",
 };

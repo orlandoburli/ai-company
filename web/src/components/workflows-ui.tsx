@@ -402,19 +402,13 @@ function nodeWidth(node: WorkflowNode): number {
   return isTerminator(node.kind) ? TERMINATOR_W : CARD_W;
 }
 function starterGraph(agentId = "", agentRole = "dev"): WorkflowGraph {
-  // A new template is the person's work, not ours: it starts with the two
-  // boundaries and nothing else — no review, no approval, no implementation.
-  // The flow says where it begins and where it ends; the steps are theirs.
-  const lang = getCurrentLang();
-  const start = newNode("start", { x: 120, y: 140 });
-  const end = newNode("end", { x: 520, y: 140 });
-  start.name = translate(lang, "editor.starter.startName");
-  end.name = translate(lang, "editor.starter.endName");
+  // A new template is a blank canvas: nothing is pre-drawn, not even the
+  // boundaries. The flow says where it begins and where it ends — the
+  // person adds the start, the steps and the end themselves, and the
+  // validation panel tells them what the workflow still needs.
   void agentId;
   void agentRole;
-  return { schema_version: 1, nodes: [start, end], edges: [
-    { id: makeId(), from: { node: start.id, port: "main" }, to: { node: end.id, port: "in" } },
-  ] };
+  return { schema_version: 1, nodes: [], edges: [] };
 }
 function isPublished(template: WorkflowTemplate | WorkflowTemplateSummary): boolean {
   return Boolean(template.published_at || ("published" in template && template.published) || ("status" in template && template.status === "published"));

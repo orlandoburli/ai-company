@@ -229,6 +229,15 @@ export const api = {
     jira_project_key?: string;
   }) => post<{ product: Product }>("/api/products", b),
 
+  // PATCH carries only the fields that change: an absent field is left
+  // alone, so an edit never clears a repository it did not touch.
+  updateProduct: (id: string, b: {
+    name?: string;
+    slug?: string;
+    repo_url?: string;
+    jira_project_key?: string;
+  }) => patch<{ product: Product }>(`/api/products/${encodeURIComponent(id)}`, b),
+
   deleteProduct: (id: string) => del(`/api/products/${id}`),
 
   listProjects: (productId?: string) =>

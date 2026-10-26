@@ -254,8 +254,6 @@ export const editor = {
   "editor.chain.notSet": "not set",
   "editor.chain.noRunner": "This agent has no runner, so it cannot be dispatched.",
   "editor.chain.chooseAgent": "Choose an agent to see its default and fallback runners.",
-  "editor.starter.startName": "Start",
-  "editor.starter.endName": "End",
 } as const;
 
 /** The editor strings with their literal types. */
