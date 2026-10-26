@@ -7,6 +7,11 @@ import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
 import { renderMarkdown } from "@/components/chat";
+import { useT } from "@/lib/i18n";
+import { getCurrentLang, translate, type TranslationKey } from "@/lib/locales";
+
+/** The translator, for the helpers that live outside a component. */
+type T = ReturnType<typeof useT>;
 
 const STEP_COLOR: Record<string, string> = {
   pending: "var(--status-backlog)", ready: "var(--status-todo)", running: "var(--status-progress)", waiting: "var(--status-waiting)",
@@ -15,18 +20,91 @@ const STEP_COLOR: Record<string, string> = {
 };
 const EDGE_COLOR = { delivered: "var(--status-done)", skipped: "var(--status-backlog)", dead: "var(--status-error)" };
 
+/* --- the vocabulary of a run -------------------------------------------------- */
+
+/** The states a step, a run or a checkpoint can be in. */
+const STATE_KEYS: Record<string, TranslationKey> = {
+  pending: "monitor.state.pending",
+  queued: "monitor.state.queued",
+  ready: "monitor.state.ready",
+  running: "monitor.state.running",
+  waiting: "monitor.state.waiting",
+  waiting_human: "monitor.state.waiting_human",
+  succeeded: "monitor.state.succeeded",
+  completed: "monitor.state.completed",
+  failed: "monitor.state.failed",
+  skipped: "monitor.state.skipped",
+  blocked: "monitor.state.blocked",
+  cancelled: "monitor.state.cancelled",
+  superseded: "monitor.state.superseded",
+};
+
+/** The kinds of node a workflow is made of. */
+const KIND_KEYS: Record<string, TranslationKey> = {
+  start: "monitor.kind.start",
+  end: "monitor.kind.end",
+  agent: "monitor.kind.agent",
+  integration: "monitor.kind.integration",
+  checkpoint: "monitor.kind.checkpoint",
+  loop: "monitor.kind.loop",
+  merge: "monitor.kind.merge",
+};
+
+/** The decisions a person can take on a checkpoint. */
+const DECISION_KEYS: Record<string, TranslationKey> = {
+  approve: "checkpoints.decision.approve",
+  approve_with_edits: "checkpoints.decision.approve_with_edits",
+  reject: "checkpoints.decision.reject",
+  abort: "checkpoints.decision.abort",
+};
+
+/** The name of a state, in the language on screen. */
+function stateLabel(t: T, state: string): string {
+  const key = STATE_KEYS[state];
+  return key ? t(key) : state.replaceAll("_", " ");
+}
+
+/** The name of a node kind, in the language on screen. */
+function kindLabel(t: T, kind: string): string {
+  const key = KIND_KEYS[kind];
+  return key ? t(key) : kind.replaceAll("_", " ");
+}
+
+/** The name of a decision, in the language on screen. */
+function decisionLabel(t: T, decision: string): string {
+  const key = DECISION_KEYS[decision];
+  return key ? t(key) : decision.replaceAll("_", " ");
+}
+
+/**
+ * The message for an API error: the screen's own wording for a code it knows,
+ * the server's own message for every other code.
+ */
+function apiIssue(t: T, error: unknown, known: Record<string, TranslationKey> = {}): string {
+  if (error instanceof ApiError) {
+    const key = known[error.code];
+    if (key) return t(key);
+    return `${error.code} — ${apiErrorMessage(error)}`;
+  }
+  if (error instanceof Error) return error.message;
+  return t("error.title");
+}
+
 export function formatElapsed(start?: string | null, end?: string | null): string {
   if (!start) return "—";
   const seconds = Math.max(0, Math.floor(((end ? new Date(end) : new Date()).getTime() - new Date(start).getTime()) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  const lang = getCurrentLang();
+  if (seconds < 60) return translate(lang, "monitor.elapsed.seconds", { value: seconds });
+  if (seconds < 3600) return translate(lang, "monitor.elapsed.minutes", { value: Math.floor(seconds / 60), rest: seconds % 60 });
+  return translate(lang, "monitor.elapsed.hours", { value: Math.floor(seconds / 3600), rest: Math.floor((seconds % 3600) / 60) });
 }
 
 export function StateChip({ state }: { state: string }) {
+  const t = useT();
   const cls = state === "running" ? "jobchip--warn" : state === "ready" ? "jobchip--run" : ["completed", "succeeded"].includes(state) ? "jobchip--ok" : ["failed", "blocked", "cancelled"].includes(state) ? "jobchip--fail" : ["waiting_human", "waiting"].includes(state) ? "jobchip--waiting" : "jobchip--queued";
-  return <span className={`jobchip ${cls}`}><span className="jobchip__dot" />{state.replaceAll("_", " ")}</span>;
+  return <span className={`jobchip ${cls}`}><span className="jobchip__dot" />{stateLabel(t, state)}</span>;
 }
+
 
 interface RunGraphProps {
   graph?: WorkflowGraph | null;

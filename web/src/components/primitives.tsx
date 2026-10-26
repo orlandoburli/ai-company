@@ -3,7 +3,7 @@
 import { cloneElement, useEffect, useId, useRef, useState } from "react";
 import type { Priority, Status } from "@/lib/types";
 import { PRIORITY_LABELS, STATUS_LABELS } from "@/lib/format";
-import { getCurrentLang, translate } from "@/lib/locales";
+import { getCurrentLang, translate, type TranslationKey } from "@/lib/locales";
 import { useT } from "@/lib/i18n";
 import { IconCheck, IconClose } from "./icons";
 
@@ -521,8 +521,34 @@ export function Toasts(props: {
 
 export function apiErrorMessage(err: unknown): string {
   if (err instanceof Error && "code" in err) {
-    return err.message || translate(getCurrentLang(), "error.title");
+    const code = String((err as { code: unknown }).code);
+    const key = ERROR_CODE_KEYS[code];
+    return key
+      ? translate(getCurrentLang(), key)
+      : err.message || translate(getCurrentLang(), "error.title");
   }
   if (err instanceof Error) return err.message;
   return translate(getCurrentLang(), "error.title");
 }
+
+const ERROR_CODE_KEYS: Record<string, TranslationKey> = {
+  network: "error.code.network",
+  unknown: "error.code.unknown",
+  runner_in_use: "error.code.runner_in_use",
+  invalid_config: "error.code.invalid_config",
+  forbidden: "error.code.forbidden",
+  not_found: "error.code.not_found",
+  already_decided: "error.code.already_decided",
+  invalid_request: "error.code.invalid_request",
+  invalid_language: "error.code.invalid_language",
+  unauthenticated: "error.code.unauthenticated",
+  conflict: "error.code.conflict",
+  invalid_tenant_slug: "error.code.invalid_tenant_slug",
+  invalid_email: "error.code.invalid_email",
+  already_member: "error.code.already_member",
+  already_invited: "error.code.already_invited",
+  weak_password: "error.code.weak_password",
+  invalid_credentials: "error.code.invalid_credentials",
+  no_tenant: "error.code.no_tenant",
+  invalid_invite: "error.code.invalid_invite",
+};

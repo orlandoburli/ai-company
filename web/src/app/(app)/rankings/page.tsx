@@ -9,12 +9,16 @@ import { useSession } from "@/lib/session";
 import type { RankingRun } from "@/lib/types";
 import { ErrorBlock, Skeleton, Toasts } from "@/components/primitives";
 import { formatDateTime } from "@/lib/format";
+import { useT } from "@/lib/i18n";
+import { STATUS_LABELS } from "@/lib/format";
+import type { Status } from "@/lib/types";
 
 export default function RankingsPage() {
   return <Suspense fallback={<div style={{ display: "grid", gap: 12 }}><Skeleton h={22} w={180} /><Skeleton h={300} /></div>}><RankingsView /></Suspense>;
 }
 
 function RankingsView() {
+  const t = useT();
   const params = useSearchParams();
   const router = useRouter();
   const { canWrite } = useSession();
@@ -39,9 +43,9 @@ function RankingsView() {
       const result = await api.runRanking();
       await runs.reload();
       router.replace(`/rankings?id=${encodeURIComponent(result.ranking.id)}`, { scroll: false });
-      push("info", "Ranking run completed.");
+      push("info", t("rankings.completedToast"));
     } catch (error) {
-      push("error", apiIssue(error));
+      push("error", apiIssue(error, t));
     } finally {
       setRunning(false);
     }
@@ -53,26 +57,26 @@ function RankingsView() {
   return (
     <>
       <div className="pagehead">
-        <h1>Rankings</h1>
-        <span className="pagehead__sub">A ranked pass explains order; eligibility still comes first.</span>
+        <h1>{t("rankings.title")}</h1>
+        <span className="pagehead__sub">{t("rankings.subtitle")}</span>
         <span style={{ marginLeft: "auto" }}>
-          {canWrite ? <button type="button" className="btn btn--sm btn--primary" disabled={running} onClick={() => void runRanking()}>{running ? "Running…" : "Run the ranking"}</button> : <span className="tiny muted">Read only</span>}
+          {canWrite ? <button type="button" className="btn btn--sm btn--primary" disabled={running} onClick={() => void runRanking()}>{running ? t("rankings.running") : t("rankings.run")}</button> : <span className="tiny muted">{t("rankings.readOnly")}</span>}
         </span>
       </div>
 
       {runs.error ? (
-        <ErrorBlock title="Ranking runs could not load." message={apiIssue(runs.error)} retry={() => void runs.reload()} />
+        <ErrorBlock title={t("rankings.loadError")} message={apiIssue(runs.error, t)} retry={() => void runs.reload()} />
       ) : runs.loading ? (
         <div style={{ display: "grid", gap: 10 }}><Skeleton h={90} /><Skeleton h={220} /></div>
       ) : runs.data?.rankings.length === 0 && !requestedId ? (
         <div className="empty panel" style={{ padding: "42px 20px" }}>
-          <div className="mono tiny muted" style={{ marginBottom: 9 }}>RANKING RUNS / NONE</div>
-          <h3>No ranking run yet</h3>
-          <p>The queue is still usable with pinned order and the deterministic base score. A ranking pass adds an explanation for how eligible items compare.</p>
-          {canWrite ? <button className="btn btn--primary" type="button" disabled={running} onClick={() => void runRanking()}>{running ? "Running…" : "Run the ranking"}</button> : null}
+          <div className="mono tiny muted" style={{ marginBottom: 9 }}>{t("rankings.empty.code")}</div>
+          <h3>{t("rankings.empty.title")}</h3>
+          <p>{t("rankings.empty.body")}</p>
+          {canWrite ? <button className="btn btn--primary" type="button" disabled={running} onClick={() => void runRanking()}>{running ? t("rankings.running") : t("rankings.run")}</button> : null}
         </div>
       ) : detail.error ? (
-        <ErrorBlock title="This ranking run could not load." message={apiIssue(detail.error)} retry={() => void detail.reload()} />
+        <ErrorBlock title={t("rankings.detailError")} message={apiIssue(detail.error, t)} retry={() => void detail.reload()} />
       ) : detail.loading ? (
         <div style={{ display: "grid", gap: 10 }}><Skeleton h={100} /><Skeleton h={240} /></div>
       ) : run && detail.data ? (
@@ -80,58 +84,58 @@ function RankingsView() {
           <section className="panel" style={{ marginBottom: 14 }}>
             <div className="section__head" style={{ flexWrap: "wrap" }}>
               <div>
-                <div className="mono tiny muted">RUN · {run.id.slice(0, 8)}</div>
-                <h2 style={{ marginTop: 4 }}>{run.state === "ready" ? "Dispatch order explained" : `Ranking ${run.state}`}</h2>
+                <div className="mono tiny muted">{t("rankings.runLabel", { id: run.id.slice(0, 8) })}</div>
+                <h2 style={{ marginTop: 4 }}>{run.state === "ready" ? t("rankings.explainedOrder") : t("rankings.state", { state: rankingState(run.state, t) })}</h2>
               </div>
-              <span className={`badge-outline ranking-state ranking-state--${run.state}`}>{run.state}</span>
-              {degraded ? <span className="badge-outline" style={{ color: "var(--theme-warning-text-emphasis)", borderColor: "var(--theme-warning-border-subtle)", background: "var(--theme-warning-bg-subtle)" }}>Degraded · {run.degraded_reason}</span> : null}
+              <span className={`badge-outline ranking-state ranking-state--${run.state}`}>{rankingState(run.state, t)}</span>
+              {degraded ? <span className="badge-outline" style={{ color: "var(--theme-warning-text-emphasis)", borderColor: "var(--theme-warning-border-subtle)", background: "var(--theme-warning-bg-subtle)" }}>{t("rankings.degraded", { reason: degradedReason(run.degraded_reason ?? "", t) })}</span> : null}
             </div>
             <div className="section__body" style={{ display: "grid", gap: 12 }}>
               {degraded ? <div className="error-note" style={{ color: "var(--theme-warning-text-emphasis)", borderColor: "var(--theme-warning-border-subtle)", background: "var(--theme-warning-bg-subtle)" }}>
-                The model pass did not decide the order ({run.degraded_reason}). The deterministic base score decided instead.
+                {t("rankings.degradedExplanation", { reason: degradedReason(run.degraded_reason ?? "", t) })}
               </div> : null}
-              <p style={{ margin: 0, maxWidth: 900, whiteSpace: "pre-wrap" }}>{run.summary_md || "This run has no summary."}</p>
+              <p style={{ margin: 0, maxWidth: 900, whiteSpace: "pre-wrap" }}>{run.summary_md || t("rankings.noSummary")}</p>
               <div className="stack tiny muted" style={{ flexWrap: "wrap", gap: "6px 18px" }}>
-                <span>Weights <span className="mono">{run.weights_version}</span></span>
-                <span>{run.llm_model ? `Model ${run.llm_model}` : "No model recorded"}</span>
-                <span>Computed {formatDateTime(run.computed_at)}</span>
-                <span>Expires {formatDateTime(run.expires_at)}</span>
+                <span>{t("rankings.weights")} <span className="mono">{run.weights_version}</span></span>
+                <span>{run.llm_model ? t("rankings.model", { model: run.llm_model }) : t("rankings.noModel")}</span>
+                <span>{t("rankings.computed", { date: formatDateTime(run.computed_at) })}</span>
+                <span>{t("rankings.expires", { date: formatDateTime(run.expires_at) })}</span>
               </div>
               <div>
-                <div className="tiny muted" style={{ marginBottom: 6 }}><strong>Stalled roots</strong> · items that unblock the most waiting work</div>
+                <div className="tiny muted" style={{ marginBottom: 6 }}><strong>{t("rankings.stalledRoots")}</strong> · {t("rankings.stalledHint")}</div>
                 {roots.length ? <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 4 }}>
                   {roots.map((root) => {
                     const item = itemById.get(root.item_id);
-                    return <li key={root.item_id} className="tiny"><Link className="rowlink" href={`/items/${root.item_id}`}>{item ? `#${item.number} — ${item.title}` : `Item ${root.item_id.slice(0, 8)}`}</Link><span className="muted"> · unblocks {root.unblocks} · {root.status}</span></li>;
+                    return <li key={root.item_id} className="tiny"><Link className="rowlink" href={`/items/${root.item_id}`}>{item ? `#${item.number} — ${item.title}` : t("rankings.itemFallback", { id: root.item_id.slice(0, 8) })}</Link><span className="muted"> · {t("rankings.rootUnblocks", { count: root.unblocks })} · {rankingState(root.status, t)}</span></li>;
                   })}
-                </ul> : <p className="tiny muted" style={{ margin: 0 }}>No stalled roots were recorded for this run.</p>}
+                </ul> : <p className="tiny muted" style={{ margin: 0 }}>{t("rankings.noStalledRoots")}</p>}
               </div>
             </div>
           </section>
 
           <section className="panel">
-            <div className="section__head"><h2>Ranked items</h2><span className="tiny muted" style={{ marginLeft: "auto" }}>{detail.data.entries.length} entries</span></div>
+            <div className="section__head"><h2>{t("rankings.items")}</h2><span className="tiny muted" style={{ marginLeft: "auto" }}>{t("rankings.entries", { count: detail.data.entries.length })}</span></div>
             {detail.data.entries.length ? <div className="table-wrap">
               <table className="data">
-                <thead><tr><th>Rank</th><th>Item</th><th>Score</th><th>Reason</th><th>Base score</th></tr></thead>
+                <thead><tr><th>{t("rankings.column.rank")}</th><th>{t("rankings.column.item")}</th><th>{t("rankings.column.score")}</th><th>{t("rankings.column.reason")}</th><th>{t("rankings.column.baseScore")}</th></tr></thead>
                 <tbody>{detail.data.entries.map((entry) => {
                   const item = itemById.get(entry.item_id);
                   return <tr key={entry.id}>
                     <td className="mono">{entry.rank}</td>
                     <td>{item ? <Link className="rowlink" href={`/items/${item.id}`}><span className="mono tiny muted">#{item.number}</span> {item.title}</Link> : <span className="mono tiny muted">{entry.item_id}</span>}</td>
                     <td className="mono">{entry.score}</td>
-                    <td style={{ minWidth: 260, whiteSpace: "pre-wrap" }}>{entry.reason_md || "No reason was recorded."}</td>
+                    <td style={{ minWidth: 260, whiteSpace: "pre-wrap" }}>{entry.reason_md || t("rankings.noReason")}</td>
                     <td className="mono">{entry.base_score}</td>
                   </tr>;
                 })}</tbody>
               </table>
-            </div> : <p className="tiny muted" style={{ padding: "12px 16px" }}>This run has no entries.</p>}
+            </div> : <p className="tiny muted" style={{ padding: "12px 16px" }}>{t("rankings.noEntries")}</p>}
           </section>
-          {items.error ? <p className="tiny muted" role="status" style={{ marginTop: 10 }}>Item names could not be resolved: {apiIssue(items.error)}</p> : null}
+          {items.error ? <p className="tiny muted" role="status" style={{ marginTop: 10 }}>{t("rankings.itemNamesError", { error: apiIssue(items.error, t) })}</p> : null}
 
           {runs.data?.rankings.length && runs.data.rankings.length > 1 ? <div style={{ marginTop: 18 }}>
-            <div className="tiny muted" style={{ marginBottom: 6 }}>Earlier runs</div>
-            <div className="stack" style={{ flexWrap: "wrap" }}>{runs.data.rankings.filter((r) => r.id !== run.id).map((r) => <Link key={r.id} className="btn btn--sm" href={`/rankings?id=${encodeURIComponent(r.id)}`}>{r.state} · {formatDateTime(r.computed_at)}</Link>)}</div>
+            <div className="tiny muted" style={{ marginBottom: 6 }}>{t("rankings.earlierRuns")}</div>
+            <div className="stack" style={{ flexWrap: "wrap" }}>{runs.data.rankings.filter((r) => r.id !== run.id).map((r) => <Link key={r.id} className="btn btn--sm" href={`/rankings?id=${encodeURIComponent(r.id)}`}>{rankingState(r.state, t)} · {formatDateTime(r.computed_at)}</Link>)}</div>
           </div> : null}
         </>
       ) : null}
@@ -157,10 +161,24 @@ function isRoot(value: unknown): value is { item_id: string; unblocks: number; s
   return typeof root.item_id === "string" && typeof root.unblocks === "number" && typeof root.status === "string";
 }
 
-function apiIssue(error: unknown): string {
+function rankingState(state: string, t: ReturnType<typeof useT>): string {
+  const key = `rankings.state.${state}`;
+  if (["ready", "running", "failed", "superseded"].includes(state)) return t(key as "rankings.state.ready" | "rankings.state.running" | "rankings.state.failed" | "rankings.state.superseded");
+  if (["backlog", "todo", "in_progress", "waiting_human", "in_review", "done", "cancelled"].includes(state)) return STATUS_LABELS[state as Status];
+  return state.replaceAll("_", " ");
+}
+
+function degradedReason(reason: string, t: ReturnType<typeof useT>): string {
+  if (["llm_failed", "invalid_output", "over_budget"].includes(reason)) {
+    return t(`rankings.degradedReason.${reason}` as "rankings.degradedReason.llm_failed" | "rankings.degradedReason.invalid_output" | "rankings.degradedReason.over_budget");
+  }
+  return reason;
+}
+
+function apiIssue(error: unknown, t: ReturnType<typeof useT>): string {
   if (error instanceof Error && "code" in error) {
     const apiError = error as ApiError;
-    return `${apiError.code}: ${apiError.message}`;
+    return apiError.code === "network" ? t("rankings.error.network") : apiError.message || t("rankings.error.generic");
   }
-  return error instanceof Error ? error.message : "Something went wrong.";
+  return error instanceof Error ? error.message : t("rankings.error.generic");
 }

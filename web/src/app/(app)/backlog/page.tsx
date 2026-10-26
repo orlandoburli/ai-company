@@ -8,18 +8,18 @@ import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import type { Item, Priority, Project, Status } from "@/lib/types";
 import { STATUSES } from "@/lib/types";
-import { formatDate, firstName, relTime, STATUS_LABELS } from "@/lib/format";
+import { formatDate, firstName, STATUS_LABELS } from "@/lib/format";
 import {
   ErrorBlock,
   PrioritySelect,
   Skeleton,
   StatusSelect,
   Toasts,
-  apiErrorMessage,
 } from "@/components/primitives";
 import { ItemIndicators } from "@/components/item-bits";
 import { NewItemDialog } from "@/components/new-item-dialog";
 import { IconPlus } from "@/components/icons";
+import { useT } from "@/lib/i18n";
 
 export default function BacklogPage() {
   return (
@@ -42,6 +42,7 @@ interface Row {
 }
 
 function BacklogView() {
+  const t = useT();
   const params = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
@@ -201,7 +202,7 @@ function BacklogView() {
         delete next[itemId];
         return next;
       });
-      push("error", err instanceof ApiError ? err.message : "Could not set status.");
+      push("error", err instanceof ApiError && err.code !== "network" ? err.message : screenErrorMessage(err, t, "backlog.error.network", "backlog.couldNotSetStatus"));
     }
   }
 
@@ -212,7 +213,7 @@ function BacklogView() {
       await api.patchItem(itemId, { priority: priority ?? "" });
       await items.reload();
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", screenErrorMessage(err, t, "backlog.error.network"));
     }
   }
 
@@ -223,7 +224,7 @@ function BacklogView() {
       await api.bulkStatus(ids, to);
       await items.reload();
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", screenErrorMessage(err, t, "backlog.error.network"));
     }
   }
 
@@ -232,10 +233,10 @@ function BacklogView() {
   return (
     <>
       <div className="pagehead">
-        <h1>Backlog</h1>
+        <h1>{t("backlog.title")}</h1>
         <span className="pagehead__sub">
-          {activeSelectedProject ? activeSelectedProject.name : "All projects"}
-          {labelFilter ? ` · label “${labelFilter}”` : ""}
+          {activeSelectedProject ? activeSelectedProject.name : t("backlog.allProjects")}
+          {labelFilter ? ` · ${t("backlog.labelSuffix", { label: labelFilter })}` : ""}
         </span>
         <span style={{ marginLeft: "auto" }}>
           {canWrite && projectsList.length > 0 ? (
@@ -244,26 +245,26 @@ function BacklogView() {
               className="btn btn--sm"
               onClick={() => setShowNew(true)}
             >
-              <IconPlus /> New item
+              <IconPlus /> {t("backlog.newItem")}
             </button>
           ) : null}
         </span>
       </div>
 
-      {renderFilters({ productFilter, projectFilter, labelFilter, assigneeFilter, productsList, projectsList, labelOptions, members, setParam })}
+      {renderFilters({ productFilter, projectFilter, labelFilter, assigneeFilter, productsList, projectsList, labelOptions, members, setParam, t })}
 
       {selected.size > 0 && canWrite ? (
         <div className="bulkbar" style={{ marginBottom: 12 }}>
-          <span className="count">{selected.size} selected</span>
+          <span className="count">{t("backlog.selected", { count: selected.size })}</span>
           <button
             type="button"
             className="btn btn--sm"
             style={{ marginRight: "auto" }}
             onClick={() => setSelected(new Set())}
           >
-            Clear
+            {t("backlog.clear")}
           </button>
-          <span className="tiny muted">Set status:</span>
+          <span className="tiny muted">{t("backlog.setStatus")}</span>
           {STATUSES.map((s) => (
             <button
               key={s}
@@ -279,7 +280,7 @@ function BacklogView() {
 
       {items.error ? (
         <ErrorBlock
-          message={items.error.message}
+          message={screenErrorMessage(items.error, t, "backlog.error.network")}
           retry={() => void items.reload()}
         />
       ) : items.loading ? (
@@ -294,13 +295,13 @@ function BacklogView() {
         </div>
       ) : visibleItems.length === 0 ? (
         <div className="empty panel" style={{ padding: "48px 20px" }}>
-          <h3>Nothing in the backlog</h3>
+          <h3>{t("backlog.empty.title")}</h3>
           <p>
             {canWrite
               ? projectsList.length === 0
-                ? "Create a product and a project first — items live inside projects."
-                : "Create the first item, or clear a filter above."
-              : "No work items match. Ask someone with write access to add work."}
+                ? t("backlog.empty.noProjects")
+                : t("backlog.empty.clearFilter")
+              : t("backlog.empty.readOnly")}
           </p>
           {canWrite && projectsList.length > 0 ? (
             <button
@@ -308,7 +309,7 @@ function BacklogView() {
               className="btn"
               onClick={() => setShowNew(true)}
             >
-              <IconPlus /> New item
+              <IconPlus /> {t("backlog.newItem")}
             </button>
           ) : null}
         </div>
@@ -320,18 +321,18 @@ function BacklogView() {
                 <tr>
                   {canWrite ? (
                     <th scope="col" style={{ width: 26 }}>
-                      <span className="visually-hidden">Select</span>
+                      <span className="visually-hidden">{t("backlog.select")}</span>
                     </th>
                   ) : null}
                   <th scope="col" style={{ width: 58 }}>
-                    #
+                    {t("backlog.column.number")}
                   </th>
-                  <th scope="col">Title</th>
-                  <th scope="col">Kind</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Priority</th>
-                  <th scope="col">Due</th>
-                  <th scope="col">Updated</th>
+                  <th scope="col">{t("backlog.column.title")}</th>
+                  <th scope="col">{t("backlog.column.kind")}</th>
+                  <th scope="col">{t("backlog.column.status")}</th>
+                  <th scope="col">{t("backlog.column.priority")}</th>
+                  <th scope="col">{t("backlog.column.due")}</th>
+                  <th scope="col">{t("backlog.column.updated")}</th>
                 </tr>
                 <tr className="group-row">
                   <td colSpan={canWrite ? 8 : 7}>
@@ -343,7 +344,7 @@ function BacklogView() {
                     </Link>
                     <span className="tiny muted">
                       {g.project.key ? ` / ${g.project.key}` : ""} ·{" "}
-                      {g.rows.length} item{g.rows.length === 1 ? "" : "s"}
+                      {t("backlog.itemCount", { count: g.rows.length })}
                     </span>
                   </td>
                 </tr>
@@ -393,6 +394,17 @@ function BacklogView() {
   );
 }
 
+function screenErrorMessage(
+  error: unknown,
+  t: ReturnType<typeof useT>,
+  networkKey: "backlog.error.network",
+  fallbackKey?: "backlog.couldNotSetStatus",
+): string {
+  if (error instanceof ApiError && error.code === "network") return t(networkKey);
+  if (error instanceof Error) return error.message || (fallbackKey ? t(fallbackKey) : t("error.title"));
+  return fallbackKey ? t(fallbackKey) : t("error.title");
+}
+
 /* --- filter row -------------------------------------------------------------- */
 
 function renderFilters(props: {
@@ -405,11 +417,12 @@ function renderFilters(props: {
   labelOptions: string[];
   members: { data: { user_id: string; name: string }[] | null };
   setParam: (key: string, value: string) => void;
+  t: ReturnType<typeof useT>;
 }) {
   return (
     <div className="filters">
       <div className="field">
-        <label htmlFor="b-product">Product</label>
+        <label htmlFor="b-product">{props.t("field.product")}</label>
         <select
           id="b-product"
           className="input input--inline"
@@ -419,7 +432,7 @@ function renderFilters(props: {
             props.setParam("project_id", "");
           }}
         >
-          <option value="">All</option>
+          <option value="">{props.t("field.all")}</option>
           {props.productsList.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -428,14 +441,14 @@ function renderFilters(props: {
         </select>
       </div>
       <div className="field">
-        <label htmlFor="b-project">Project</label>
+        <label htmlFor="b-project">{props.t("field.project")}</label>
         <select
           id="b-project"
           className="input input--inline"
           value={props.projectFilter}
           onChange={(e) => props.setParam("project_id", e.target.value)}
         >
-          <option value="">All</option>
+          <option value="">{props.t("field.all")}</option>
           {props.projectsList
             .filter((p) => !props.productFilter || p.product_id === props.productFilter)
             .map((p) => (
@@ -446,14 +459,14 @@ function renderFilters(props: {
         </select>
       </div>
       <div className="field">
-        <label htmlFor="b-label">Label</label>
+        <label htmlFor="b-label">{props.t("field.label")}</label>
         <select
           id="b-label"
           className="input input--inline"
           value={props.labelFilter}
           onChange={(e) => props.setParam("label", e.target.value)}
         >
-          <option value="">All</option>
+          <option value="">{props.t("field.all")}</option>
           {props.labelOptions.map((l) => (
             <option key={l} value={l}>
               {l}
@@ -462,14 +475,14 @@ function renderFilters(props: {
         </select>
       </div>
       <div className="field">
-        <label htmlFor="b-assignee">Assignee</label>
+        <label htmlFor="b-assignee">{props.t("field.assignee")}</label>
         <select
           id="b-assignee"
           className="input input--inline"
           value={props.assigneeFilter}
           onChange={(e) => props.setParam("assignee_user_id", e.target.value)}
         >
-          <option value="">All</option>
+          <option value="">{props.t("field.all")}</option>
           {(props.members.data ?? []).map((m) => (
             <option key={m.user_id} value={m.user_id}>
               {m.name}
@@ -493,6 +506,7 @@ function BacklogRow(props: {
   statusValue: Status;
   memberName: Map<string, string>;
 }) {
+  const t = useT();
   const it = props.row.item;
   return (
     <tr className={props.selected ? "is-selected" : ""}>
@@ -501,7 +515,7 @@ function BacklogRow(props: {
           <input
             type="checkbox"
             className="row-check"
-            aria-label={`Select ${it.title}`}
+            aria-label={`${t("backlog.select")} ${it.title}`}
             checked={props.selected}
             onChange={props.onToggleSelect}
           />
@@ -519,8 +533,8 @@ function BacklogRow(props: {
           }}
         >
           {it.is_epic ? (
-            <span className="chip chip--epic" title="Epic: has open sub-items">
-              epic
+            <span className="chip chip--epic" title={t("backlog.epic.title")}>
+              {t("backlog.epic")}
             </span>
           ) : null}
           <Link
@@ -546,7 +560,7 @@ function BacklogRow(props: {
         {props.canWrite ? (
           <StatusSelect
             value={props.statusValue}
-            ariaLabel={`Status of ${it.title}`}
+            ariaLabel={t("backlog.statusOf", { title: it.title })}
             onChange={props.onStatus}
           />
         ) : (
@@ -557,7 +571,7 @@ function BacklogRow(props: {
         {props.canWrite ? (
           <PrioritySelect
             value={it.priority}
-            ariaLabel={`Priority of ${it.title}`}
+            ariaLabel={t("backlog.priorityOf", { title: it.title })}
             onChange={props.onPriority}
           />
         ) : (
@@ -566,13 +580,30 @@ function BacklogRow(props: {
       </td>
       <td className="tiny">{formatDate(it.due_date)}</td>
       <td className="tiny muted" title={it.updated_at}>
-        {relTime(it.updated_at)}
+        {relativeUpdated(it.updated_at, t)}
         {it.assignee_user_id && props.memberName.get(it.assignee_user_id)
           ? ` · ${firstName(props.memberName.get(it.assignee_user_id))}`
           : ""}
       </td>
     </tr>
   );
+}
+
+function relativeUpdated(value: string | undefined, t: ReturnType<typeof useT>): string {
+  if (!value) return "";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "";
+  const seconds = Math.round((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return t("backlog.updated.justNow");
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return t("backlog.updated.minutes", { count: minutes });
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return t("backlog.updated.hours", { count: hours });
+  const days = Math.round(hours / 24);
+  if (days < 30) return t("backlog.updated.days", { count: days });
+  const months = Math.round(days / 30);
+  if (months < 12) return t("backlog.updated.months", { count: months });
+  return t("backlog.updated.years", { count: Math.round(months / 12) });
 }
 
 /* --- helpers ---------------------------------------------------------------- */

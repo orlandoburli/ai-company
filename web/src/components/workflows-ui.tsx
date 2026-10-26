@@ -9,6 +9,7 @@ import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
 import type { Item, Product, Project } from "@/lib/types";
 import { apiErrorMessage, EmptyState, ErrorBlock, Field, Skeleton, Toasts } from "@/components/primitives";
+import { useI18n, useT } from "@/lib/i18n";
 
 /** A kind's palette entry: how it is named, what it does, and its ports. */
 type KindMeta = {
@@ -345,7 +346,14 @@ function errorText(error: unknown): string {
   return `${error instanceof ApiError ? `${error.code} — ` : ""}${apiErrorMessage(error)}`;
 }
 
+function listErrorText(error: unknown, t: ReturnType<typeof useT>): string {
+  if (error instanceof ApiError && error.code === "network") return t("workflows.error.network");
+  return error instanceof Error ? error.message || t("error.title") : t("error.title");
+}
+
 export function WorkflowsPage() {
+  const t = useT();
+  const { lang } = useI18n();
   const { me } = useSession();
   const { toasts, push } = useToasts();
   const confirm = useConfirm();
@@ -359,52 +367,52 @@ export function WorkflowsPage() {
     try {
       const agent = agents.data?.agents.find((candidate) => candidate.enabled);
       const graph = starterGraph(agent?.id ?? "", agent?.role || "dev");
-      const response = await api.createWorkflowTemplate({ name: "Untitled workflow", applies_to: "", max_concurrency: 4, graph });
+      const response = await api.createWorkflowTemplate({ name: t("workflows.createName"), applies_to: "", max_concurrency: 4, graph });
       router.push(`/workflows/${response.template.id}`);
-    } catch (error) { push("error", errorText(error)); }
+    } catch (error) { push("error", listErrorText(error, t)); }
   }
   async function clone(template: WorkflowTemplateSummary) {
     try {
       const full = await api.getWorkflowTemplate(template.id);
-      const response = await api.createWorkflowTemplate({ name: `${template.name} copy`, applies_to: full.template.applies_to ?? "", max_concurrency: full.template.max_concurrency ?? 4, graph: structuredClone(full.template.graph ?? { schema_version: 1, nodes: [], edges: [] }) });
+      const response = await api.createWorkflowTemplate({ name: t("workflows.cloneName", { name: template.name }), applies_to: full.template.applies_to ?? "", max_concurrency: full.template.max_concurrency ?? 4, graph: structuredClone(full.template.graph ?? { schema_version: 1, nodes: [], edges: [] }) });
       await templates.reload();
-      push("info", "Draft copy created.");
+      push("info", t("workflows.cloneCreated"));
       router.push(`/workflows/${response.template.id}`);
-    } catch (error) { push("error", errorText(error)); }
+    } catch (error) { push("error", listErrorText(error, t)); }
   }
   async function action(template: WorkflowTemplateSummary, kind: "publish" | "version" | "delete") {
-    if (kind === "delete" && !await confirm({ title: "Delete this draft?", message: <>Delete the draft template “{template.name}”? This cannot be undone.</>, confirmLabel: "Delete", destructive: true })) return;
+    if (kind === "delete" && !await confirm({ title: t("workflows.deleteConfirm.title"), message: t("workflows.deleteConfirm.message", { name: template.name }), confirmLabel: t("workflows.confirmDelete"), destructive: true })) return;
     try {
-      if (kind === "publish") { await api.publishWorkflowTemplate(template.id); push("info", "Template published and frozen."); }
+      if (kind === "publish") { await api.publishWorkflowTemplate(template.id); push("info", t("workflows.publishedToast")); }
       if (kind === "version") { const result = await api.createWorkflowVersion(template.id); router.push(`/workflows/${result.template.id}`); return; }
-      if (kind === "delete") { await api.deleteWorkflowTemplate(template.id); push("info", "Draft deleted."); }
+      if (kind === "delete") { await api.deleteWorkflowTemplate(template.id); push("info", t("workflows.deletedToast")); }
       await templates.reload();
-    } catch (error) { push("error", errorText(error)); }
+    } catch (error) { push("error", listErrorText(error, t)); }
   }
 
   return <div className="workflow-list-page">
-    <header className="pagehead workflow-list-head"><div><div className="workflow-eyebrow">WORKFLOW STUDIO <span>／</span> TEMPLATE LIBRARY</div><h1>Workflows</h1><div className="pagehead__sub">Versioned graphs that turn an item into coordinated work.</div></div>
-      {isManager ? <button className="btn btn--primary" onClick={() => void create()}>＋ New template</button> : <span className="workflow-readonly">Read-only · template changes need an owner or admin</span>}
+    <header className="pagehead workflow-list-head"><div><div className="workflow-eyebrow">{t("workflows.eyebrow")}</div><h1>{t("workflows.title")}</h1><div className="pagehead__sub">{t("workflows.subtitle")}</div></div>
+      {isManager ? <button className="btn btn--primary" onClick={() => void create()}>{t("workflows.newTemplate")}</button> : <span className="workflow-readonly">{t("workflows.readOnly")}</span>}
     </header>
-    {templates.loading && !templates.data ? <div className="workflow-list-grid"><Skeleton h={150} /><Skeleton h={150} /><Skeleton h={150} /></div> : templates.error && !templates.data ? <ErrorBlock title="Templates are not available" message={errorText(templates.error)} retry={() => void templates.reload()} /> : rows.length === 0 ? <EmptyState title="No workflow templates yet" body="Build a graph from agents, checkpoints and integrations. A new template starts with a review → approval → implementation path." action={isManager ? <button className="btn btn--primary" onClick={() => void create()}>Create a template</button> : undefined} /> : <div className="workflow-list-grid">{rows.map((template, index) => {
+    {templates.loading && !templates.data ? <div className="workflow-list-grid"><Skeleton h={150} /><Skeleton h={150} /><Skeleton h={150} /></div> : templates.error && !templates.data ? <ErrorBlock title={t("workflows.unavailable")} message={listErrorText(templates.error, t)} retry={() => void templates.reload()} /> : rows.length === 0 ? <EmptyState title={t("workflows.empty.title")} body={t("workflows.empty.body")} action={isManager ? <button className="btn btn--primary" onClick={() => void create()}>{t("workflows.createTemplate")}</button> : undefined} /> : <div className="workflow-list-grid">{rows.map((template, index) => {
       const published = isPublished(template);
       return <article className="workflow-template-card" key={template.id} style={{ animationDelay: `${index * 45}ms` }}>
-        <div className="workflow-template-top"><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? "Published" : "Draft"}</span><span className="mono tiny">v{template.version ?? 1}</span></div>
+         <div className="workflow-template-top"><span className={`workflow-state ${published ? "workflow-state--published" : ""}`}><i />{published ? t("workflows.published") : t("workflows.draft")}</span><span className="mono tiny">v{template.version ?? 1}</span></div>
         <Link className="workflow-template-name" href={`/workflows/${template.id}`}>{template.name}</Link>
-        <div className="workflow-template-meta"><span>{template.applies_to?.trim() ? template.applies_to.split(",").map((part) => part.trim()).filter(Boolean).join(" · ") : "Any item kind"}</span><span>{template.created_at ? new Date(template.created_at).toLocaleDateString() : "Workflow graph"}</span></div>
-        <div className="workflow-template-foot"><Link className="btn btn--sm" href={`/workflows/${template.id}`}>{published ? "View graph" : "Open editor"} →</Link>
+         <div className="workflow-template-meta"><span>{template.applies_to?.trim() ? template.applies_to.split(",").map((part) => part.trim()).filter(Boolean).join(" · ") : t("workflows.anyItemKind")}</span><span>{template.created_at ? new Date(template.created_at).toLocaleDateString(lang) : t("workflows.graph")}</span></div>
+         <div className="workflow-template-foot"><Link className="btn btn--sm" href={`/workflows/${template.id}`}>{published ? t("workflows.viewGraph") : t("workflows.openEditor")} →</Link>
           <div className="stack workflow-template-actions">
             {isManager ? <>
-              {!published ? <><button className="btn btn--sm" onClick={() => router.push(`/workflows/${template.id}`)}>Edit</button><button className="btn btn--sm btn--primary" onClick={() => void action(template, "publish")}>Publish</button><button className="btn btn--sm btn--ghost btn--danger" onClick={() => void action(template, "delete")}>Delete</button></> : <button className="btn btn--sm" title="Published versions are frozen. Create a new version to make changes." onClick={() => void action(template, "version")}>＋ New version</button>}
-              <button className="btn btn--sm btn--ghost" onClick={() => void clone(template)}>Duplicate</button>
-            </> : <span className="tiny muted">Read-only</span>}
+               {!published ? <><button className="btn btn--sm" onClick={() => router.push(`/workflows/${template.id}`)}>{t("workflows.edit")}</button><button className="btn btn--sm btn--primary" onClick={() => void action(template, "publish")}>{t("workflows.publish")}</button><button className="btn btn--sm btn--ghost btn--danger" onClick={() => void action(template, "delete")}>{t("workflows.delete")}</button></> : <button className="btn btn--sm" title={t("workflows.frozenHint")} onClick={() => void action(template, "version")}>{t("workflows.newVersion")}</button>}
+               <button className="btn btn--sm btn--ghost" onClick={() => void clone(template)}>{t("workflows.duplicate")}</button>
+             </> : <span className="tiny muted">{t("workflows.readOnly")}</span>}
           </div>
         </div>
-        {published ? <p className="workflow-frozen-note">Published versions are frozen. Create a new version to make changes.</p> : null}
+         {published ? <p className="workflow-frozen-note">{t("workflows.frozenHint")}</p> : null}
       </article>;
     })}</div>}
-    {templates.error && templates.data ? <ErrorBlock title="Could not refresh templates" message={errorText(templates.error)} retry={() => void templates.reload()} /> : null}
-    {agents.error ? <p className="tiny muted">Agent list is unavailable; new agent nodes will need an agent selected after creation.</p> : null}
+    {templates.error && templates.data ? <ErrorBlock title={t("workflows.couldNotRefresh")} message={listErrorText(templates.error, t)} retry={() => void templates.reload()} /> : null}
+    {agents.error ? <p className="tiny muted">{t("workflows.agentListUnavailable")}</p> : null}
     <Toasts toasts={toasts} />
   </div>;
 }

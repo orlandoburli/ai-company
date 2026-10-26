@@ -263,6 +263,7 @@ export interface TenantView {
   name: string;
   slug: string;
   role: Role;
+  language?: "en" | "pt-BR";
 }
 
 export interface MeResponse {

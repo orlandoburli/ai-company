@@ -6,14 +6,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { InvitePeek } from "@/lib/types";
+import { useT, useI18n } from "@/lib/i18n";
+import { apiErrorMessage } from "@/components/primitives";
 
 export default function AcceptInvitePage() {
+  const t = useT();
   return (
     <Suspense
       fallback={
         <div className="auth-wrap">
           <div className="auth-card">
-            <p className="sub">Loading…</p>
+            <p className="sub">{t("auth.loading")}</p>
           </div>
         </div>
       }
@@ -24,6 +27,8 @@ export default function AcceptInvitePage() {
 }
 
 function AcceptForm() {
+  const t = useT();
+  const { lang } = useI18n();
   const params = useSearchParams();
   const router = useRouter();
   const { refresh } = useSession();
@@ -48,11 +53,7 @@ function AcceptForm() {
         // Asynchronous state update inside a promise callback, never sync in
         // the effect body.
         if (alive) {
-          setPeekError(
-            e instanceof ApiError
-              ? e.message
-              : "Could not read this invitation.",
-          );
+          setPeekError(e instanceof ApiError ? apiErrorMessage(e) : t("auth.invite.readFailed"));
         }
       });
     return () => {
@@ -69,7 +70,7 @@ function AcceptForm() {
       await refresh();
       router.replace("/board");
     } catch (err) {
-      setError(translate(err));
+      setError(translate(err, t));
       setBusy(false);
     }
   }
@@ -79,31 +80,31 @@ function AcceptForm() {
     body = (
       <>
         <p className="sub">
-          {peekError ?? "This invitation link is incomplete."}
+          {peekError ?? t("auth.invite.incomplete")}
         </p>
         <p className="auth-foot">
-          Ask for a fresh invitation link, or{" "}
-          <Link href="/login">sign in</Link> if you already have an account.
+          {t("auth.invite.freshLink")} {" "}
+          <Link href="/login">{t("auth.login.submit")}</Link> {t("auth.invite.alreadyAccount")}
         </p>
         <Link className="btn" href="/login">
-          Go to sign in
+          {t("auth.invite.goToSignIn")}
         </Link>
       </>
     );
   } else if (!peek) {
-    body = <p className="sub">Reading the invitation…</p>;
+    body = <p className="sub">{t("auth.invite.reading")}</p>;
   } else {
     body = (
       <>
         <p className="sub">
-          Invited as <strong>{peek.email}</strong> — {peek.role} at{" "}
-          <strong>{peek.tenant_name}</strong>. Expires{" "}
-          {new Date(peek.expires_at).toLocaleDateString()}.
+          {t("auth.invite.invitedAs")} <strong>{peek.email}</strong> — {roleLabel(peek.role, t)} {t("auth.invite.at")} {" "}
+          <strong>{peek.tenant_name}</strong>. {t("auth.invite.expires")} {" "}
+          {new Date(peek.expires_at).toLocaleDateString(lang)}.
         </p>
         <form onSubmit={submit}>
           {error ? <div className="error-note">{error}</div> : null}
           <div className="field">
-            <label htmlFor="a-name">Your name</label>
+            <label htmlFor="a-name">{t("auth.invite.name")}</label>
             <input
               id="a-name"
               className="input"
@@ -114,7 +115,7 @@ function AcceptForm() {
             />
           </div>
           <div className="field">
-            <label htmlFor="a-password">Password</label>
+            <label htmlFor="a-password">{t("auth.invite.password")}</label>
             <input
               id="a-password"
               type="password"
@@ -126,17 +127,15 @@ function AcceptForm() {
               onChange={(e) => setPassword(e.target.value)}
             />
             <span className="tiny muted">
-              At least 12 characters. This becomes the account{" "}
-              <strong>{peek.email}</strong>.
+              {t("auth.invite.passwordHint", { email: peek.email })}
             </span>
           </div>
           <button type="submit" className="btn btn--primary" disabled={busy}>
-            {busy ? "Accepting…" : "Accept invitation"}
+            {busy ? t("auth.invite.accepting") : t("auth.invite.accept")}
           </button>
         </form>
         <p className="auth-foot">
-          Already have an account there? <Link href="/login">Sign in</Link> —
-          the invitation will attach to it.
+          {t("auth.invite.haveAccountThere")} <Link href="/login">{t("auth.login.submit")}</Link> — {t("auth.invite.attachAccount")}
         </p>
       </>
     );
@@ -145,23 +144,23 @@ function AcceptForm() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <h1>Join a company</h1>
+        <h1>{t("auth.invite.title")}</h1>
         {body}
       </div>
     </div>
   );
 }
 
-function translate(err: unknown): string {
-  if (err instanceof ApiError) {
-    switch (err.code) {
-      case "invalid_invite":
-      case "already_member":
-      case "weak_password":
-        return err.message;
-      default:
-        return err.message;
-    }
+function translate(err: unknown, t: ReturnType<typeof useT>): string {
+  return err instanceof ApiError ? apiErrorMessage(err) : t("auth.invite.acceptFailed");
+}
+
+function roleLabel(role: string, t: ReturnType<typeof useT>): string {
+  switch (role) {
+    case "owner": return t("settings.members.owner");
+    case "admin": return t("settings.members.admin");
+    case "member": return t("settings.members.member");
+    case "guest": return t("settings.members.guest");
+    default: return role;
   }
-  return "Could not accept the invitation. Try again.";
 }

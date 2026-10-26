@@ -199,7 +199,7 @@ export const api = {
 
   getTenant: () => get<{ tenant: MeResponse["tenant"] }>("/api/tenant"),
 
-  updateTenant: (b: { name?: string; slug?: string }) =>
+  updateTenant: (b: { name?: string; slug?: string; language?: "en" | "pt-BR" }) =>
     patch<{ tenant: MeResponse["tenant"] }>("/api/tenant", b),
 
   listMembers: () => get<{ members: Member[] }>("/api/tenant/members"),

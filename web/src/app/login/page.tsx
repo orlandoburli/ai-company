@@ -6,16 +6,20 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { TenantView } from "@/lib/types";
+import { useT } from "@/lib/i18n";
+import { apiErrorMessage } from "@/components/primitives";
 
 export default function LoginPage() {
+  const t = useT();
   return (
-    <Suspense fallback={<div className="auth-wrap"><div className="auth-card"><p className="sub">Loading…</p></div></div>}>
+    <Suspense fallback={<div className="auth-wrap"><div className="auth-card"><p className="sub">{t("auth.loading")}</p></div></div>}>
       <LoginForm />
     </Suspense>
   );
 }
 
 function LoginForm() {
+  const t = useT();
   const params = useSearchParams();
   const router = useRouter();
   const { refresh } = useSession();
@@ -39,9 +43,9 @@ function LoginForm() {
       if (err instanceof ApiError && err.code === "tenant_selection_required") {
         const body = err.data as { tenants?: TenantView[] } | null;
         setTenants(body?.tenants ?? null);
-        setError("Your account belongs to more than one company. Choose which one to open.");
+        setError(t("auth.login.multipleCompanies"));
       } else {
-        setError(translate(err));
+        setError(translate(err, t));
       }
       setBusy(false);
     }
@@ -50,24 +54,24 @@ function LoginForm() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <h1>Sign in</h1>
-        <p className="sub">Use the email you registered or were invited with.</p>
+        <h1>{t("auth.login.title")}</h1>
+        <p className="sub">{t("auth.login.subtitle")}</p>
         <form onSubmit={(e) => void submit(e)}>
           {error ? <div className="error-note">{error}</div> : null}
           {tenants ? (
-            <div className="field" role="group" aria-label="Choose company">
-              {tenants.map((t) => (
+            <div className="field" role="group" aria-label={t("auth.login.chooseCompany")}>
+              {tenants.map((tenant) => (
                 <button
-                  key={t.id}
+                  key={tenant.id}
                   type="button"
                   className="btn"
                   disabled={busy}
-                  onClick={(e) => void submit(e, t.id)}
+                  onClick={(e) => void submit(e, tenant.id)}
                   style={{ justifyContent: "flex-start" }}
                 >
-                  {t.name}
+                  {tenant.name}
                   <span className="tiny muted" style={{ marginLeft: "auto" }}>
-                    {t.role}
+                    {roleLabel(tenant.role, t)}
                   </span>
                 </button>
               ))}
@@ -75,7 +79,7 @@ function LoginForm() {
           ) : (
             <>
               <div className="field">
-                <label htmlFor="l-email">Email</label>
+                <label htmlFor="l-email">{t("auth.login.email")}</label>
                 <input
                   id="l-email"
                   type="email"
@@ -87,7 +91,7 @@ function LoginForm() {
                 />
               </div>
               <div className="field">
-                <label htmlFor="l-password">Password</label>
+                <label htmlFor="l-password">{t("auth.login.password")}</label>
                 <input
                   id="l-password"
                   type="password"
@@ -99,32 +103,32 @@ function LoginForm() {
                 />
               </div>
               <button type="submit" className="btn btn--primary" disabled={busy}>
-                {busy ? "Signing in…" : "Sign in"}
+                {busy ? t("auth.login.signingIn") : t("auth.login.submit")}
               </button>
             </>
           )}
         </form>
         <p className="auth-foot">
-          New here? <Link href="/register">Create a company</Link> ·{" "}
-          <Link href="/accept-invite">Have an invite?</Link>
+          {t("auth.login.newHere")} <Link href="/register">{t("auth.login.createCompany")}</Link> ·{" "}
+          <Link href="/accept-invite">{t("auth.login.haveInvite")}</Link>
         </p>
       </div>
     </div>
   );
 }
 
-function translate(err: unknown): string {
-  if (err instanceof ApiError) {
-    switch (err.code) {
-      case "invalid_credentials":
-        return "Email or password is incorrect.";
-      case "no_tenant":
-        return "This account is not a member of any company yet. Ask its owner for an invitation.";
-      case "forbidden":
-        return err.message;
-      default:
-        return err.message;
-    }
+function translate(err: unknown, t: ReturnType<typeof useT>): string {
+  if (err instanceof ApiError && err.code === "invalid_credentials") return t("auth.login.invalidCredentials");
+  if (err instanceof ApiError && err.code === "no_tenant") return t("auth.login.noTenant");
+  return apiErrorMessage(err);
+}
+
+function roleLabel(role: string, t: ReturnType<typeof useT>): string {
+  switch (role) {
+    case "owner": return t("settings.members.owner");
+    case "admin": return t("settings.members.admin");
+    case "member": return t("settings.members.member");
+    case "guest": return t("settings.members.guest");
+    default: return role;
   }
-  return "Could not sign in. Try again.";
 }

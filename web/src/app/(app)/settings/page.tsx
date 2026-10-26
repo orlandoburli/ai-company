@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useConfirm } from "@/lib/confirm";
@@ -18,16 +18,18 @@ import {
 } from "@/components/primitives";
 import { IconBuilding } from "@/components/icons";
 import { SettingsNav } from "@/components/settings-nav";
+import { useT } from "@/lib/i18n";
 
 const ROLES: Role[] = ["owner", "admin", "member", "guest"];
 
 export default function SettingsPage() {
+  const t = useT();
   return (
     <div style={{ maxWidth: 860 }}>
       <div className="pagehead">
-        <h1>Settings</h1>
+        <h1>{t("settings.title")}</h1>
         <span className="pagehead__sub">
-          Company, products, members and invitations. Some actions need owner or admin.
+          {t("settings.subtitle")}
         </span>
       </div>
       <SettingsNav />
@@ -42,14 +44,19 @@ export default function SettingsPage() {
 /* --- company ----------------------------------------------------------------- */
 
 function TenantForm() {
+  const t = useT();
   const { me, refresh } = useSession();
   const tenant = useAsync(() => api.getTenant(), []);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [language, setLanguage] = useState<"en" | "pt-BR">("en");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const loaded = tenant.data?.tenant;
+  useEffect(() => {
+    if (loaded?.language) setLanguage(loaded.language);
+  }, [loaded?.language]);
 
   const canEdit = me?.tenant.role === "owner" || me?.tenant.role === "admin";
   const current = loaded ?? null;
@@ -62,7 +69,7 @@ function TenantForm() {
     setError(null);
     setSaved(false);
     try {
-      await api.updateTenant({ name: nameValue, slug: slugValue });
+      await api.updateTenant({ name: nameValue, slug: slugValue, language: loaded?.language ?? language });
       await tenant.reload();
       await refresh();
       setSaved(true);
@@ -79,10 +86,10 @@ function TenantForm() {
     <div className="section">
       <div className="section__head">
         <IconBuilding />
-        <h2>Company</h2>
+        <h2>{t("settings.company")}</h2>
         {!canEdit ? (
           <span className="tiny muted" style={{ marginLeft: "auto" }}>
-            Only the owner or an admin can change this.
+            {t("settings.company.permission")}
           </span>
         ) : null}
       </div>
@@ -96,7 +103,7 @@ function TenantForm() {
             onSubmit={submit}
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}
           >
-            <Field label="Company name">
+            <Field label={t("settings.company.name")}>
               <input
                 className="input"
                 value={nameValue}
@@ -104,7 +111,7 @@ function TenantForm() {
                 onChange={(e) => setName(e.target.value)}
               />
             </Field>
-            <Field label="Handle (slug)" hint="3–63 chars: lowercase letters, digits, hyphens.">
+            <Field label={t("settings.company.handle")} hint={t("settings.company.handleHint")}>
               <input
                 className="input mono"
                 value={slugValue}
@@ -112,11 +119,22 @@ function TenantForm() {
                 onChange={(e) => setSlug(e.target.value.toLowerCase())}
               />
             </Field>
+            <Field label={t("settings.language")} hint={t("settings.languageHint")}>
+              <select
+                className="input"
+                value={language}
+                disabled={!canEdit}
+                onChange={(e) => setLanguage(e.target.value as "en" | "pt-BR")}
+              >
+                <option value="en">{t("settings.language.english")}</option>
+                <option value="pt-BR">{t("settings.language.portuguese")}</option>
+              </select>
+            </Field>
             <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center" }}>
               <button type="submit" className="btn btn--primary" disabled={busy || !canEdit}>
-                {busy ? "Saving…" : "Save changes"}
+                {busy ? t("settings.company.saving") : t("settings.company.save")}
               </button>
-              {saved ? <span className="tiny" style={{ color: "var(--accent)" }}>Saved.</span> : null}
+              {saved ? <span className="tiny" style={{ color: "var(--accent)" }}>{t("settings.company.saved")}</span> : null}
               {error ? <span className="tiny" style={{ color: "var(--danger)" }}>{error}</span> : null}
             </div>
           </form>
@@ -129,6 +147,7 @@ function TenantForm() {
 /* --- products & projects -------------------------------------------------------- */
 
 function ProductsSection() {
+  const t = useT();
   const { me, refresh } = useSession();
   const { toasts, push } = useToasts();
   const confirm = useConfirm();
@@ -166,7 +185,7 @@ function ProductsSection() {
       setRepoUrl("");
       setJiraKey("");
       await products.reload();
-      push("info", "Product created.");
+      push("info", t("settings.products.created"));
     } catch (err) {
       push("error", apiErrorMessage(err));
     } finally {
@@ -185,14 +204,14 @@ function ProductsSection() {
       setProjName((p) => ({ ...p, [productId]: "" }));
       setProjKey((p) => ({ ...p, [productId]: "" }));
       await projects.reload();
-      push("info", "Project created.");
+      push("info", t("settings.products.projectCreated"));
     } catch (err) {
       push("error", apiErrorMessage(err));
     }
   }
 
   async function deleteProduct(id: string) {
-    if (!await confirm({ title: "Delete product?", message: "Delete this product? Empty it first — products with projects cannot be deleted.", confirmLabel: "Delete", destructive: true })) return;
+    if (!await confirm({ title: t("settings.products.deleteProduct.title"), message: t("settings.products.deleteProduct.message"), confirmLabel: t("settings.products.delete"), destructive: true })) return;
     try {
       await api.deleteProduct(id);
       await products.reload();
@@ -203,7 +222,7 @@ function ProductsSection() {
   }
 
   async function deleteProject(id: string) {
-    if (!await confirm({ title: "Delete project?", message: "Delete this project? It must have no items or sub-projects.", confirmLabel: "Delete", destructive: true })) return;
+    if (!await confirm({ title: t("settings.products.deleteProject.title"), message: t("settings.products.deleteProject.message"), confirmLabel: t("settings.products.delete"), destructive: true })) return;
     try {
       await api.deleteProject(id);
       await projects.reload();
@@ -215,7 +234,7 @@ function ProductsSection() {
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Products &amp; projects</h2>
+        <h2>{t("settings.products.title")}</h2>
       </div>
       <div className="section__body" style={{ display: "grid", gap: 14 }}>
         {products.error ? (
@@ -225,8 +244,7 @@ function ProductsSection() {
           <Skeleton h={60} />
         ) : products.data.length === 0 ? (
           <p className="tiny muted" style={{ margin: 0 }}>
-            No products yet. A product groups the work for one surface of the
-            business (for example an ERP or an online store).
+            {t("settings.products.empty")}
           </p>
         ) : (
           products.data.map((p) => {
@@ -255,7 +273,7 @@ function ProductsSection() {
                         className="tiny rowlink"
                         style={{ marginLeft: 10 }}
                       >
-                        repo
+                        {t("settings.products.repo")}
                       </a>
                     ) : null}
                     {p.jira_project_key ? (
@@ -270,12 +288,12 @@ function ProductsSection() {
                       className="btn btn--sm btn--ghost btn--danger"
                       onClick={() => void deleteProduct(p.id)}
                     >
-                      Delete
+                      {t("settings.products.delete")}
                     </button>
                   ) : null}
                 </div>
                 <div className="tiny muted" style={{ marginTop: 8 }}>
-                  Projects {ps.length === 0 ? "— none yet" : `(${ps.length})`}
+                  {t("settings.products.projects")} {ps.length === 0 ? t("settings.products.none") : `(${ps.length})`}
                 </div>
                 <ul style={{ margin: "4px 0 8px", paddingLeft: 18 }}>
                   {ps.map((x) => (
@@ -285,12 +303,12 @@ function ProductsSection() {
                         {x.key ? <span className="mono muted"> · {x.key}</span> : null}
                       </span>
                       {canEdit ? (
-                        <button
+                      <button
                           type="button"
                           className="btn btn--sm btn--ghost btn--danger"
                           onClick={() => void deleteProject(x.id)}
                         >
-                          Delete
+                          {t("settings.products.delete")}
                         </button>
                       ) : null}
                     </li>
@@ -300,8 +318,8 @@ function ProductsSection() {
                   <div className="stack" style={{ flexWrap: "wrap" }}>
                     <input
                       className="input input--inline"
-                      placeholder="New project name"
-                      aria-label={`New project name for ${p.name}`}
+                      placeholder={t("settings.products.newProject")}
+                      aria-label={t("settings.products.projectNameFor", { name: p.name })}
                       value={projName[p.id] ?? ""}
                       onChange={(e) =>
                         setProjName((m) => ({ ...m, [p.id]: e.target.value }))
@@ -310,7 +328,7 @@ function ProductsSection() {
                     <input
                       className="input input--inline mono"
                       placeholder="KEY"
-                      aria-label={`Project key for ${p.name}`}
+                      aria-label={t("settings.products.projectKeyFor", { name: p.name })}
                       style={{ width: 90 }}
                       value={projKey[p.id] ?? ""}
                       onChange={(e) =>
@@ -323,7 +341,7 @@ function ProductsSection() {
                       disabled={!projName[p.id]?.trim()}
                       onClick={() => void createProject(p.id)}
                     >
-                      Add project
+                      {t("settings.products.addProject")}
                     </button>
                   </div>
                 ) : null}
@@ -345,16 +363,16 @@ function ProductsSection() {
           >
             <input
               className="input input--inline"
-              placeholder="Product name"
-              aria-label="New product name"
+              placeholder={t("settings.products.productName")}
+              aria-label={t("settings.products.newProductName")}
               value={productName}
               onChange={(e) => setProductName(e.target.value)}
               required
             />
             <input
               className="input input--inline mono"
-              placeholder="slug"
-              aria-label="New product slug"
+              placeholder={t("settings.products.slug")}
+              aria-label={t("settings.products.newProductSlug")}
               value={productSlug}
               onChange={(e) =>
                 setProductSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-"))
@@ -363,15 +381,15 @@ function ProductsSection() {
             />
             <input
               className="input input--inline"
-              placeholder="Repo URL (optional)"
-              aria-label="New product repo URL"
+              placeholder={t("settings.products.repoUrl")}
+              aria-label={t("settings.products.newRepoUrl")}
               value={repoUrl}
               onChange={(e) => setRepoUrl(e.target.value)}
             />
             <input
               className="input input--inline"
-              placeholder="Jira key (opt.)"
-              aria-label="New product Jira key"
+              placeholder={t("settings.products.jiraKey")}
+              aria-label={t("settings.products.newJiraKey")}
               value={jiraKey}
               onChange={(e) => setJiraKey(e.target.value)}
             />
@@ -380,7 +398,7 @@ function ProductsSection() {
               className="btn btn--sm btn--primary"
               disabled={busyProduct}
             >
-              {busyProduct ? "Adding…" : "Add product"}
+              {busyProduct ? t("settings.products.adding") : t("settings.products.addProduct")}
             </button>
           </form>
         ) : null}
@@ -393,6 +411,7 @@ function ProductsSection() {
 /* --- members ------------------------------------------------------------------ */
 
 function MembersSection() {
+  const t = useT();
   const { me } = useSession();
   const members = useAsync(() => api.listMembers().then((r) => r.members), []);
   const { toasts, push } = useToasts();
@@ -413,9 +432,9 @@ function MembersSection() {
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Members</h2>
+        <h2>{t("settings.members.title")}</h2>
         <span className="tiny muted" style={{ marginLeft: "auto" }}>
-          {ROLES.join(" · ")} — guests can read everything but change nothing.
+          {t("settings.members.rolesHint", { roles: ROLES.map((role) => roleLabel(role, t)).join(" · ") })}
         </span>
       </div>
       <div className="section__body">
@@ -428,10 +447,10 @@ function MembersSection() {
             <table className="data">
               <thead>
                 <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Email</th>
-                  <th scope="col">Joined</th>
-                  <th scope="col">Role</th>
+                  <th scope="col">{t("settings.members.name")}</th>
+                  <th scope="col">{t("settings.members.email")}</th>
+                  <th scope="col">{t("settings.members.joined")}</th>
+                  <th scope="col">{t("settings.members.role")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -441,7 +460,7 @@ function MembersSection() {
                       {m.name}
                       {m.user_id === me?.user.id ? (
                         <span className="tiny muted" style={{ marginLeft: 6 }}>
-                          (you)
+                          {t("settings.members.you")}
                         </span>
                       ) : null}
                     </td>
@@ -452,17 +471,17 @@ function MembersSection() {
                         <select
                           className="input input--inline"
                           value={m.role}
-                          aria-label={`Role of ${m.name}`}
+                          aria-label={t("settings.members.roleOf", { name: m.name })}
                           onChange={(e) => void setRole(m, e.target.value as Role)}
                         >
                           {ROLES.map((r) => (
                             <option key={r} value={r}>
-                              {r}
+                              {roleLabel(r, t)}
                             </option>
                           ))}
                         </select>
                       ) : (
-                        <span className="badge-outline">{m.role}</span>
+                        <span className="badge-outline">{roleLabel(m.role, t)}</span>
                       )}
                     </td>
                   </tr>
@@ -473,8 +492,7 @@ function MembersSection() {
         )}
         {members.error === null && members.data && members.data.length === 1 ? (
           <p className="tiny muted" style={{ marginTop: 8 }}>
-            You are the only member. Invite teammates below — the invitation link
-            is created once.
+            {t("settings.members.only")}
           </p>
         ) : null}
       </div>
@@ -494,6 +512,7 @@ interface CreatedInvite {
 }
 
 function InvitesSection() {
+  const t = useT();
   const invites = useAsync(() => api.listInvites().then((r) => r.invites), []);
   const { toasts, push } = useToasts();
   const { me } = useSession();
@@ -513,7 +532,7 @@ function InvitesSection() {
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Invitations</h2>
+        <h2>{t("settings.invites.title")}</h2>
         {canEdit ? (
           <button
             type="button"
@@ -521,7 +540,7 @@ function InvitesSection() {
             style={{ marginLeft: "auto" }}
             onClick={() => setShowCreate(true)}
           >
-            Invite someone
+            {t("settings.invites.inviteSomeone")}
           </button>
         ) : null}
       </div>
@@ -537,8 +556,7 @@ function InvitesSection() {
             }}
           >
             <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-strong)" }}>
-              Invitation for {created.email} created. The token is shown once —
-              copy it now, it cannot be retrieved again.
+              {t("settings.invites.created", { email: created.email })}
             </p>
             <div className="stack" style={{ gap: 8, flexWrap: "wrap" }}>
               <code
@@ -552,22 +570,21 @@ function InvitesSection() {
               >
                 {created.token}
               </code>
-              <CopyButton text={created.token} label="Copy token" />
+              <CopyButton text={created.token} label={t("settings.invites.copyToken")} />
               <CopyButton
                 text={`${window.location.origin}${created.accept_url}`}
-                label="Copy invite link"
+                label={t("settings.invites.copyLink")}
               />
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
                 onClick={() => setCreated(null)}
               >
-                Done
+                {t("settings.invites.done")}
               </button>
             </div>
             <p className="tiny muted" style={{ margin: "8px 0 0" }}>
-              Expires {formatDate(created.expires_at)}. Single use — accepting it
-              consumes the token.
+              {t("settings.invites.expires", { date: formatDate(created.expires_at) })}
             </p>
           </div>
         ) : null}
@@ -577,18 +594,18 @@ function InvitesSection() {
         ) : !invites.data ? (
           <Skeleton h={60} />
         ) : invites.data.length === 0 ? (
-          <p className="tiny muted">No pending invitations.</p>
+          <p className="tiny muted">{t("settings.invites.empty")}</p>
         ) : (
           <div className="table-wrap">
             <table className="data">
               <thead>
                 <tr>
-                  <th scope="col">Email</th>
-                  <th scope="col">Role</th>
-                  <th scope="col">Expires</th>
-                  <th scope="col">Created</th>
+                  <th scope="col">{t("settings.invites.email")}</th>
+                  <th scope="col">{t("settings.members.role")}</th>
+                  <th scope="col">{t("settings.invites.expiresHeader")}</th>
+                  <th scope="col">{t("settings.invites.createdHeader")}</th>
                   <th scope="col">
-                    <span className="visually-hidden">Actions</span>
+                    <span className="visually-hidden">{t("settings.invites.actions")}</span>
                   </th>
                 </tr>
               </thead>
@@ -597,7 +614,7 @@ function InvitesSection() {
                   <tr key={inv.id}>
                     <td style={{ fontWeight: 500 }}>{inv.email}</td>
                     <td>
-                      <span className="badge-outline">{inv.role}</span>
+                      <span className="badge-outline">{roleLabel(inv.role, t)}</span>
                     </td>
                     <td className="tiny muted">{formatDate(inv.expires_at)}</td>
                     <td className="tiny muted">{formatDate(inv.created_at)}</td>
@@ -608,7 +625,7 @@ function InvitesSection() {
                           className="btn btn--sm btn--danger"
                           onClick={() => void revoke(inv.id)}
                         >
-                          Revoke
+                          {t("settings.invites.revoke")}
                         </button>
                       ) : null}
                     </td>
@@ -644,6 +661,7 @@ function CreateInviteDialog(props: {
     inv: { email: string; role: Role; expires_at: string },
   ) => void;
 }) {
+  const t = useT();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role | "">("");
   const [busy, setBusy] = useState(false);
@@ -671,13 +689,13 @@ function CreateInviteDialog(props: {
 
   return (
     <Dialog
-      title="Invite someone"
-      description={'They get a link with a one-time token. No email is sent — you pass the link on.'}
+      title={t("settings.invites.dialogTitle")}
+      description={t("settings.invites.dialogDescription")}
       onClose={props.onClose}
     >
       <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
         {error ? <div className="error-note">{error}</div> : null}
-        <Field label="Email">
+        <Field label={t("settings.invites.email")}>
           <input
             type="email"
             className="input"
@@ -688,26 +706,26 @@ function CreateInviteDialog(props: {
           />
         </Field>
         <Field
-          label="Role"
-          hint="Admin can manage settings and people. Guest is read-only."
+          label={t("settings.members.role")}
+          hint={t("settings.invites.roleHint")}
         >
           <select
             className="input"
             value={role}
             onChange={(e) => setRole(e.target.value as Role | "")}
           >
-            <option value="">Member (default)</option>
-            <option value="admin">Admin</option>
-            <option value="member">Member</option>
-            <option value="guest">Guest (read-only)</option>
+            <option value="">{t("settings.invites.memberDefault")}</option>
+            <option value="admin">{roleLabel("admin", t)}</option>
+            <option value="member">{roleLabel("member", t)}</option>
+            <option value="guest">{t("settings.invites.guestReadonly")}</option>
           </select>
         </Field>
         <div className="dialog__row">
           <button type="button" className="btn" onClick={props.onClose}>
-            Cancel
+            {t("settings.invites.cancel")}
           </button>
           <button type="submit" className="btn btn--primary" disabled={busy}>
-            {busy ? "Creating…" : "Create invitation"}
+            {busy ? t("settings.invites.creating") : t("settings.invites.create")}
           </button>
         </div>
       </form>
@@ -718,35 +736,18 @@ function CreateInviteDialog(props: {
 /* --- error messages ------------------------------------------------------------- */
 
 function translateTenant(err: unknown): string {
-  if (err instanceof Error && "code" in err) {
-    switch ((err as { code: string }).code) {
-      case "invalid_tenant_slug":
-        return "The handle must be 3–63 characters: lowercase letters, digits and hyphens.";
-      case "conflict":
-        return "That handle is already in use.";
-      case "forbidden":
-        return "Only the owner or an admin can change company settings.";
-      default:
-        return err.message;
-    }
-  }
-  return "Could not save. Try again.";
+  return apiErrorMessage(err);
 }
 
 function translateInvite(err: unknown): string {
-  if (err instanceof Error && "code" in err) {
-    switch ((err as { code: string }).code) {
-      case "invalid_email":
-        return "Enter a valid email address.";
-      case "already_member":
-        return "That person is already a member of this company.";
-      case "already_invited":
-        return "There is already a pending invitation for that email.";
-      case "forbidden":
-        return "Your role does not allow inviting people.";
-      default:
-        return err.message;
-    }
+  return apiErrorMessage(err);
+}
+
+function roleLabel(role: Role, t: ReturnType<typeof useT>): string {
+  switch (role) {
+    case "owner": return t("settings.members.owner");
+    case "admin": return t("settings.members.admin");
+    case "member": return t("settings.members.member");
+    case "guest": return t("settings.members.guest");
   }
-  return "Could not create the invitation.";
 }

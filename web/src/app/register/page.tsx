@@ -6,8 +6,11 @@ import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { slugify } from "@/lib/text";
+import { useT } from "@/lib/i18n";
+import { apiErrorMessage } from "@/components/primitives";
 
 export default function RegisterPage() {
+  const t = useT();
   const router = useRouter();
   const { refresh } = useSession();
   const [form, setForm] = useState({
@@ -36,7 +39,7 @@ export default function RegisterPage() {
       await refresh();
       router.replace("/board");
     } catch (err) {
-      setError(translate(err));
+      setError(translate(err, t));
     } finally {
       setBusy(false);
     }
@@ -45,14 +48,14 @@ export default function RegisterPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <h1>Create your company account</h1>
+        <h1>{t("auth.register.title")}</h1>
         <p className="sub">
-          Registers you as the owner and creates a new company.
+          {t("auth.register.subtitle")}
         </p>
         <form onSubmit={submit}>
           {error ? <div className="error-note">{error}</div> : null}
           <div className="field">
-            <label htmlFor="r-name">Your name</label>
+            <label htmlFor="r-name">{t("auth.register.name")}</label>
             <input
               id="r-name"
               className="input"
@@ -63,7 +66,7 @@ export default function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="r-email">Email</label>
+            <label htmlFor="r-email">{t("auth.register.email")}</label>
             <input
               id="r-email"
               type="email"
@@ -75,7 +78,7 @@ export default function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="r-password">Password</label>
+            <label htmlFor="r-password">{t("auth.register.password")}</label>
             <input
               id="r-password"
               type="password"
@@ -87,11 +90,11 @@ export default function RegisterPage() {
               onChange={(e) => set("password", e.target.value)}
             />
             <span className="tiny muted">
-              At least 12 characters. A pass-phrase of four words works well.
+              {t("auth.register.passwordHint")}
             </span>
           </div>
           <div className="field">
-            <label htmlFor="r-tenant">Company name</label>
+            <label htmlFor="r-tenant">{t("auth.register.companyName")}</label>
             <input
               id="r-tenant"
               className="input"
@@ -101,45 +104,33 @@ export default function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="r-slug">Company handle</label>
+            <label htmlFor="r-slug">{t("auth.register.companyHandle")}</label>
             <input
               id="r-slug"
               className="input mono"
               required
-              placeholder="acme"
+              placeholder={t("auth.register.slugPlaceholder")}
               value={form.tenant_slug}
               onChange={(e) => set("tenant_slug", e.target.value)}
             />
             <span className="tiny muted">
-              3–63 characters: lowercase letters, digits, hyphens. Used in the URL.
+              {t("auth.register.slugHint")}
             </span>
           </div>
           <button type="submit" className="btn btn--primary" disabled={busy}>
-            {busy ? "Creating…" : "Create account"}
+            {busy ? t("auth.register.creating") : t("auth.register.submit")}
           </button>
         </form>
         <p className="auth-foot">
-          Already have an account? <Link href="/login">Sign in</Link>
+          {t("auth.register.haveAccount")} <Link href="/login">{t("auth.register.signIn")}</Link>
         </p>
       </div>
     </div>
   );
 }
 
-function translate(err: unknown): string {
-  if (err instanceof ApiError) {
-    switch (err.code) {
-      case "conflict":
-        return "That email or company handle is already in use.";
-      case "weak_password":
-        return err.message;
-      case "invalid_tenant_slug":
-        return err.message;
-      case "invalid_email":
-        return err.message;
-      default:
-        return err.message;
-    }
-  }
-  return "Could not register. Try again.";
+function translate(err: unknown, t: ReturnType<typeof useT>): string {
+  if (err instanceof ApiError && err.code === "conflict") return t("auth.register.conflict");
+  if (!(err instanceof ApiError)) return t("auth.register.failed");
+  return apiErrorMessage(err);
 }

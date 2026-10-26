@@ -106,6 +106,26 @@ export const shared = {
   "dialog.close": "Close dialog",
   "copy.copy": "Copy",
   "copy.copied": "Copied",
+  /* --- API error codes: translated text for known server responses ---------- */
+  "error.code.network": "Cannot reach the server. Check your connection and try again.",
+  "error.code.unknown": "Something went wrong. Try again.",
+  "error.code.runner_in_use": "This runner is in use by an agent. Remove it from every agent chain before deleting it.",
+  "error.code.invalid_config": "The configuration is invalid. Check the values and try again.",
+  "error.code.forbidden": "You do not have permission to do that.",
+  "error.code.not_found": "This could not be found. It may have been removed.",
+  "error.code.already_decided": "This checkpoint has already been decided.",
+  "error.code.invalid_request": "Some of the information is invalid. Check it and try again.",
+  "error.code.invalid_language": "Choose a supported company language.",
+  "error.code.unauthenticated": "Your session has ended. Sign in again to continue.",
+  "error.code.conflict": "This conflicts with information that already exists.",
+  "error.code.invalid_tenant_slug": "The company handle must be 3–63 characters: lowercase letters, digits and hyphens.",
+  "error.code.invalid_email": "Enter a valid email address.",
+  "error.code.already_member": "This person is already a member of the company.",
+  "error.code.already_invited": "There is already a pending invitation for this email.",
+  "error.code.weak_password": "Choose a stronger password with at least 12 characters.",
+  "error.code.invalid_credentials": "Email or password is incorrect.",
+  "error.code.no_tenant": "This account is not a member of any company yet. Ask its owner for an invitation.",
+  "error.code.invalid_invite": "This invitation is invalid, expired or has already been used. Ask for a new link.",
 } as const;
 
 /** The shared strings with their literal types. */
