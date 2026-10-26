@@ -38,6 +38,7 @@ export const monitor: MonitorDictionary = {
   "monitor.state.blocked": "Bloqueado",
   "monitor.state.cancelled": "Cancelado",
   "monitor.state.superseded": "Substituído",
+  "monitor.state.created": "criado",
   /* --- os tipos de nó --------------------------------------------------------- */
   "monitor.kind.start": "Início",
   "monitor.kind.end": "Fim",
@@ -87,14 +88,19 @@ export const monitor: MonitorDictionary = {
   "monitor.interventions.redo": "Refazer o nó",
   "monitor.interventions.stop": "Parar o passo",
   "monitor.interventions.recorded": "Intervenção #{seq} registrada. Execuções em estado final nunca voltam.",
+  "monitor.interventions.kind.inject": "injetar",
+  "monitor.interventions.kind.redo": "refazer",
+  "monitor.interventions.kind.stop": "parar",
   /* --- a atividade da execução ----------------------------------------------------- */
   "monitor.activity.title": "Atividade da execução",
   "monitor.activity.checkpointEvents": "{count} evento de ponto de decisão|{count} eventos de ponto de decisão",
   "monitor.activity.interventionOrder": "Ordem das intervenções",
   "monitor.activity.noInterventions": "Nenhuma intervenção registrada.",
+  "monitor.activity.run": "execução",
   "monitor.activity.delivered": "entregue",
   "monitor.activity.queued": "na fila",
   "monitor.activity.checkpointEventsTitle": "Eventos de ponto de decisão",
+  "monitor.activity.checkpointEvent": "Ponto de decisão {node} · {state}",
   "monitor.activity.openInbox": "Abrir a caixa de entrada de pontos de decisão →",
   /* --- o relógio de duração --------------------------------------------------------- */
   "monitor.elapsed.seconds": "{value}s",

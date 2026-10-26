@@ -6,7 +6,7 @@ export const shared = {
   "settings.notifications": "Notifications",
   "settings.skills": "Skills",
   "settings.language": "Language",
-  "settings.languageHint": "The language of the interface. It applies to every screen.",
+  "settings.languageHint": "The language your agents write in. This is separate from your interface language.",
   /* --- the notification centre ----------------------------------------------- */
   "notifications.title": "Notifications",
   "notifications.unread": "{count} unread|{count} unread",

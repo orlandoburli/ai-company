@@ -36,6 +36,7 @@ export const monitor = {
   "monitor.state.blocked": "Blocked",
   "monitor.state.cancelled": "Cancelled",
   "monitor.state.superseded": "Superseded",
+  "monitor.state.created": "created",
   /* --- the kinds of node ---------------------------------------------------- */
   "monitor.kind.start": "Start",
   "monitor.kind.end": "End",
@@ -85,14 +86,19 @@ export const monitor = {
   "monitor.interventions.redo": "Redo node",
   "monitor.interventions.stop": "Stop step",
   "monitor.interventions.recorded": "Intervention #{seq} recorded. Terminal executions are never resurrected.",
+  "monitor.interventions.kind.inject": "inject",
+  "monitor.interventions.kind.redo": "redo",
+  "monitor.interventions.kind.stop": "stop",
   /* --- the run activity ----------------------------------------------------- */
   "monitor.activity.title": "Run activity",
   "monitor.activity.checkpointEvents": "{count} checkpoint event|{count} checkpoint events",
   "monitor.activity.interventionOrder": "Intervention order",
   "monitor.activity.noInterventions": "No interventions recorded.",
+  "monitor.activity.run": "run",
   "monitor.activity.delivered": "delivered",
   "monitor.activity.queued": "queued",
   "monitor.activity.checkpointEventsTitle": "Checkpoint events",
+  "monitor.activity.checkpointEvent": "Checkpoint {node} · {state}",
   "monitor.activity.openInbox": "Open checkpoint inbox →",
   /* --- the elapsed clock ---------------------------------------------------- */
   "monitor.elapsed.seconds": "{value}s",

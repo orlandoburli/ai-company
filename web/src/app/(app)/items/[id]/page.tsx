@@ -45,6 +45,11 @@ import { ChatPanel } from "@/components/chat";
 import { FactorTable } from "@/components/factor-table";
 import { ItemIndicators } from "@/components/item-bits";
 import { IconPause, IconPin, IconTrash } from "@/components/icons";
+import { useT } from "@/lib/i18n";
+import type { TranslationKey } from "@/lib/locales";
+
+/** The translator, for the helpers that live outside a component. */
+type T = ReturnType<typeof useT>;
 
 export default function ItemPage() {
   return (
@@ -55,6 +60,7 @@ export default function ItemPage() {
 }
 
 function ItemDetail() {
+  const t = useT();
   const params = useParams<{ id: string }>();
   const id = typeof params.id === "string" ? params.id : "";
   const router = useRouter();
@@ -100,9 +106,9 @@ function ItemDetail() {
     try {
       await api.patchItem(id, body);
       await detail.reload();
-      push("info", successMsg ?? "Saved.");
+      push("info", successMsg ?? t("item.saved"));
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", apiIssue(t, err));
     }
   }
 
@@ -117,17 +123,17 @@ function ItemDetail() {
       else await api.unpauseItem(id);
       await detail.reload();
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", apiIssue(t, err));
     }
   }
 
   async function remove() {
-    if (!await confirm({ title: "Delete item?", message: "Delete this item? This cannot be undone.", confirmLabel: "Delete", destructive: true })) return;
+    if (!await confirm({ title: t("item.delete.title"), message: t("item.delete.message"), confirmLabel: t("item.delete.confirm"), destructive: true })) return;
     try {
       await api.deleteItem(id);
       router.push("/backlog");
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", apiIssue(t, err));
     }
   }
 
@@ -135,7 +141,7 @@ function ItemDetail() {
     return (
       <div style={{ maxWidth: 760 }}>
         <ErrorBlock
-          title="That item could not load."
+          title={t("item.loadFailed")}
           message={detail.error.message}
           retry={() => void detail.reload()}
         />
@@ -173,18 +179,18 @@ function ItemDetail() {
         onDelete={() => void remove()}
       />
 
-      <div className="tabs" role="tablist" aria-label="Item tabs">
-        {(["details", "activity", "chat"] as const).map((t) => (
+      <div className="tabs" role="tablist" aria-label={t("item.tabs.aria")}>
+        {(["details", "activity", "chat"] as const).map((t2) => (
           <button
-            key={t}
+            key={t2}
             role="tab"
             type="button"
-            id={`tab-${t}`}
-            aria-selected={tab === t}
-            aria-controls={`panel-${t}`}
-            onClick={() => setTab(t)}
+            id={`tab-${t2}`}
+            aria-selected={tab === t2}
+            aria-controls={`panel-${t2}`}
+            onClick={() => setTab(t2)}
           >
-            {t === "details" ? "Details" : t === "chat" ? "Chat" : "Activity"}
+            {t2 === "details" ? t("item.tab.details") : t2 === "chat" ? t("item.tab.chat") : t("item.tab.activity")}
           </button>
         ))}
       </div>
@@ -217,9 +223,9 @@ function ItemDetail() {
                     });
                     await detail.reload();
                     setDraft(null);
-                    push("info", "Saved.");
+                    push("info", t("item.saved"));
                   } catch (err) {
-                    push("error", apiErrorMessage(err));
+                    push("error", apiIssue(t, err));
                   }
                 })();
               }}
@@ -264,6 +270,7 @@ function ItemDetail() {
 /* --- chat tab: get-or-create the item's thread --------------------------------- */
 
 function ChatPanelSlot(props: { itemId: string; canWrite: boolean }) {
+  const t = useT();
   const [threadId, setThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -273,9 +280,9 @@ function ChatPanelSlot(props: { itemId: string; canWrite: boolean }) {
       const r = await api.itemThread(props.itemId);
       setThreadId(r.thread.id);
     } catch (err) {
-      setError(apiErrorMessage(err));
+      setError(apiIssue(t, err));
     }
-  }, [props.itemId]);
+  }, [props.itemId, t]);
 
   useEffect(() => {
     void open();
@@ -284,7 +291,7 @@ function ChatPanelSlot(props: { itemId: string; canWrite: boolean }) {
   if (error) {
     return (
       <ErrorBlock
-        title="The chat thread could not be opened."
+        title={t("item.chat.openFailed")}
         message={error}
         retry={() => void open()}
       />
@@ -312,26 +319,27 @@ function FailurePanel(props: {
   canWrite: boolean;
   push: (kind: "error" | "info", text: string) => void;
 }) {
+  const t = useT();
   const [now, setNow] = useState(() => Date.now());
   const [saving, setSaving] = useState(false);
   const state = useAsync<FailurePanelData>(async () => {
     if (props.paused) {
-      return { kind: "absent", reason: "This item is paused. Pause is a separate dispatch control, not a workflow failure, so no failure state is shown here." };
+      return { kind: "absent", reason: t("item.failure.paused") };
     }
     const runs = (await api.listRuns({ item_id: props.itemId })).runs;
     const latest = [...runs].sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at))[0];
     if (!latest?.template_id) {
-      return { kind: "absent", reason: "No workflow run is attached to this item, so there is no workflow id to check for a failure state." };
+      return { kind: "absent", reason: t("item.failure.noRun") };
     }
     try {
       return { kind: "failure", failure: (await api.getFailure(props.itemId, latest.template_id)).failure };
     } catch (error) {
       if (error instanceof ApiError && error.code === "failure_not_found") {
-        return { kind: "absent", code: error.code, reason: "No failure state exists for this item and workflow." };
+        return { kind: "absent", code: error.code, reason: t("item.failure.none") };
       }
       throw error;
     }
-  }, [props.itemId, props.paused]);
+  }, [props.itemId, props.paused, t]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -343,9 +351,9 @@ function FailurePanel(props: {
     try {
       await api.resetFailure(props.itemId, failure.workflow_id);
       await state.reload();
-      props.push("info", "Failure counter and backoff cleared. The item still needs to meet its normal dispatch requirements.");
+      props.push("info", t("item.failure.cleared"));
     } catch (error) {
-      props.push("error", apiIssue(error));
+      props.push("error", apiIssue(t, error));
     } finally {
       setSaving(false);
     }
@@ -355,57 +363,65 @@ function FailurePanel(props: {
   const absent = state.data?.kind === "absent" ? state.data : null;
   const nextAt = failure?.next_eligible_at ? Date.parse(failure.next_eligible_at) : NaN;
   const timeLeft = nextAt - now;
+  const perFailure = failure
+    ? failure.curve === "exponential"
+      ? t("item.failure.perFailure.exponential", { factor: failure.backoff_params.y })
+      : t("item.failure.perFailure.linear", { step: failure.backoff_params.step_seconds })
+    : "";
 
   return (
     <section className="section" aria-labelledby="failure-heading">
       <div className="section__head">
-        <h2 id="failure-heading">Failure &amp; retry</h2>
-        {failure ? <span className={`chip ${failure.state === "exhausted" ? "chip--p0" : "chip--kind"}`} style={{ marginLeft: "auto" }}>{failure.state.replaceAll("_", " ")}</span> : null}
+        <h2 id="failure-heading">{t("item.failure.title")}</h2>
+        {failure ? <span className={`chip ${failure.state === "exhausted" ? "chip--p0" : "chip--kind"}`} style={{ marginLeft: "auto" }}>{failure.state === "exhausted" ? t("item.failure.state.exhausted") : t("item.failure.state.backingOff")}</span> : null}
       </div>
       <div className="section__body">
         {state.error ? (
-          <ErrorBlock title="Failure state could not load." message={apiIssue(state.error)} retry={() => void state.reload()} />
+          <ErrorBlock title={t("item.failure.loadFailed")} message={apiIssue(t, state.error)} retry={() => void state.reload()} />
         ) : state.loading ? (
           <Skeleton h={76} />
         ) : failure ? (
           <div style={{ display: "grid", gap: 10 }}>
             <div className="stack" style={{ flexWrap: "wrap", gap: 18 }}>
-              <div><div className="tiny muted">Consecutive failures</div><strong className="metric" style={{ fontSize: 20 }}>{failure.consecutive_failures}</strong></div>
-              <div><div className="tiny muted">Backoff curve</div><strong>{failure.curve}</strong> <span className="mono tiny muted">{failure.backoff_version}</span></div>
-              <div><div className="tiny muted">Workflow</div><span className="mono tiny">{failure.workflow_id}</span></div>
+              <div><div className="tiny muted">{t("item.failure.consecutive")}</div><strong className="metric" style={{ fontSize: 20 }}>{failure.consecutive_failures}</strong></div>
+              <div><div className="tiny muted">{t("item.failure.curve")}</div><strong>{failure.curve}</strong> <span className="mono tiny muted">{failure.backoff_version}</span></div>
+              <div><div className="tiny muted">{t("item.failure.workflow")}</div><span className="mono tiny">{failure.workflow_id}</span></div>
             </div>
             <div className="tiny muted">
-              Parameters: {failure.backoff_params.x_seconds}s initial
-              {failure.curve === "exponential" ? ` × ${failure.backoff_params.y} per failure` : ` + ${failure.backoff_params.step_seconds}s per failure`}
-              {`, capped at ${durationWords(failure.backoff_params.max_backoff_seconds)}; ${failure.backoff_params.max_failures} failures exhaust the retry.`}
+              {t("item.failure.parameters", {
+                initial: failure.backoff_params.x_seconds,
+                perFailure,
+                cap: durationWords(failure.backoff_params.max_backoff_seconds, t),
+                max: failure.backoff_params.max_failures,
+              })}
             </div>
             {failure.state === "backing_off" ? (
               <div className="error-note" style={{ color: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-text-emphasis)" : "var(--theme-success-text-emphasis)", borderColor: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-border-subtle)" : "var(--theme-success-border-subtle)", background: !Number.isFinite(nextAt) || timeLeft > 0 ? "var(--theme-warning-bg-subtle)" : "var(--theme-success-bg-subtle)" }}>
                 {Number.isFinite(nextAt) && timeLeft > 0
-                  ? `Backing off · ${durationWords(Math.ceil(timeLeft / 1000))} remaining · not before ${clock(nextAt)}.`
+                  ? t("item.failure.backingOff", { remaining: durationWords(Math.ceil(timeLeft / 1000), t), time: clock(nextAt) })
                   : Number.isFinite(nextAt)
-                    ? "The backoff has passed. This item is eligible again, subject to its normal dispatch requirements."
-                    : "Backing off, but the server did not provide next_eligible_at. The eligible time cannot be confirmed."}
+                    ? t("item.failure.backoffPassed")
+                    : t("item.failure.backoffUnknown")}
               </div>
             ) : failure.state === "exhausted" ? (
               <div className="error-note" style={{ color: "var(--danger)" }}>
-                Exhausted{failure.exhausted_at ? ` since ${formatDateTime(failure.exhausted_at)}` : ""}. A human must reset this failure state before the workflow can run again.
+                {t("item.failure.exhausted", { since: failure.exhausted_at ? t("item.failure.exhaustedSince", { when: formatDateTime(failure.exhausted_at) }) : "" })}
               </div>
-            ) : <div className="tiny muted">No active backoff. The failure counter is currently clear.</div>}
+            ) : <div className="tiny muted">{t("item.failure.noBackoff")}</div>}
             <div style={{ borderLeft: "2px solid var(--border-strong)", paddingLeft: 10 }}>
-              <div className="tiny muted" style={{ marginBottom: 3 }}>Last error{failure.last_failure_kind ? ` · ${failure.last_failure_kind}` : ""}</div>
-              <div className="tiny" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{failure.last_error_md || "No error message was recorded."}</div>
+              <div className="tiny muted" style={{ marginBottom: 3 }}>{t("item.failure.lastError")}{failure.last_failure_kind ? t("item.failure.lastErrorKind", { kind: failure.last_failure_kind }) : ""}</div>
+              <div className="tiny" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{failure.last_error_md || t("item.failure.noError")}</div>
             </div>
             {props.canWrite ? (
               <div className="stack" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-                <span className="tiny muted">Retry now clears the failure counter; it does not unpause or bypass blockers.</span>
-                <button type="button" className="btn btn--sm btn--primary" disabled={saving} onClick={() => void retryNow(failure)}>{saving ? "Resetting…" : "Retry now"}</button>
+                <span className="tiny muted">{t("item.failure.retryHint")}</span>
+                <button type="button" className="btn btn--sm btn--primary" disabled={saving} onClick={() => void retryNow(failure)}>{saving ? t("item.failure.resetting") : t("item.failure.retryNow")}</button>
               </div>
-            ) : <p className="tiny muted" style={{ margin: 0 }}>Read only — ask a member to reset this failure state.</p>}
+            ) : <p className="tiny muted" style={{ margin: 0 }}>{t("item.failure.readOnly")}</p>}
           </div>
         ) : (
           <p className="tiny muted" style={{ margin: 0 }}>
-            {absent?.code ? <><span className="mono">{absent.code}</span> — </> : null}{absent?.reason ?? "No failure state is available."}
+            {absent?.code ? <><span className="mono">{absent.code}</span> — </> : null}{absent?.reason ?? t("item.failure.unavailable")}
           </p>
         )}
       </div>
@@ -417,22 +433,26 @@ function clock(time: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(time);
 }
 
-function durationWords(seconds: number): string {
+function durationWords(seconds: number, t: T): string {
   const value = Math.max(0, Math.floor(seconds));
-  if (value < 60) return `${value} ${value === 1 ? "second" : "seconds"}`;
+  if (value < 60) return t("item.duration.seconds", { count: value });
   const minutes = Math.ceil(value / 60);
-  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  if (minutes < 60) return t("item.duration.minutes", { count: minutes });
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  return rest ? `${hours} ${hours === 1 ? "hour" : "hours"} ${rest} min` : `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  return rest ? t("item.duration.hoursRest", { count: hours, rest }) : t("item.duration.hours", { count: hours });
 }
 
-function apiIssue(error: unknown): string {
-  if (error instanceof Error && "code" in error) {
-    const apiError = error as ApiError;
-    return `${apiError.code}: ${apiError.message}`;
+/** The message for an API error: the screen's own wording for a code it knows,
+ *  the server's own message for every other code. */
+function apiIssue(t: T, error: unknown, known: Record<string, TranslationKey> = {}): string {
+  if (error instanceof ApiError) {
+    const key = known[error.code];
+    if (key) return t(key);
+    return `${error.code}: ${error.message}`;
   }
-  return error instanceof Error ? error.message : "Something went wrong.";
+  if (error instanceof Error) return error.message;
+  return t("error.title");
 }
 
 /* --- editable-draft plumbing -------------------------------------------------- */
@@ -462,12 +482,13 @@ function draftFrom(it: Item): EditableDraft {
 /* --- breadcrumb & header ------------------------------------------------------ */
 
 function Breadcrumb(props: { itemId: string; number: number }) {
+  const t = useT();
   return (
     <p className="tiny muted" style={{ margin: "0 0 6px" }}>
       <Link href="/board" className="rowlink">
-        Board
+        {t("board.title")}
       </Link>{" "}
-      / item #{props.number}
+      / {t("item.breadcrumb.item", { number: props.number })}
     </p>
   );
 }
@@ -488,9 +509,10 @@ function HeaderRow(props: {
   onDelete: () => void;
 }) {
   const it = props.item;
+  const t = useT();
   const [pauseOpen, setPauseOpen] = useState(false);
   const [reason, setReason] = useState("");
-  const kindLabel = it.kind || "item";
+  const kindLabel = it.kind || t("item.kindFallback");
   return (
     <div className="section" style={{ marginBottom: 16 }}>
       <div className="section__body" style={{ paddingTop: 12 }}>
@@ -506,15 +528,15 @@ function HeaderRow(props: {
               <button
                 type="button"
                 className="btn btn--sm"
-                aria-label={it.pinned ? "Unpin this item" : "Pin to queue top"}
+                aria-label={it.pinned ? t("item.unpinAria") : t("item.pinAria")}
                 aria-pressed={Boolean(it.pinned)}
                 onClick={props.onPin}
               >
-                <IconPin width={12} height={12} /> {it.pinned ? "Unpin" : "Pin"}
+                <IconPin width={12} height={12} /> {it.pinned ? t("item.unpin") : t("item.pin")}
               </button>
               {it.paused ? (
                 <button type="button" className="btn btn--sm" onClick={props.onUnpause}>
-                  Unpause
+                  {t("item.unpause")}
                 </button>
               ) : (
                 <button
@@ -522,13 +544,13 @@ function HeaderRow(props: {
                   className="btn btn--sm"
                   onClick={() => setPauseOpen(true)}
                 >
-                  <IconPause width={12} height={12} /> Pause
+                  <IconPause width={12} height={12} /> {t("item.pause")}
                 </button>
               )}
               <button
                 type="button"
                 className="btn btn--sm btn--ghost btn--danger"
-                aria-label="Delete this item"
+                aria-label={t("item.deleteAria")}
                 onClick={props.onDelete}
               >
                 <IconTrash />
@@ -549,20 +571,20 @@ function HeaderRow(props: {
               color: "var(--theme-warning-text-emphasis)",
             }}
           >
-            Paused
-            {it.paused_at ? ` since ${formatDateTime(it.paused_at)}` : ""}
-            {it.paused_by ? ` by @${firstName(props.memberName.get(it.paused_by) ?? "") || it.paused_by}` : ""}
-            {it.pause_reason ? ` — “${it.pause_reason}”` : ""}. A pause is not a
-            failure: it only removes the item from dispatch.
+            {t("item.paused")}
+            {it.paused_at ? ` ${t("item.pausedSince", { when: formatDateTime(it.paused_at) })}` : ""}
+            {it.paused_by ? ` ${t("item.pausedBy", { name: firstName(props.memberName.get(it.paused_by) ?? "") || it.paused_by })}` : ""}
+            {it.pause_reason ? ` ${t("item.pauseReason", { reason: it.pause_reason })}` : ""}
+            {t("item.pausedExplains")}
           </div>
         ) : null}
         {it.pinned ? (
           <div className="tiny muted" style={{ marginTop: 6 }}>
-            Pinned to rank 1 in the queue
+            {t("item.pinnedNote")}
             {it.pinned_by
-              ? ` by @${firstName(props.memberName.get(it.pinned_by) ?? "") || it.pinned_by}`
+              ? ` ${t("item.pinnedBy", { name: firstName(props.memberName.get(it.pinned_by) ?? "") || it.pinned_by })}`
               : ""}
-            {it.pinned_at ? `, ${formatDateTime(it.pinned_at)}` : ""}.
+            {it.pinned_at ? t("item.pinnedAt", { when: formatDateTime(it.pinned_at) }) : ""}.
           </div>
         ) : null}
 
@@ -573,7 +595,7 @@ function HeaderRow(props: {
           {props.canWrite ? (
             <StatusSelect
               value={it.status}
-              ariaLabel="Status"
+              ariaLabel={t("field.status")}
               onChange={props.onStatus}
             />
           ) : (
@@ -583,9 +605,9 @@ function HeaderRow(props: {
             <PrioritySelect value={it.priority} onChange={props.onPriority} />
           ) : (
             <span className="tiny">
-              {it.priority ? PRIORITY_LABELS[it.priority] : "No priority"}
+              {it.priority ? PRIORITY_LABELS[it.priority] : t("field.noPriority")}
               {it.priority_source === "inherited" ? (
-                <span className="muted"> (inherited)</span>
+                <span className="muted"> {t("item.inherited")}</span>
               ) : null}
             </span>
           )}
@@ -593,10 +615,10 @@ function HeaderRow(props: {
             <select
               className="input input--inline"
               value={it.assignee_user_id ?? ""}
-              aria-label="Assignee"
+              aria-label={t("field.assignee")}
               onChange={(e) => props.onAssignee(e.target.value)}
             >
-              <option value="">Unassigned</option>
+              <option value="">{t("item.unassigned")}</option>
               {props.members.map((m) => (
                 <option key={m.user_id} value={m.user_id}>
                   {m.name}
@@ -605,20 +627,19 @@ function HeaderRow(props: {
             </select>
           ) : it.assignee_user_id ? (
             <span className="tiny">
-              Assigned to{" "}
-              {props.memberName.get(it.assignee_user_id) ?? it.assignee_user_id}
+              {t("item.assignedTo", { name: props.memberName.get(it.assignee_user_id) ?? it.assignee_user_id })}
             </span>
           ) : null}
           {it.due_date ? (
-            <span className="tiny muted">Due {it.due_date.slice(0, 10)}</span>
+            <span className="tiny muted">{t("item.due", { when: it.due_date.slice(0, 10) })}</span>
           ) : null}
         </div>
       </div>
 
       {pauseOpen ? (
         <Dialog
-          title={`Pause #${it.number}`}
-          description="A pause removes the item from dispatch. It is not a failure and never expires by itself."
+          title={t("item.pauseDialog.title", { number: it.number })}
+          description={t("item.pauseDialog.description")}
           onClose={() => setPauseOpen(false)}
         >
           <form
@@ -630,21 +651,21 @@ function HeaderRow(props: {
             style={{ display: "grid", gap: 12 }}
           >
             <div className="field">
-              <label htmlFor="i-reason">Reason (optional)</label>
+              <label htmlFor="i-reason">{t("item.pauseDialog.reason")}</label>
               <input
                 id="i-reason"
                 className="input"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Why this waits"
+                placeholder={t("item.pauseDialog.placeholder")}
               />
             </div>
             <div className="dialog__row">
               <button type="button" className="btn" onClick={() => setPauseOpen(false)}>
-                Cancel
+                {t("field.cancel")}
               </button>
               <button type="submit" className="btn btn--primary">
-                Pause
+                {t("item.pause")}
               </button>
             </div>
           </form>
@@ -670,6 +691,7 @@ function DetailsForm(props: {
   onSave: (d: EditableDraft) => void;
 }) {
   const [d, setD] = useState<EditableDraft>(props.draft);
+  const t = useT();
   useEffect(() => {
     setD(props.draft);
   }, [props.draft]);
@@ -681,13 +703,13 @@ function DetailsForm(props: {
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Details</h2>
+        <h2>{t("item.details.title")}</h2>
       </div>
       <div className="section__body" style={{ display: "grid", gap: 12 }}>
         {props.canWrite ? (
           <>
             <div className="field">
-              <label htmlFor="i-title">Title</label>
+              <label htmlFor="i-title">{t("field.title")}</label>
               <input
                 id="i-title"
                 className="input"
@@ -697,18 +719,18 @@ function DetailsForm(props: {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12 }}>
               <div className="field">
-                <label>Kind</label>
+                <label>{t("field.kind")}</label>
                 <KindCombobox
                   value={d.kind}
                   options={props.kinds}
                   onChange={(value) => set("kind", value)}
                 />
                 <span className="tiny muted">
-                  {props.kindsError ? "Project kinds could not load; any value is still allowed." : props.kindsLoading ? "Loading project kinds…" : "Choose a project kind or enter your own."}
+                  {props.kindsError ? t("newItem.kindError") : props.kindsLoading ? t("newItem.kindLoading") : t("newItem.kindHint")}
                 </span>
               </div>
               <div className="field">
-                <label htmlFor="i-due">Due date</label>
+                <label htmlFor="i-due">{t("item.dueDate")}</label>
                 <input
                   id="i-due"
                   type="date"
@@ -719,7 +741,7 @@ function DetailsForm(props: {
               </div>
             </div>
             <div className="field">
-              <label htmlFor="i-desc">Description (markdown)</label>
+              <label htmlFor="i-desc">{t("item.description")}</label>
               <textarea
                 id="i-desc"
                 className="input"
@@ -729,19 +751,19 @@ function DetailsForm(props: {
               />
             </div>
             <div className="field">
-              <label>Labels</label>
+              <label>{t("field.labels")}</label>
               <LabelInput
                 value={d.labels}
                 options={props.labelOptions}
                 onChange={(value) => set("labels", value)}
               />
               <span className="tiny muted">
-                {props.labelsError ? "Labels could not load; you can still add any label." : props.labelsLoading ? "Loading labels…" : "Choose a label in use or add a new one."}
+                {props.labelsError ? t("newItem.labelsError") : props.labelsLoading ? t("newItem.labelsLoading") : t("newItem.labelsHint")}
               </span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div className="field">
-                <label htmlFor="i-jira">Jira issue key</label>
+                <label htmlFor="i-jira">{t("item.jiraKey")}</label>
                 <input
                   id="i-jira"
                   className="input"
@@ -750,7 +772,7 @@ function DetailsForm(props: {
                 />
               </div>
               <div className="field">
-                <label htmlFor="i-url">Other URL</label>
+                <label htmlFor="i-url">{t("item.externalUrl")}</label>
                 <input
                   id="i-url"
                   className="input"
@@ -760,14 +782,14 @@ function DetailsForm(props: {
               </div>
             </div>
             <div className="stack" style={{ justifyContent: "flex-end" }}>
-              {!dirty ? <span className="tiny muted">No changes.</span> : null}
+              {!dirty ? <span className="tiny muted">{t("item.noChanges")}</span> : null}
               <button
                 type="button"
                 className="btn"
                 disabled={!dirty}
                 onClick={() => setD(props.draft)}
               >
-                Reset
+                {t("item.reset")}
               </button>
               <button
                 type="submit"
@@ -778,7 +800,7 @@ function DetailsForm(props: {
                   props.onSave(d);
                 }}
               >
-                Save changes
+                {t("item.saveChanges")}
               </button>
             </div>
           </>
@@ -791,11 +813,12 @@ function DetailsForm(props: {
 }
 
 function ReadOnlyDetails({ item }: { item: Item }) {
+  const t = useT();
   const md = item.description_md;
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <div className="tiny muted" style={{ whiteSpace: "pre-wrap" }}>
-        {md || "No description."}
+        {md || t("item.noDescription")}
       </div>
       {item.labels.length > 0 ? (
         <div className="stack">
@@ -815,22 +838,23 @@ function ItemFamily(props: {
   parent: ItemFamilyRef | null;
   children: ItemChildRef[];
 }) {
+  const t = useT();
   return (
     <section className="section" aria-labelledby="family-heading">
       <div className="section__head">
-        <h2 id="family-heading">Sub-items <span className="tiny muted">({props.children.length})</span></h2>
+        <h2 id="family-heading">{t("item.subItems")} <span className="tiny muted">({props.children.length})</span></h2>
       </div>
       <div className="section__body" style={{ display: "grid", gap: 12 }}>
         {props.parent ? (
           <p className="tiny" style={{ margin: 0 }}>
-            <span className="muted">Part of </span>
+            <span className="muted">{t("item.partOf")}</span>
             <Link href={`/items/${props.parent.id}`} className="rowlink">
               #{props.parent.number} · {props.parent.title}
             </Link>
           </p>
         ) : null}
         {props.children.length === 0 ? (
-          <p className="tiny muted" style={{ margin: 0 }}>This item has no sub-items.</p>
+          <p className="tiny muted" style={{ margin: 0 }}>{t("item.noSubItems")}</p>
         ) : (
           <ul className="family-list">
             {props.children.map((child) => (
@@ -856,19 +880,20 @@ function GitHubLinksPanel(props: {
   error: string | null;
   onRetry: () => void;
 }) {
+  const t = useT();
   return (
     <section className="section" aria-labelledby="github-links-heading">
       <div className="section__head">
-        <h2 id="github-links-heading">GitHub links</h2>
+        <h2 id="github-links-heading">{t("item.github.title")}</h2>
         {!props.loading && !props.error ? <span className="tiny muted">{props.links.length}</span> : null}
       </div>
       <div className="section__body">
         {props.error ? (
-          <ErrorBlock title="GitHub links could not load." message={props.error} retry={props.onRetry} />
+          <ErrorBlock title={t("item.github.loadFailed")} message={props.error} retry={props.onRetry} />
         ) : props.loading ? (
           <Skeleton h={52} />
         ) : props.links.length === 0 ? (
-          <p className="tiny muted" style={{ margin: 0 }}>No GitHub issues or pull requests are linked to this item.</p>
+          <p className="tiny muted" style={{ margin: 0 }}>{t("item.github.empty")}</p>
         ) : (
           <ul className="github-link-list">
             {props.links.map((link) => (
@@ -876,23 +901,23 @@ function GitHubLinksPanel(props: {
                 <div className="github-link-list__main">
                   <div className="stack" style={{ flexWrap: "wrap", gap: 6 }}>
                     <span className={`badge ${link.kind === "issue" ? "badge--soft-info" : "badge--soft-secondary"}`}>
-                      {link.kind === "issue" ? "Issue" : "Pull request"}
+                      {link.kind === "issue" ? t("item.github.issue") : t("item.github.pullRequest")}
                     </span>
                     <span className="mono tiny muted">{link.repo} #{link.number}</span>
                     <span className={`badge ${link.state.toLowerCase() === "open" ? "badge--soft-success" : "badge--soft-secondary"}`}>
-                      {link.state}
+                      {githubStateLabel(t, link.state)}
                     </span>
                   </div>
                   <a href={link.url} target="_blank" rel="noreferrer noopener" className="github-link-list__title">
                     {link.title}
-                    <span className="visually-hidden"> (opens in a new tab)</span>
+                    <span className="visually-hidden"> {t("item.github.opensNewTab")}</span>
                   </a>
                   {link.kind === "pr" && link.head_branch ? (
-                    <span className="tiny muted">Head branch <code>{link.head_branch}</code></span>
+                    <span className="tiny muted">{t("item.github.headBranch")} <code>{link.head_branch}</code></span>
                   ) : null}
                 </div>
                 <a href={link.url} target="_blank" rel="noreferrer noopener" className="btn btn--sm">
-                  Open <span aria-hidden>↗</span>
+                  {t("item.github.open")} <span aria-hidden>↗</span>
                 </a>
               </li>
             ))}
@@ -903,9 +928,22 @@ function GitHubLinksPanel(props: {
   );
 }
 
+/** The state of a GitHub link, in the language on screen. */
+function githubStateLabel(t: T, state: string): string {
+  const key = `item.github.state.${state.toLowerCase()}` as TranslationKey;
+  const known: TranslationKey[] = [
+    "item.github.state.open",
+    "item.github.state.closed",
+    "item.github.state.merged",
+    "item.github.state.draft",
+  ];
+  return known.includes(key) ? t(key) : state;
+}
+
 function LinksOf({ item }: { item: Item }) {
+  const t = useT();
   const links: { href: string; label: string }[] = [];
-  if (item.external_url) links.push({ href: item.external_url, label: "External link" });
+  if (item.external_url) links.push({ href: item.external_url, label: t("item.externalLink") });
   if (item.jira_issue_key)
     links.push({ href: `https://jira.atlassian.com/browse/${item.jira_issue_key}`, label: item.jira_issue_key });
   if (links.length === 0) return null;
@@ -937,6 +975,7 @@ function DependenciesPanel(props: {
   onReload: () => Promise<void>;
 }) {
   const { toasts, push } = useToasts();
+  const t = useT();
   const [adding, setAdding] = useState(false);
   const [pick, setPick] = useState("");
   const candidates = useAsync(
@@ -951,13 +990,13 @@ function DependenciesPanel(props: {
     if (!pick) return;
     try {
       await api.addDependency(props.item.id, pick);
-      push("info", "Dependency added.");
+      push("info", t("item.dependencies.added"));
       setPick("");
       setAdding(false);
       await props.onReload();
     } catch (err) {
       // The 409 dependency_cycle answer must reach the user verbatim.
-      push("error", apiErrorMessage(err));
+      push("error", apiIssue(t, err, { dependency_cycle: "item.dependencies.cycle" }));
     }
   }
 
@@ -966,30 +1005,30 @@ function DependenciesPanel(props: {
       await api.removeDependency(props.item.id, depId);
       await props.onReload();
     } catch (err) {
-      push("error", apiErrorMessage(err));
+      push("error", apiIssue(t, err));
     }
   }
 
   return (
     <div className="section">
       <div className="section__head">
-        <h2>Dependencies</h2>
+        <h2>{t("item.dependencies.title")}</h2>
         <span className="tiny muted" style={{ marginLeft: "auto" }}>
-          Blocked-by edges gate the queue: a blocked item is not dispatchable.
+          {t("item.dependencies.hint")}
         </span>
       </div>
       <div className="section__body" style={{ display: "grid", gap: 10 }}>
         <ListEdges
-          label="Blocked by"
-          empty="No open blockers."
+          label={t("item.dependencies.blockedBy")}
+          empty={t("item.dependencies.noBlockers")}
           edges={props.blockers}
           canWrite={props.canWrite}
           onRemove={removeEdge}
           push={push}
         />
         <ListEdges
-          label="Blocks"
-          empty="Nothing waits on this item."
+          label={t("item.dependencies.blocks")}
+          empty={t("item.dependencies.nothingWaits")}
           edges={props.dependents}
           canWrite={props.canWrite}
           onRemove={removeEdge}
@@ -999,14 +1038,14 @@ function DependenciesPanel(props: {
           adding ? (
             <div className="stack" style={{ alignItems: "flex-end", flexWrap: "wrap" }}>
               <div className="field" style={{ flex: "1 1 280px" }}>
-                <label htmlFor="i-blk">Pick an item to wait on</label>
+                <label htmlFor="i-blk">{t("item.dependencies.pick")}</label>
                 <select
                   id="i-blk"
                   className="input"
                   value={pick}
                   onChange={(e) => setPick(e.target.value)}
                 >
-                  <option value="">Choose…</option>
+                  <option value="">{t("item.dependencies.choose")}</option>
                   {(candidates.data ?? [])
                     .filter(
                       (c) =>
@@ -1026,7 +1065,7 @@ function DependenciesPanel(props: {
                 disabled={!pick}
                 onClick={() => void add()}
               >
-                Add dependency
+                {t("item.dependencies.add")}
               </button>
               <button
                 type="button"
@@ -1036,13 +1075,13 @@ function DependenciesPanel(props: {
                   setPick("");
                 }}
               >
-                Cancel
+                {t("field.cancel")}
               </button>
             </div>
           ) : (
             <div>
               <button type="button" className="btn btn--sm" onClick={() => setAdding(true)}>
-                Add a blocker
+                {t("item.dependencies.addBlocker")}
               </button>
             </div>
           )

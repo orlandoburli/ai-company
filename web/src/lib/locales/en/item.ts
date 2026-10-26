@@ -44,7 +44,7 @@ export const item = {
   "item.saveChanges": "Save changes",
   "item.noDescription": "No description.",
   /* --- the family ---------------------------------------------------------------------- */
-  "item.subItems": "Sub-items ({count})",
+  "item.subItems": "Sub-items",
   "item.partOf": "Part of ",
   "item.noSubItems": "This item has no sub-items.",
   /* --- the GitHub links ---------------------------------------------------------------- */
@@ -58,7 +58,7 @@ export const item = {
   "item.github.state.merged": "merged",
   "item.github.state.draft": "draft",
   "item.github.opensNewTab": "(opens in a new tab)",
-  "item.github.headBranch": "Head branch {branch}",
+  "item.github.headBranch": "Head branch",
   "item.github.open": "Open",
   "item.externalLink": "External link",
   /* --- the dependencies ------------------------------------------------------------------ */
@@ -73,6 +73,7 @@ export const item = {
   "item.dependencies.add": "Add dependency",
   "item.dependencies.addBlocker": "Add a blocker",
   "item.dependencies.added": "Dependency added.",
+  "item.dependencies.cycle": "That dependency would create a cycle.",
   "item.dependencies.remove": "remove",
   "item.dependencies.removeAria": "Remove dependency on {title}",
   /* --- the score --------------------------------------------------------------------------- */

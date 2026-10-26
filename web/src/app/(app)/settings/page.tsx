@@ -69,7 +69,7 @@ function TenantForm() {
     setError(null);
     setSaved(false);
     try {
-      await api.updateTenant({ name: nameValue, slug: slugValue, language: loaded?.language ?? language });
+      await api.updateTenant({ name: nameValue, slug: slugValue, language });
       await tenant.reload();
       await refresh();
       setSaved(true);
@@ -95,7 +95,7 @@ function TenantForm() {
       </div>
       <div className="section__body">
         {tenant.error ? (
-          <ErrorBlock message={tenant.error.message} retry={() => void tenant.reload()} />
+          <ErrorBlock message={apiErrorMessage(tenant.error)} retry={() => void tenant.reload()} />
         ) : !current ? (
           <Skeleton h={70} />
         ) : (
@@ -238,7 +238,7 @@ function ProductsSection() {
       </div>
       <div className="section__body" style={{ display: "grid", gap: 14 }}>
         {products.error ? (
-          <ErrorBlock message={products.error.message} retry={() => void products.reload()} />
+          <ErrorBlock message={apiErrorMessage(products.error)} retry={() => void products.reload()} />
         ) : null}
         {!products.data ? (
           <Skeleton h={60} />
@@ -439,7 +439,7 @@ function MembersSection() {
       </div>
       <div className="section__body">
         {members.error ? (
-          <ErrorBlock message={members.error.message} retry={() => void members.reload()} />
+          <ErrorBlock message={apiErrorMessage(members.error)} retry={() => void members.reload()} />
         ) : !members.data ? (
           <Skeleton h={90} />
         ) : (
@@ -590,7 +590,7 @@ function InvitesSection() {
         ) : null}
 
         {invites.error ? (
-          <ErrorBlock message={invites.error.message} retry={() => void invites.reload()} />
+          <ErrorBlock message={apiErrorMessage(invites.error)} retry={() => void invites.reload()} />
         ) : !invites.data ? (
           <Skeleton h={60} />
         ) : invites.data.length === 0 ? (

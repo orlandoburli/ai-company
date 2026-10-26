@@ -6,9 +6,9 @@ export const shared: SharedDictionary = {
   "settings.agents": "Agentes",
   "settings.runners": "Runners",
   "settings.notifications": "Notificações",
-  "settings.skills": "Skills",
+  "settings.skills": "Habilidades",
   "settings.language": "Idioma",
-  "settings.languageHint": "O idioma da interface. Vale para todas as telas.",
+  "settings.languageHint": "O idioma em que seus agentes escrevem. Ele é diferente do idioma da interface.",
   /* --- o centro de notificações ----------------------------------------------- */
   "notifications.title": "Notificações",
   "notifications.unread": "{count} não lida|{count} não lidas",

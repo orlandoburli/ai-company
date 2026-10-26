@@ -46,7 +46,7 @@ export const item: ItemDictionary = {
   "item.saveChanges": "Salvar alterações",
   "item.noDescription": "Sem descrição.",
   /* --- a família ---------------------------------------------------------------------------- */
-  "item.subItems": "Subitens ({count})",
+  "item.subItems": "Subitens",
   "item.partOf": "Faz parte de ",
   "item.noSubItems": "Este item não tem subitens.",
   /* --- os links do GitHub --------------------------------------------------------------------- */
@@ -60,7 +60,7 @@ export const item: ItemDictionary = {
   "item.github.state.merged": "mesclado",
   "item.github.state.draft": "rascunho",
   "item.github.opensNewTab": "(abre em uma nova aba)",
-  "item.github.headBranch": "Branch de destino {branch}",
+  "item.github.headBranch": "Branch de destino",
   "item.github.open": "Abrir",
   "item.externalLink": "Link externo",
   /* --- as dependências ------------------------------------------------------------------------- */
@@ -75,6 +75,7 @@ export const item: ItemDictionary = {
   "item.dependencies.add": "Adicionar dependência",
   "item.dependencies.addBlocker": "Adicionar um bloqueio",
   "item.dependencies.added": "Dependência adicionada.",
+  "item.dependencies.cycle": "Essa dependência criaria um ciclo.",
   "item.dependencies.remove": "remover",
   "item.dependencies.removeAria": "Remover a dependência de {title}",
   /* --- a pontuação ------------------------------------------------------------------------------ */

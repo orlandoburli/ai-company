@@ -58,6 +58,13 @@ const DECISION_KEYS: Record<string, TranslationKey> = {
   abort: "checkpoints.decision.abort",
 };
 
+/** The kinds of intervention a person can ask for. */
+const INTERVENTION_KIND_KEYS: Record<string, TranslationKey> = {
+  inject: "monitor.interventions.kind.inject",
+  redo: "monitor.interventions.kind.redo",
+  stop: "monitor.interventions.kind.stop",
+};
+
 /** The name of a state, in the language on screen. */
 function stateLabel(t: T, state: string): string {
   const key = STATE_KEYS[state];
@@ -74,6 +81,12 @@ function kindLabel(t: T, kind: string): string {
 function decisionLabel(t: T, decision: string): string {
   const key = DECISION_KEYS[decision];
   return key ? t(key) : decision.replaceAll("_", " ");
+}
+
+/** The name of an intervention, in the language on screen. */
+function interventionKindLabel(t: T, kind: string): string {
+  const key = INTERVENTION_KIND_KEYS[kind];
+  return key ? t(key) : kind.replaceAll("_", " ");
 }
 
 /**
@@ -167,12 +180,13 @@ function layoutNodes(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
 }
 
 export function RunGraph({ graph, steps, selected, onSelect }: RunGraphProps) {
+  const t = useT();
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
   const layout = useMemo(() => layoutNodes(nodes, edges), [nodes, edges]);
   const stepByNode = useMemo(() => new Map(steps.map((step) => [step.node_id, step])), [steps]);
-  if (!nodes.length) return <div className="run-graph-empty">The run snapshot does not include a graph yet.</div>;
-  return <div className="run-graph-scroll" aria-label="Run workflow graph">
+  if (!nodes.length) return <div className="run-graph-empty">{t("monitor.graph.empty")}</div>;
+  return <div className="run-graph-scroll" aria-label={t("monitor.graph.aria")}>
     <div className="run-graph" style={{ width: layout.width, height: layout.height }}>
       <svg className="run-graph__edges" width={layout.width} height={layout.height} aria-hidden="true">
         {edges.map((edge) => {
@@ -188,7 +202,7 @@ export function RunGraph({ graph, steps, selected, onSelect }: RunGraphProps) {
         const step = stepByNode.get(node.id);
         const state = step?.state ?? "pending";
         return <button type="button" key={node.id} className={`run-node ${selected === step?.id ? "run-node--selected" : ""}`} style={{ left: layout.points.get(node.id)?.x, top: layout.points.get(node.id)?.y, borderLeftColor: STEP_COLOR[state] }} onClick={() => step && onSelect(step)} aria-pressed={selected === step?.id}>
-          <span className="run-node__kind">{node.kind}</span><strong>{node.name || node.id}</strong>{step?.result?.runner ? <span className="run-node__runner">↳ {step.result.runner}</span> : null}<span className="run-node__foot"><StateChip state={state} />{step?.run_index ? <span className="mono">lap {step.run_index + 1}</span> : null}</span>
+          <span className="run-node__kind">{kindLabel(t, node.kind)}</span><strong>{node.name || node.id}</strong>{step?.result?.runner ? <span className="run-node__runner">↳ {step.result.runner}</span> : null}<span className="run-node__foot"><StateChip state={state} />{step?.run_index ? <span className="mono">{t("monitor.graph.lap", { lap: step.run_index + 1 })}</span> : null}</span>
         </button>;
       })}
     </div>
@@ -196,6 +210,7 @@ export function RunGraph({ graph, steps, selected, onSelect }: RunGraphProps) {
 }
 
 export function CheckpointActions({ checkpoint, onDecided, compact = false }: { checkpoint: Checkpoint; onDecided?: (cp: Checkpoint) => void; compact?: boolean }) {
+  const t = useT();
   const { canWrite } = useSession();
   const { toasts, push } = useToasts();
   const [decisionText, setDecisionText] = useState("");
@@ -215,7 +230,7 @@ export function CheckpointActions({ checkpoint, onDecided, compact = false }: { 
         ...(decisionText ? { decision_md: decisionText } : {}),
         ...(specs.length ? { fields: Object.fromEntries(specs.map((spec) => [spec.key, fields[spec.key]]).filter(([, value]) => value !== undefined && value !== "")) } : {}),
       });
-      setWon(response.checkpoint); onDecided?.(response.checkpoint); push("info", `Checkpoint ${decision.replaceAll("_", " ")} recorded.`);
+      setWon(response.checkpoint); onDecided?.(response.checkpoint); push("info", t("checkpoints.actions.recorded", { decision: decisionLabel(t, decision) }));
     } catch (error) {
       if (error instanceof ApiError && error.code === "already_decided") {
         const payload = error.data as Record<string, unknown> | undefined;
@@ -225,31 +240,34 @@ export function CheckpointActions({ checkpoint, onDecided, compact = false }: { 
         const winningText = typeof winnerValue === "string" ? winnerValue : winner?.decision_md ?? (winnerValue && typeof winnerValue === "object" ? JSON.stringify(winnerValue) : "");
         if (winner) { setWon(winner); onDecided?.(winner); }
         if (winningText) setWonText(winningText);
-        push("error", `already_decided — ${error.message}${winningText ? ` · winning decision: ${winningText}` : " · the server reports another decision won; refresh to load its details."}`);
-      } else push("error", `${error instanceof ApiError ? error.code + " — " : ""}${apiErrorMessage(error)}`);
+        push("error", winningText
+          ? t("checkpoints.actions.alreadyDecided", { message: error.message, winning: winningText })
+          : t("checkpoints.actions.alreadyDecidedNoText", { message: error.message }));
+      } else push("error", apiIssue(t, error));
     } finally { setBusy(false); }
   }
   return <div className={`checkpoint-actions ${compact ? "checkpoint-actions--compact" : ""}`}>
-    {specs.length ? <div className="checkpoint-fields-wrap"><div className="checkpoint-form-heading"><strong>Structured direction</strong><span className="tiny muted">Values are saved with this lap</span></div><div className="checkpoint-fields">{specs.map((spec) => <CheckpointField key={spec.key} spec={spec} value={fields[spec.key]} onChange={(v) => setFields((all) => ({ ...all, [spec.key]: v }))} disabled={!canWrite || !pending} />)}</div></div> : null}
-    <label className="field"><span>Decision notes / feedback</span><textarea className="input" value={decisionText} disabled={!canWrite || !pending} onChange={(event) => setDecisionText(event.target.value)} placeholder="Optional for approval; required for edits or rejection" rows={compact ? 2 : 3} /></label>
-    {won || wonText || checkpoint.state !== "pending" ? <div className="run-notice">{won || checkpoint.state !== "pending" ? "Decision recorded" : "already_decided · winning decision"}{wonText || (won ?? checkpoint).decision_md ? `: ${wonText || (won ?? checkpoint).decision_md}` : "."} {((won ?? checkpoint).decided_at) ? <span className="muted"> · {new Date((won ?? checkpoint).decided_at!).toLocaleString()}</span> : null}</div> : null}
+    {specs.length ? <div className="checkpoint-fields-wrap"><div className="checkpoint-form-heading"><strong>{t("checkpoints.actions.title")}</strong><span className="tiny muted">{t("checkpoints.actions.hint")}</span></div><div className="checkpoint-fields">{specs.map((spec) => <CheckpointField key={spec.key} spec={spec} value={fields[spec.key]} onChange={(v) => setFields((all) => ({ ...all, [spec.key]: v }))} disabled={!canWrite || !pending} />)}</div></div> : null}
+    <label className="field"><span>{t("checkpoints.actions.notes")}</span><textarea className="input" value={decisionText} disabled={!canWrite || !pending} onChange={(event) => setDecisionText(event.target.value)} placeholder={t("checkpoints.actions.notesPlaceholder")} rows={compact ? 2 : 3} /></label>
+    {won || wonText || checkpoint.state !== "pending" ? <div className="run-notice">{won || checkpoint.state !== "pending" ? t("checkpoints.card.decisionRecorded") : t("checkpoints.card.winningDecision")}{wonText || (won ?? checkpoint).decision_md ? `: ${wonText || (won ?? checkpoint).decision_md}` : "."} {((won ?? checkpoint).decided_at) ? <span className="muted"> · {new Date((won ?? checkpoint).decided_at!).toLocaleString()}</span> : null}</div> : null}
     {canWrite ? <>
-      {pending && missingRequired ? <p className="checkpoint-validity" role="status">Complete the required field{missingFields.length === 1 ? "" : "s"}: {missingFields.map((spec) => spec.label).join(", ")}.</p> : null}
-      {pending && !decisionText.trim() ? <p className="checkpoint-validity" role="status">Add notes to enable <strong>Approve with edits</strong> or <strong>Reject with feedback</strong>.</p> : null}
+      {pending && missingRequired ? <p className="checkpoint-validity" role="status">{t("checkpoints.actions.missingFields", { count: missingFields.length, fields: missingFields.map((spec) => spec.label).join(", ") })}</p> : null}
+      {pending && !decisionText.trim() ? <p className="checkpoint-validity" role="status">{t("checkpoints.actions.needNotes")} <strong>{t("checkpoints.actions.approveWithEdits")}</strong> {t("checkpoints.actions.needNotesOr")} <strong>{t("checkpoints.actions.reject")}</strong>.</p> : null}
       <div className="run-actions">
-        <button className="btn btn--primary btn--sm" disabled={!pending || busy || missingRequired} onClick={() => void decide("approve")} title={missingRequired ? "Complete the required structured fields first." : undefined}>Approve</button>
-        <button className="btn btn--sm" disabled={!pending || busy || missingRequired || !decisionText.trim()} onClick={() => void decide("approve_with_edits")} title={!decisionText.trim() ? "Decision notes are required." : missingRequired ? "Complete the required structured fields first." : undefined}>Approve with edits</button>
-        <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired || !decisionText.trim()} onClick={() => void decide("reject")} title={!decisionText.trim() ? "Feedback is required." : missingRequired ? "Complete the required structured fields first." : undefined}>Reject with feedback</button>
-        <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired} onClick={() => void decide("abort")} title={missingRequired ? "Complete the required structured fields first." : undefined}>Abort run</button>
+        <button className="btn btn--primary btn--sm" disabled={!pending || busy || missingRequired} onClick={() => void decide("approve")} title={missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.approve")}</button>
+        <button className="btn btn--sm" disabled={!pending || busy || missingRequired || !decisionText.trim()} onClick={() => void decide("approve_with_edits")} title={!decisionText.trim() ? t("checkpoints.actions.hintNotes") : missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.approveWithEdits")}</button>
+        <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired || !decisionText.trim()} onClick={() => void decide("reject")} title={!decisionText.trim() ? t("checkpoints.actions.hintFeedback") : missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.reject")}</button>
+        <button className="btn btn--danger btn--sm" disabled={!pending || busy || missingRequired} onClick={() => void decide("abort")} title={missingRequired ? t("checkpoints.actions.hintComplete") : undefined}>{t("checkpoints.actions.abort")}</button>
       </div>
-    </> : <p className="tiny muted">Guest access is read-only.</p>}
+    </> : <p className="tiny muted">{t("checkpoints.card.readOnly")}</p>}
     <Toasts toasts={toasts} />
   </div>;
 }
 
 function CheckpointField({ spec, value, onChange, disabled }: { spec: CheckpointFieldSpec; value: unknown; onChange: (v: unknown) => void; disabled: boolean }) {
+  const t = useT();
   if (spec.type === "boolean") return <label className="checkpoint-field"><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />{spec.label}{spec.required ? " *" : ""}</label>;
-  if (spec.type === "enum") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><select className="input" disabled={disabled} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}><option value="">Choose…</option>{(spec.options ?? []).map((option) => <option key={option}>{option}</option>)}</select></Field>;
+  if (spec.type === "enum") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><select className="input" disabled={disabled} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}><option value="">{t("checkpoints.actions.choose")}</option>{(spec.options ?? []).map((option) => <option key={option}>{option}</option>)}</select></Field>;
   if (spec.type === "text") return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><textarea className="input" required={spec.required} disabled={disabled} value={value == null ? "" : String(value)} rows={3} onChange={(e) => onChange(e.target.value)} /></Field>;
   return <Field label={`${spec.label}${spec.required ? " *" : ""}`}><input className="input" type={spec.type === "number" ? "number" : "text"} required={spec.required} disabled={disabled} value={value == null ? "" : String(value)} onChange={(e) => onChange(spec.type === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)} /></Field>;
 }
@@ -262,35 +280,36 @@ function fieldHasValue(spec: CheckpointFieldSpec, value: unknown): boolean {
 }
 
 function CheckpointCard({ checkpoint, step, itemTitle, itemId, itemNumber, decidedByName, onDecided, compact = false }: { checkpoint: Checkpoint; step?: StepRun; itemTitle?: string; itemId?: string; itemNumber?: number; decidedByName?: string; onDecided?: (cp: Checkpoint) => void; compact?: boolean }) {
-  const item = checkpoint.item ?? (itemId ? { id: itemId, number: itemNumber ?? 0, title: itemTitle ?? "Work item" } : null);
-  const question = checkpoint.question?.trim() || step?.name || "Decision requested";
+  const t = useT();
+  const item = checkpoint.item ?? (itemId ? { id: itemId, number: itemNumber ?? 0, title: itemTitle ?? t("checkpoints.card.itemFallback") } : null);
+  const question = checkpoint.question?.trim() || step?.name || t("checkpoints.card.decisionRequested");
   const brief = checkpoint.summary_md?.trim() || step?.result?.summary?.trim() || "";
   const artifacts = checkpoint.artifacts?.length ? checkpoint.artifacts : step?.result?.artifacts ?? [];
   return <article className={`checkpoint-card panel ${compact ? "checkpoint-card--monitor" : ""}`}>
     <header className="checkpoint-card__head">
       <div className="checkpoint-card__title">
-        <div className="checkpoint-auditline"><span>{step?.name ?? "Checkpoint"}</span><code>{checkpoint.node_id}</code><span>lap {checkpoint.lap}</span></div>
-        <h3>{item ? <Link href={`/items/${item.id}`} className="checkpoint-item-link">{item.number ? `#${item.number} · ` : ""}{item.title}</Link> : <span>Work item details unavailable</span>}</h3>
+        <div className="checkpoint-auditline"><span>{step?.name ?? t("checkpoints.card.defaultStep")}</span><code>{checkpoint.node_id}</code><span>{t("checkpoints.card.lap", { lap: checkpoint.lap })}</span></div>
+        <h3>{item ? <Link href={`/items/${item.id}`} className="checkpoint-item-link">{item.number ? `#${item.number} · ` : ""}{item.title}</Link> : <span>{t("checkpoints.card.itemUnavailable")}</span>}</h3>
         <p className="checkpoint-question">{question}</p>
-        {checkpoint.remind_after ? <p className="checkpoint-reminder">Reminder set for {new Date(checkpoint.remind_after).toLocaleString()} · this will never approve the work automatically.</p> : null}
+        {checkpoint.remind_after ? <p className="checkpoint-reminder">{t("checkpoints.card.reminder", { when: new Date(checkpoint.remind_after).toLocaleString() })}</p> : null}
       </div>
       <StateChip state={checkpoint.state} />
     </header>
-    <section className="checkpoint-brief" aria-label="Checkpoint brief">
-      <div className="checkpoint-section-label"><span>Review brief</span><span className="tiny muted">Work so far · agent assessment · proposed change</span></div>
-      {brief ? <div className="checkpoint-summary msg__body">{renderMarkdown(brief)}</div> : <p className="checkpoint-unavailable">The brief is not available yet.</p>}
+    <section className="checkpoint-brief" aria-label={t("checkpoints.card.brief.aria")}>
+      <div className="checkpoint-section-label"><span>{t("checkpoints.card.brief.title")}</span><span className="tiny muted">{t("checkpoints.card.brief.hint")}</span></div>
+      {brief ? <div className="checkpoint-summary msg__body">{renderMarkdown(brief)}</div> : <p className="checkpoint-unavailable">{t("checkpoints.card.brief.empty")}</p>}
     </section>
     <Artifacts artifacts={artifacts} />
     {checkpoint.state === "pending" ? <CheckpointActions checkpoint={checkpoint} onDecided={onDecided} compact={compact} /> : <>
-      {checkpoint.fields_spec?.length ? <div className="checkpoint-field-values"><h4>Submitted fields</h4><dl>{checkpoint.fields_spec.map((spec) => <div key={spec.key}><dt>{spec.label}</dt><dd>{formatFieldValue(checkpoint.fields?.[spec.key])}</dd></div>)}</dl></div> : null}
-      <div className="checkpoint-decision-audit"><strong>{checkpoint.state.replaceAll("_", " ")}</strong><span>{checkpoint.decided_by_kind === "human" ? `Decided by ${decidedByName ?? "human"}` : checkpoint.decided_by_kind ? `Decided by ${checkpoint.decided_by_kind}` : "Decision recorded"}{checkpoint.decided_by && !decidedByName ? ` · ${checkpoint.decided_by.slice(0, 12)}` : ""}</span><time>{checkpoint.decided_at ? new Date(checkpoint.decided_at).toLocaleString() : "Time unavailable"}</time>{checkpoint.decision_md ? <p>{checkpoint.decision_md}</p> : null}</div>
+      {checkpoint.fields_spec?.length ? <div className="checkpoint-field-values"><h4>{t("checkpoints.card.fields.title")}</h4><dl>{checkpoint.fields_spec.map((spec) => <div key={spec.key}><dt>{spec.label}</dt><dd>{formatFieldValue(checkpoint.fields?.[spec.key], t)}</dd></div>)}</dl></div> : null}
+      <div className="checkpoint-decision-audit"><strong>{stateLabel(t, checkpoint.state)}</strong><span>{checkpoint.decided_by_kind === "human" ? t("checkpoints.card.decidedBy", { name: decidedByName ?? t("checkpoints.card.decidedByHuman") }) : checkpoint.decided_by_kind ? t("checkpoints.card.decidedByKind", { kind: checkpoint.decided_by_kind }) : t("checkpoints.card.decisionRecorded")}{checkpoint.decided_by && !decidedByName ? ` · ${checkpoint.decided_by.slice(0, 12)}` : ""}</span><time>{checkpoint.decided_at ? new Date(checkpoint.decided_at).toLocaleString() : t("checkpoints.card.timeUnavailable")}</time>{checkpoint.decision_md ? <p>{checkpoint.decision_md}</p> : null}</div>
     </>}
   </article>;
 }
 
-function formatFieldValue(value: unknown): string {
-  if (value == null || value === "") return "Not provided";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
+function formatFieldValue(value: unknown, t: T): string {
+  if (value == null || value === "") return t("checkpoints.value.notProvided");
+  if (typeof value === "boolean") return value ? t("checkpoints.value.yes") : t("checkpoints.value.no");
   return String(value);
 }
 
@@ -309,36 +328,47 @@ function briefHeadline(brief?: string | null): string {
 }
 
 function Artifacts({ artifacts }: { artifacts: unknown[] }) {
-  const rows = groupArtifacts(artifacts.map((artifact, index) => normalizeArtifact(artifact, index)).filter((row): row is NormalizedArtifact => Boolean(row)));
-  return <section className="checkpoint-artifacts" aria-label="Checkpoint artifacts"><div className="checkpoint-section-label"><span>Artifacts</span><span className="tiny muted">Evidence to review</span></div>
+  const t = useT();
+  const rows = groupArtifacts(artifacts.map((artifact, index) => normalizeArtifact(artifact, index, t)).filter((row): row is NormalizedArtifact => Boolean(row)));
+  return <section className="checkpoint-artifacts" aria-label={t("checkpoints.artifacts.aria")}><div className="checkpoint-section-label"><span>{t("checkpoints.artifacts.title")}</span><span className="tiny muted">{t("checkpoints.artifacts.hint")}</span></div>
     {rows.length ? <ul>{rows.map((artifact) => <li key={artifact.key}>
       <span className="artifact-kind">{artifact.label}</span>
       <div className="artifact-detail">
         {artifact.kind === "file" ? <>
-          <strong>Files changed — {artifact.files?.length ?? 0}</strong>
+          <strong>{t("checkpoints.artifacts.filesChanged", { count: artifact.files?.length ?? 0 })}</strong>
           <div className="artifact-files">{artifact.files?.map((file) => <span className="artifact-file" key={file.key}>
             {file.link ? <a className="artifact-path" href={file.link} target="_blank" rel="noreferrer noopener">{file.path}<span aria-hidden> ↗</span></a> : <code className="artifact-path">{file.path}</code>}
             {file.status ? <span className={`artifact-file-status artifact-file-status--${file.status.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`}>{file.status}</span> : null}
           </span>)}</div>
         </> : <>
           {artifact.kind === "commit" && artifact.sha ? <code className="artifact-sha">{artifact.sha}</code> : null}
-          {artifact.kind === "diff_summary" && artifact.headline ? <div className="artifact-diff-summary"><strong>{artifact.headline}</strong>{artifact.baseBranch ? <span>against <code>{artifact.baseBranch}</code></span> : null}</div> : artifact.headline ? <strong>{artifact.headline}</strong> : null}
+          {artifact.kind === "diff_summary" && artifact.headline ? <div className="artifact-diff-summary"><strong>{artifact.headline}</strong>{artifact.baseBranch ? <span>{t("checkpoints.artifacts.against")} <code>{artifact.baseBranch}</code></span> : null}</div> : artifact.headline ? <strong>{artifact.headline}</strong> : null}
           {artifact.uri ? isHttpUrl(artifact.uri)
             ? <a href={artifact.uri} target="_blank" rel="noreferrer noopener">{artifact.linkLabel ?? artifact.uri}<span aria-hidden> ↗</span></a>
             : <span className={artifact.kind === "branch" ? "artifact-branch" : undefined}>{artifact.uri}</span>
             : null}
           {artifact.details.map(([label, value]) => <span key={label}><b>{label}</b> {value}</span>)}
         </>}
-        {artifact.stepName ? <span className="artifact-producer">Produced by <strong>{artifact.stepName}</strong></span> : null}
+        {artifact.stepName ? <span className="artifact-producer">{t("checkpoints.artifacts.producedBy")} <strong>{artifact.stepName}</strong></span> : null}
       </div>
-    </li>)}</ul> : <p className="checkpoint-unavailable">No artifacts were produced yet</p>}
+    </li>)}</ul> : <p className="checkpoint-unavailable">{t("checkpoints.artifacts.empty")}</p>}
   </section>;
 }
 
-const ARTIFACT_KIND_LABELS: Record<string, string> = {
-  pr: "Pull request", issue: "Issue", issue_body: "Issue body", document: "Document",
-  wiki_page: "Wiki page", file: "File", report: "Report", branch: "Branch",
-  commit: "Commit", diff_summary: "Change summary", link: "Link", item: "Work item",
+/** The name of each kind of artifact, in the language on screen. */
+const ARTIFACT_KIND_KEYS: Record<string, TranslationKey> = {
+  pr: "checkpoints.artifactKind.pr",
+  issue: "checkpoints.artifactKind.issue",
+  issue_body: "checkpoints.artifactKind.issue_body",
+  document: "checkpoints.artifactKind.document",
+  wiki_page: "checkpoints.artifactKind.wiki_page",
+  file: "checkpoints.artifactKind.file",
+  report: "checkpoints.artifactKind.report",
+  branch: "checkpoints.artifactKind.branch",
+  commit: "checkpoints.artifactKind.commit",
+  diff_summary: "checkpoints.artifactKind.diff_summary",
+  link: "checkpoints.artifactKind.link",
+  item: "checkpoints.artifactKind.item",
 };
 
 // Plumbing that is never worth a reader's attention: the idempotency key, the
@@ -369,8 +399,8 @@ interface NormalizedArtifact {
   sha?: string; baseBranch?: string; details: [string, string][]; stepName?: string; files?: ArtifactFile[]; order: number;
 }
 
-function normalizeArtifact(value: unknown, index: number): NormalizedArtifact | null {
-  if (typeof value === "string") return { key: `legacy-${index}`, kind: "artifact", label: "Artifact", headline: value, details: [], order: index };
+function normalizeArtifact(value: unknown, index: number, t: T): NormalizedArtifact | null {
+  if (typeof value === "string") return { key: `legacy-${index}`, kind: "artifact", label: t("checkpoints.artifactKind.artifact"), headline: value, details: [], order: index };
   if (!value || typeof value !== "object") return null;
   const artifact = value as Partial<CheckpointArtifact> & Record<string, unknown>;
   const kind = typeof artifact.kind === "string" ? artifact.kind : "artifact";
@@ -387,9 +417,10 @@ function normalizeArtifact(value: unknown, index: number): NormalizedArtifact | 
   const uri = typeof artifact.uri === "string" && artifact.uri.trim() ? artifact.uri : undefined;
   const get = (key: string) => typeof metadata[key] === "string" || typeof metadata[key] === "number" ? String(metadata[key]) : undefined;
   const stepName = typeof artifact.step_name === "string" && artifact.step_name.trim() ? artifact.step_name : undefined;
-  const label = ARTIFACT_KIND_LABELS[kind] ?? kind.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const labelKey = ARTIFACT_KIND_KEYS[kind];
+  const label = labelKey ? t(labelKey) : kind.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   if (kind === "file") {
-    const rawPath = get("path") ?? uri ?? "File path unavailable";
+    const rawPath = get("path") ?? uri ?? t("checkpoints.artifacts.pathUnavailable");
     const path = relativeArtifactPath(rawPath);
     const status = get("status");
     const file: ArtifactFile = { key: `file-${index}`, path, ...(status ? { status } : {}), ...(uri && isHttpUrl(uri) ? { link: uri } : {}) };
@@ -403,7 +434,7 @@ function normalizeArtifact(value: unknown, index: number): NormalizedArtifact | 
   const sha = kind === "commit" ? get("sha") : undefined;
   const omitted = kind === "pr" ? ["title", "number"] : kind === "commit" ? ["sha", "subject"] : kind === "diff_summary" ? ["stat", "base branch"] : headline ? ["title", "subject", "name", "branch"] : [];
   const details = entries.filter(([key]) => !omitted.includes(key.toLowerCase()));
-  const linkLabel = kind === "pr" ? "Open pull request" : kind === "commit" ? "Open commit" : undefined;
+  const linkLabel = kind === "pr" ? t("checkpoints.artifacts.openPr") : kind === "commit" ? t("checkpoints.artifacts.openCommit") : undefined;
   const baseBranch = kind === "diff_summary" ? get("base_branch") : undefined;
   // The stat, the branch name and the sha are the headline of their rows;
   // showing the uri beside them would say the same thing twice.
@@ -435,6 +466,7 @@ function relativeArtifactPath(value: string): string {
 }
 
 export function CheckpointInbox() {
+  const t = useT();
   const pending = useAsync(() => api.listCheckpoints("pending", 50), []);
   const decided = useAsync(() => api.listCheckpoints("decided", 100), []);
   const members = useAsync(() => api.listMembers(), []);
@@ -460,26 +492,27 @@ export function CheckpointInbox() {
     return map;
   }, [decided.data]);
   if (pending.loading && !pending.data) return <div className="run-stack"><Skeleton h={160} /><Skeleton h={160} /></div>;
-  if (pending.error && !pending.data) return <ErrorBlock title="Checkpoint inbox is not available yet" message={pending.error.message} retry={() => void pending.reload()} />;
+  if (pending.error && !pending.data) return <ErrorBlock title={t("checkpoints.inbox.unavailable")} message={pending.error.message} retry={() => void pending.reload()} />;
   return <div className="run-stack">
-    <div className="pagehead"><div><h1>Checkpoint inbox</h1><div className="pagehead__sub">Human decisions, oldest first. Every lap stays in the audit trail.</div></div><button className="btn btn--sm" onClick={() => { void pending.reload(); void decided.reload(); }}>Refresh</button></div>
-    {pendingSorted.length ? pendingSorted.map((cp) => <CheckpointCard key={cp.id} checkpoint={cp} {...details[cp.id]} onDecided={() => { void pending.reload(); void decided.reload(); }} />) : <EmptyState title="No checkpoints waiting" body="When a run needs a human decision, it will appear here." />}
-    <section className="section"><header className="section__head"><h2>Decision history</h2><span className="tiny muted">Grouped by run · each lap preserved</span></header><div className="section__body run-stack">
+    <div className="pagehead"><div><h1>{t("checkpoints.inbox.title")}</h1><div className="pagehead__sub">{t("checkpoints.inbox.subtitle")}</div></div><button className="btn btn--sm" onClick={() => { void pending.reload(); void decided.reload(); }}>{t("checkpoints.refresh")}</button></div>
+    {pendingSorted.length ? pendingSorted.map((cp) => <CheckpointCard key={cp.id} checkpoint={cp} {...details[cp.id]} onDecided={() => { void pending.reload(); void decided.reload(); }} />) : <EmptyState title={t("checkpoints.inbox.empty.title")} body={t("checkpoints.inbox.empty.body")} />}
+    <section className="section"><header className="section__head"><h2>{t("checkpoints.history.title")}</h2><span className="tiny muted">{t("checkpoints.history.hint")}</span></header><div className="section__body run-stack">
       {[...decidedByRun.entries()].map(([runId, rows]) => <details key={runId} className="audit-run" open={expanded[runId]} onToggle={(e) => {
         const el = (e.currentTarget ?? e.target) as HTMLDetailsElement | null;
         const isOpen = el ? el.open : false;
         setExpanded((all) => ({ ...all, [runId]: isOpen }));
       }}>
-        <summary><Link href={`/runs/${runId}`} className="mono" onClick={(e) => e.stopPropagation()}>{runId.slice(0, 12)}</Link><span>{rows.length} decision{rows.length === 1 ? "" : "s"}</span><span className="muted">{rows.map((cp) => `lap ${cp.lap}`).join(" · ")}</span></summary>
+        <summary><Link href={`/runs/${runId}`} className="mono" onClick={(e) => e.stopPropagation()}>{runId.slice(0, 12)}</Link><span>{t("checkpoints.history.count", { count: rows.length })}</span><span className="muted">{rows.map((cp) => t("checkpoints.card.lap", { lap: cp.lap })).join(" · ")}</span></summary>
         {[...rows].sort((a, b) => a.lap - b.lap).map((cp) => <CheckpointCard key={cp.id} checkpoint={cp} {...details[cp.id]} decidedByName={members.data?.members.find((member) => member.user_id === cp.decided_by)?.name} />)}
       </details>)}
-      {!decided.loading && !decided.error && !decidedByRun.size ? <p className="muted tiny">No decisions recorded yet.</p> : null}
-      {decided.error ? <ErrorBlock title="Decision history is unavailable" message={decided.error.message} retry={() => void decided.reload()} /> : null}
+      {!decided.loading && !decided.error && !decidedByRun.size ? <p className="muted tiny">{t("checkpoints.history.empty")}</p> : null}
+      {decided.error ? <ErrorBlock title={t("checkpoints.history.unavailable")} message={decided.error.message} retry={() => void decided.reload()} /> : null}
     </div></section>
   </div>;
 }
 
 export function RunMonitor({ runId }: { runId: string }) {
+  const t = useT();
   const { canWrite } = useSession();
   const { toasts, push } = useToasts();
   const detail = useAsync(() => api.getRun(runId), [runId]);
@@ -539,7 +572,7 @@ export function RunMonitor({ runId }: { runId: string }) {
             const prior = stepStates.current.get(step.id);
             if (prior && prior !== step.state) {
               const eventKey = `${step.id}:${step.state}`;
-              if (!seenStepEvents.current.has(eventKey)) addActivity({ id: `step-${eventKey}`, at: new Date().toISOString(), text: `${step.name} · ${prior} → ${step.state}`, kind: "step" });
+              if (!seenStepEvents.current.has(eventKey)) addActivity({ id: `step-${eventKey}`, at: new Date().toISOString(), text: `${step.name} · ${stateLabel(t, prior)} → ${stateLabel(t, step.state)}`, kind: "step" });
               seenStepEvents.current.add(eventKey);
             }
             stepStates.current.set(step.id, step.state);
@@ -548,7 +581,7 @@ export function RunMonitor({ runId }: { runId: string }) {
           if (!["completed", "failed", "cancelled"].includes(runResult.run.state)) timer = setTimeout(() => void poll(), 1500);
         } catch (error) {
           failures += 1;
-          if (failures >= 4) setEventsError(`${error instanceof ApiError ? error.code + " — " : ""}${apiErrorMessage(error)}`);
+          if (failures >= 4) setEventsError(apiIssue(t, error));
           else timer = setTimeout(() => void poll(), 1500);
         }
       };
@@ -559,17 +592,17 @@ export function RunMonitor({ runId }: { runId: string }) {
         const prior = stepStates.current.get(step.id);
         if (prior !== step.state) {
           const eventKey = `${step.id}:${step.state}`;
-          if (!seenStepEvents.current.has(eventKey)) addActivity({ id: `step-${eventKey}`, at: step.finished_at ?? step.started_at ?? new Date().toISOString(), text: `${step.name} · ${prior ?? "created"} → ${step.state}`, kind: "step" });
+          if (!seenStepEvents.current.has(eventKey)) addActivity({ id: `step-${eventKey}`, at: step.finished_at ?? step.started_at ?? new Date().toISOString(), text: `${step.name} · ${stateLabel(t, prior ?? "created")} → ${stateLabel(t, step.state)}`, kind: "step" });
           seenStepEvents.current.add(eventKey);
         }
         stepStates.current.set(step.id, step.state);
         setSteps((current) => [...current.filter((s) => s.id !== step.id), step]);
       },
       onLog: (entry) => { seq.current = Math.max(seq.current, entry.seq); addActivity({ id: `log-${entry.seq}`, at: entry.ts ?? new Date().toISOString(), text: entry.message, kind: "log" }); setLogs((current) => mergeLogs(current, [entry])); },
-      onCheckpoint: (event) => { addActivity({ id: `checkpoint-${event.id}-${event.state}`, at: event.decided_at ?? new Date().toISOString(), text: `Checkpoint ${event.node_id} · ${event.state}${event.decision_md ? ` — ${event.decision_md}` : ""}`, kind: "checkpoint" }); setCheckpoints((current) => [event, ...current.filter((cp) => cp.id !== event.id)]); },
+      onCheckpoint: (event) => { addActivity({ id: `checkpoint-${event.id}-${event.state}`, at: event.decided_at ?? new Date().toISOString(), text: `${t("monitor.activity.checkpointEvent", { node: event.node_id, state: stateLabel(t, event.state) })}${event.decision_md ? ` — ${event.decision_md}` : ""}`, kind: "checkpoint" }); setCheckpoints((current) => [event, ...current.filter((cp) => cp.id !== event.id)]); },
       onRun: setRun,
       onDone: () => { void api.getRun(runId).then((r) => { setRun(r.run); setSteps(r.steps); }).catch(() => undefined); },
-      onError: () => { setEventsError("Live updates disconnected; reconnecting by polling run logs."); startPoll(); },
+      onError: () => { setEventsError(t("monitor.stream.disconnected")); startPoll(); },
     });
     return () => { closed = true; close(); if (timer) clearTimeout(timer); };
   }, [runId, run?.state]);
@@ -594,45 +627,45 @@ export function RunMonitor({ runId }: { runId: string }) {
     try {
       const result = await api.intervene(run.id, { kind, node_id: activeStep.node_id, step_run_id: activeStep.id, ...(instruction.trim() ? { body_md: instruction.trim() } : {}) });
       setInterventions((all) => [...all, result.intervention].sort((a, b) => a.seq - b.seq)); setInstruction("");
-      push("info", `Intervention #${result.intervention.seq} recorded. Terminal executions are never resurrected.`);
-    } catch (error) { push("error", `${error instanceof ApiError ? error.code + " — " : ""}${apiErrorMessage(error)}`); }
+      push("info", t("monitor.interventions.recorded", { seq: result.intervention.seq }));
+    } catch (error) { push("error", apiIssue(t, error)); }
     finally { setBusy(false); }
   }
   async function cancelRun() {
     if (!run) return;
     setBusy(true);
-    try { const response = await api.cancelRun(run.id); setRun(response.run); push("info", "Run cancellation requested."); }
-    catch (error) { push("error", `${error instanceof ApiError ? error.code + " — " : ""}${apiErrorMessage(error)}`); }
+    try { const response = await api.cancelRun(run.id); setRun(response.run); push("info", t("monitor.cancelRequested")); }
+    catch (error) { push("error", apiIssue(t, error)); }
     finally { setBusy(false); }
   }
   if (detail.loading && !detail.data) return <div className="run-stack"><Skeleton h={34} w="45%" /><Skeleton h={360} /></div>;
-  if (detail.error && !detail.data) return <ErrorBlock title="Run monitor is not available yet" message={`${detail.error instanceof ApiError ? detail.error.code + " — " : ""}${detail.error.message}`} retry={() => void detail.reload()} />;
+  if (detail.error && !detail.data) return <ErrorBlock title={t("monitor.unavailable")} message={apiIssue(t, detail.error)} retry={() => void detail.reload()} />;
   if (!run) return null;
   return <div className="run-stack">
-    <div className="pagehead run-pagehead"><div><Link href="/runs" className="tiny muted">← All runs</Link><h1>{item.data?.title ?? `Run ${run.id.slice(0, 10)}`}</h1><div className="pagehead__sub"><span className="mono">{run.id}</span> · {templates.data?.templates.find((t) => t.id === run.template_id)?.name ?? `Template ${run.template_id.slice(0, 8)}`} v{run.template_version} · started {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}</div></div><div className="run-head-actions"><StateChip state={run.state} /><span className="mono">{formatElapsed(run.started_at, run.finished_at)}</span><button className="btn btn--danger btn--sm" disabled={!canWrite || terminal || busy} onClick={() => void cancelRun()}>Cancel run</button></div></div>
-     {item.error ? <p className="tiny muted">Item details are unavailable: {item.error.message}</p> : null}
-     {templates.error ? <p className="tiny muted">Template metadata unavailable; using the run snapshot where possible.</p> : null}
-     <section className="section run-variables-card"><header className="section__head"><h2>Run variables</h2><span className="tiny muted">Tenant defaults plus run overrides</span></header><div className="section__body">{Object.keys(run.variables ?? {}).length ? <div className="tenant-variable-list">{Object.entries(run.variables ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => <div key={name}><code>${name}</code><span>{value}</span></div>)}</div> : <p className="tiny muted">This run has no variables. Tenant defaults may be empty.</p>}<p className="tiny muted tenant-vars-note">When a runner is over budget, the engine updates the run’s variable to the next runner in that agent’s chain.</p></div></section>
+    <div className="pagehead run-pagehead"><div><Link href="/runs" className="tiny muted">{t("monitor.back")}</Link><h1>{item.data?.title ?? t("monitor.runTitle", { id: run.id.slice(0, 10) })}</h1><div className="pagehead__sub"><span className="mono">{run.id}</span> · {templates.data?.templates.find((t) => t.id === run.template_id)?.name ?? t("monitor.template", { id: run.template_id.slice(0, 8) })} v{run.template_version} · {t("monitor.started", { when: run.started_at ? new Date(run.started_at).toLocaleString() : "—" })}</div></div><div className="run-head-actions"><StateChip state={run.state} /><span className="mono">{formatElapsed(run.started_at, run.finished_at)}</span><button className="btn btn--danger btn--sm" disabled={!canWrite || terminal || busy} onClick={() => void cancelRun()}>{t("monitor.cancelRun")}</button></div></div>
+     {item.error ? <p className="tiny muted">{t("monitor.itemUnavailable", { error: item.error.message })}</p> : null}
+     {templates.error ? <p className="tiny muted">{t("monitor.templateUnavailable")}</p> : null}
+     <section className="section run-variables-card"><header className="section__head"><h2>{t("monitor.variables.title")}</h2><span className="tiny muted">{t("monitor.variables.hint")}</span></header><div className="section__body">{Object.keys(run.variables ?? {}).length ? <div className="tenant-variable-list">{Object.entries(run.variables ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => <div key={name}><code>${name}</code><span>{value}</span></div>)}</div> : <p className="tiny muted">{t("monitor.variables.empty")}</p>}<p className="tiny muted tenant-vars-note">{t("monitor.variables.note")}</p></div></section>
     <div className="monitor-grid">
-      <section className="section graph-section"><header className="section__head"><h2>Execution graph</h2><span className="tiny muted">Select a node to inspect receipts, output and context</span></header><div className="section__body"><RunGraph graph={graph} steps={steps} selected={activeStep?.id} onSelect={(step) => setSelected(step.id)} /><div className="graph-legend"><span><i style={{ background: EDGE_COLOR.delivered }} />Delivered</span><span><i style={{ background: EDGE_COLOR.skipped }} />Skipped</span><span><i style={{ background: EDGE_COLOR.dead }} />Dead</span></div></div></section>
-      <section className="section stream-section"><header className="section__head"><h2>Live event stream</h2><span className="tiny muted">{eventsError ? "Polling fallback" : "Live"}</span></header>{eventsError ? <div className="stream-warning">{eventsError}</div> : null}<ol className="timeline run-timeline">{activity.map((event) => <li key={event.id}><div className="tiny muted mono">{new Date(event.at).toLocaleTimeString()} · {event.kind}</div>{event.kind === "step" ? <button className="link-button" onClick={() => { const step = steps.find((s) => event.text.startsWith(s.name)); if (step) setSelected(step.id); }}>{event.text}</button> : <div className="run-log-message">{event.text}</div>}</li>)}{!activity.length ? <li className="muted tiny">Waiting for the first run event…</li> : null}</ol></section>
+      <section className="section graph-section"><header className="section__head"><h2>{t("monitor.graph.title")}</h2><span className="tiny muted">{t("monitor.graph.hint")}</span></header><div className="section__body"><RunGraph graph={graph} steps={steps} selected={activeStep?.id} onSelect={(step) => setSelected(step.id)} /><div className="graph-legend"><span><i style={{ background: EDGE_COLOR.delivered }} />{t("monitor.legend.delivered")}</span><span><i style={{ background: EDGE_COLOR.skipped }} />{t("monitor.legend.skipped")}</span><span><i style={{ background: EDGE_COLOR.dead }} />{t("monitor.legend.dead")}</span></div></div></section>
+      <section className="section stream-section"><header className="section__head"><h2>{t("monitor.stream.title")}</h2><span className="tiny muted">{eventsError ? t("monitor.stream.polling") : t("monitor.stream.live")}</span></header>{eventsError ? <div className="stream-warning">{eventsError}</div> : null}<ol className="timeline run-timeline">{activity.map((event) => <li key={event.id}><div className="tiny muted mono">{new Date(event.at).toLocaleTimeString()} · {event.kind}</div>{event.kind === "step" ? <button className="link-button" onClick={() => { const step = steps.find((s) => event.text.startsWith(s.name)); if (step) setSelected(step.id); }}>{event.text}</button> : <div className="run-log-message">{event.text}</div>}</li>)}{!activity.length ? <li className="muted tiny">{t("monitor.stream.waiting")}</li> : null}</ol></section>
     </div>
     <div className="monitor-grid monitor-grid--lower">
-      <section className="section inspector-section"><header className="section__head"><h2>Step inspector</h2>{activeStep ? <StateChip state={activeStep.state} /> : null}</header><div className="section__body">{activeStep ? <>
-        <div className="inspector-title"><div><span className="tiny muted">{activeStep.kind} · {activeStep.node_id}</span><h3>{activeStep.name}</h3></div><span className="tiny muted">Execution {activeStep.run_index ?? 0}</span></div>
+      <section className="section inspector-section"><header className="section__head"><h2>{t("monitor.inspector.title")}</h2>{activeStep ? <StateChip state={activeStep.state} /> : null}</header><div className="section__body">{activeStep ? <>
+        <div className="inspector-title"><div><span className="tiny muted">{kindLabel(t, activeStep.kind)} · {activeStep.node_id}</span><h3>{activeStep.name}</h3></div><span className="tiny muted">{t("monitor.inspector.execution", { index: activeStep.run_index ?? 0 })}</span></div>
          {checkpoint ? <CheckpointCard checkpoint={checkpoint} step={activeStep} itemTitle={item.data?.title} itemId={item.data?.id} itemNumber={item.data?.number} decidedByName={members.data?.members.find((member) => member.user_id === checkpoint.decided_by)?.name} onDecided={(next) => setCheckpoints((all) => all.map((cp) => cp.id === next.id ? next : cp))} compact /> : null}
-         <div className="step-runner-info"><div><span>Runner</span><strong>{activeStep.result?.runner ?? "Not reported"}</strong></div>{activeStep.result?.runners_tried?.length ? <div><span>Runners tried</span><strong>{activeStep.result.runners_tried.join(" → ")}</strong></div> : null}</div>
-         {switchedForBudget ? <p className="runner-switch-note">Switched to {activeStep.result?.runner} — the {configuredRunnerName} runner’s budget was spent.</p> : null}
-        <h4>Incoming receipts</h4>{activeStep.input_edges && Object.keys(activeStep.input_edges).length ? <div className="receipt-list">{Object.entries(activeStep.input_edges).map(([edge, receipt]) => <div className="receipt-row" key={edge}><code>{edge}</code><StateChip state={receipt.state} /><code>{receipt.port ?? "—"}</code><pre>{JSON.stringify(receipt.value ?? null, null, 2)}</pre></div>)}</div> : <p className="tiny muted">No incoming receipts.</p>}
-        <div className="result-grid"><div><span>Status</span><strong>{activeStep.result?.status ?? activeStep.state}</strong></div><div><span>Exit reason</span><strong>{activeStep.result?.exit_reason ?? "—"}</strong></div><div><span>Tokens</span><strong>{activeStep.result?.tokens ? `${activeStep.result.tokens.in ?? 0} in / ${activeStep.result.tokens.out ?? 0} out` : "—"}</strong></div><div><span>Cost</span><strong>{activeStep.result?.cost_usd == null ? "—" : `$${activeStep.result.cost_usd.toFixed(4)}`}</strong></div><div><span>Failure kind</span><strong>{activeStep.failure_kind ?? activeStep.result?.failure_kind ?? "—"}</strong></div></div>
-        {activeStep.result?.summary ? <div className="inspector-summary"><h4>Summary</h4><p>{activeStep.result.summary}</p></div> : null}
+         <div className="step-runner-info"><div><span>{t("monitor.inspector.runner")}</span><strong>{activeStep.result?.runner ?? t("monitor.inspector.runnerMissing")}</strong></div>{activeStep.result?.runners_tried?.length ? <div><span>{t("monitor.inspector.runnersTried")}</span><strong>{activeStep.result.runners_tried.join(" → ")}</strong></div> : null}</div>
+         {switchedForBudget ? <p className="runner-switch-note">{t("monitor.inspector.switched", { runner: activeStep.result?.runner, configured: configuredRunnerName })}</p> : null}
+        <h4>{t("monitor.inspector.receipts")}</h4>{activeStep.input_edges && Object.keys(activeStep.input_edges).length ? <div className="receipt-list">{Object.entries(activeStep.input_edges).map(([edge, receipt]) => <div className="receipt-row" key={edge}><code>{edge}</code><StateChip state={receipt.state} /><code>{receipt.port ?? "—"}</code><pre>{JSON.stringify(receipt.value ?? null, null, 2)}</pre></div>)}</div> : <p className="tiny muted">{t("monitor.inspector.noReceipts")}</p>}
+        <div className="result-grid"><div><span>{t("monitor.inspector.status")}</span><strong>{stateLabel(t, activeStep.result?.status ?? activeStep.state)}</strong></div><div><span>{t("monitor.inspector.exitReason")}</span><strong>{activeStep.result?.exit_reason ?? "—"}</strong></div><div><span>{t("monitor.inspector.tokens")}</span><strong>{activeStep.result?.tokens ? `${activeStep.result.tokens.in ?? 0} in / ${activeStep.result.tokens.out ?? 0} out` : "—"}</strong></div><div><span>{t("monitor.inspector.cost")}</span><strong>{activeStep.result?.cost_usd == null ? "—" : `$${activeStep.result.cost_usd.toFixed(4)}`}</strong></div><div><span>{t("monitor.inspector.failureKind")}</span><strong>{activeStep.failure_kind ?? activeStep.result?.failure_kind ?? "—"}</strong></div></div>
+        {activeStep.result?.summary ? <div className="inspector-summary"><h4>{t("monitor.inspector.summary")}</h4><p>{activeStep.result.summary}</p></div> : null}
          {!checkpoint && activeStep.result?.artifacts?.length ? <Artifacts artifacts={activeStep.result.artifacts} /> : null}
-        <Manifest title="Memory manifest" entries={activeStep.memory_manifest ?? []} /><Manifest title="Context manifest" entries={activeStep.context_manifest ?? []} />
-        <details className="raw-tail"><summary>Raw log tail ({logs.filter((log) => log.step_run_id === activeStep.id).length})</summary><pre>{logs.filter((log) => log.step_run_id === activeStep.id).slice(-80).map((log) => `[${log.seq}] ${log.message}`).join("\n") || "No log lines for this step."}</pre></details>
-        {canWrite ? <div className="intervention-box"><h4>Interventions</h4><p className="tiny muted">Ordered per execution. A terminal step stays terminal; interventions never bring it back.</p><label className="field"><span>Instruction (optional for redo)</span><textarea className="input" rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} disabled={!canRunIntervention} placeholder={activeStep.state === "running" ? "Give the running step new direction…" : "Add context before redoing this node…"} /></label><div className="run-actions"><button className="btn btn--sm" disabled={!canWrite || !activeStep || activeStep.state !== "running" || busy || terminal} onClick={() => void intervention("inject")}>Inject instruction</button><button className="btn btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("redo")}>Redo node</button><button className="btn btn--danger btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("stop")}>Stop step</button></div></div> : <p className="tiny muted">Guest access is read-only.</p>}
-      </> : <EmptyState title="Select a step" body="Choose a node in the graph to inspect its receipts and result." />}</div></section>
-      <aside className="section intervention-history"><header className="section__head"><h2>Run activity</h2><span className="tiny muted">{checkpoints.length} checkpoint events</span></header><div className="section__body run-stack"><h4>Intervention order</h4>{interventions.length ? [...interventions].sort((a, b) => a.seq - b.seq).map((action) => <div className="intervention-row" key={action.id}><span className="mono">#{action.seq}</span><strong>{action.kind}</strong><span className="muted">{action.body_md || action.node_id || "run"}</span><span className="tiny muted">{action.delivered_at ? "delivered" : "queued"}</span></div>) : <p className="tiny muted">No interventions recorded.</p>}
-        <h4>Checkpoint events</h4>{checkpoints.map((cp) => <div className="intervention-row" key={cp.id}><span className="mono">lap {cp.lap}</span><StateChip state={cp.state} /><span>{cp.decision_md || briefHeadline(cp.summary_md) || cp.node_id}</span></div>)}<Link href="/checkpoints" className="rowlink tiny">Open checkpoint inbox →</Link>
+        <Manifest title={t("monitor.inspector.memoryManifest")} entries={activeStep.memory_manifest ?? []} /><Manifest title={t("monitor.inspector.contextManifest")} entries={activeStep.context_manifest ?? []} />
+        <details className="raw-tail"><summary>{t("monitor.inspector.rawTail", { count: logs.filter((log) => log.step_run_id === activeStep.id).length })}</summary><pre>{logs.filter((log) => log.step_run_id === activeStep.id).slice(-80).map((log) => `[${log.seq}] ${log.message}`).join("\n") || t("monitor.inspector.noLogs")}</pre></details>
+        {canWrite ? <div className="intervention-box"><h4>{t("monitor.interventions.title")}</h4><p className="tiny muted">{t("monitor.interventions.hint")}</p><label className="field"><span>{t("monitor.interventions.instruction")}</span><textarea className="input" rows={2} value={instruction} onChange={(e) => setInstruction(e.target.value)} disabled={!canRunIntervention} placeholder={activeStep.state === "running" ? t("monitor.interventions.placeholderRunning") : t("monitor.interventions.placeholderRedo")} /></label><div className="run-actions"><button className="btn btn--sm" disabled={!canWrite || !activeStep || activeStep.state !== "running" || busy || terminal} onClick={() => void intervention("inject")}>{t("monitor.interventions.inject")}</button><button className="btn btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("redo")}>{t("monitor.interventions.redo")}</button><button className="btn btn--danger btn--sm" disabled={!canRunIntervention || busy || terminal} onClick={() => void intervention("stop")}>{t("monitor.interventions.stop")}</button></div></div> : <p className="tiny muted">{t("monitor.readOnly")}</p>}
+      </> : <EmptyState title={t("monitor.inspector.empty.title")} body={t("monitor.inspector.empty.body")} />}</div></section>
+      <aside className="section intervention-history"><header className="section__head"><h2>{t("monitor.activity.title")}</h2><span className="tiny muted">{t("monitor.activity.checkpointEvents", { count: checkpoints.length })}</span></header><div className="section__body run-stack"><h4>{t("monitor.activity.interventionOrder")}</h4>{interventions.length ? [...interventions].sort((a, b) => a.seq - b.seq).map((action) => <div className="intervention-row" key={action.id}><span className="mono">#{action.seq}</span><strong>{interventionKindLabel(t, action.kind)}</strong><span className="muted">{action.body_md || action.node_id || t("monitor.activity.run")}</span><span className="tiny muted">{action.delivered_at ? t("monitor.activity.delivered") : t("monitor.activity.queued")}</span></div>) : <p className="tiny muted">{t("monitor.activity.noInterventions")}</p>}
+        <h4>{t("monitor.activity.checkpointEventsTitle")}</h4>{checkpoints.map((cp) => <div className="intervention-row" key={cp.id}><span className="mono">{t("monitor.graph.lap", { lap: cp.lap })}</span><StateChip state={cp.state} /><span>{cp.decision_md || briefHeadline(cp.summary_md) || cp.node_id}</span></div>)}<Link href="/checkpoints" className="rowlink tiny">{t("monitor.activity.openInbox")}</Link>
       </div></aside>
     </div><Toasts toasts={toasts} />
   </div>;
