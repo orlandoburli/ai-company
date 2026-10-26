@@ -184,6 +184,22 @@ function CheckpointBadge() {
   return count ? <span className="nav-badge" aria-label={t("notifications.pendingCheckpoints", { count })}>{count > 99 ? "99+" : count}</span> : null;
 }
 
+/** The closed set of notification kinds the server sends. */
+const NOTIFICATION_KINDS: Record<string, TranslationKey> = {
+  checkpoint_pending: "notificationKind.checkpoint_pending",
+  run_failed: "notificationKind.run_failed",
+  run_completed: "notificationKind.run_completed",
+  sync_error: "notificationKind.sync_error",
+};
+
+function notificationKind(
+  kind: string,
+  t: (key: TranslationKey) => string,
+): string {
+  const key = NOTIFICATION_KINDS[kind];
+  return key ? t(key) : kind.replaceAll("_", " ");
+}
+
 function NotificationCentre() {
   const router = useRouter();
   const { t } = useI18n();
@@ -209,7 +225,7 @@ function NotificationCentre() {
     : "";
   return <Menu trigger={<button type="button" className="btn btn--ghost btn--sm notification-trigger" aria-label={unread ? `${label}, ${unread}` : label}><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 11.5h10l-1.2-1.7V6.7a3.8 3.8 0 0 0-7.6 0v3.1L3 11.5Z"/><path d="M6.3 13.2a1.8 1.8 0 0 0 3.4 0"/></svg>{notifications.length ? <span className="nav-badge nav-badge--bell">{notifications.length > 99 ? "99+" : notifications.length}</span> : null}</button>}>
     <div className="notification-menu-head"><strong>{t("notifications.title")}</strong><span className="tiny muted">{t("notifications.unread", { count: notifications.length })}</span></div>
-    {unavailable ? <div className="notification-empty">{t("notifications.unavailable")}</div> : notifications.length ? notifications.slice(0, 10).map((notification) => <MenuItem key={notification.id} onSelect={() => void openNotification(notification)}><span className="notification-kind">{notification.kind.replaceAll("_", " ")}</span><span className="notification-copy">{notification.body ?? notification.title ?? notification.kind.replaceAll("_", " ")}</span></MenuItem>) : <div className="notification-empty">{t("notifications.caughtUp")}</div>}
+    {unavailable ? <div className="notification-empty">{t("notifications.unavailable")}</div> : notifications.length ? notifications.slice(0, 10).map((notification) => <MenuItem key={notification.id} onSelect={() => void openNotification(notification)}><span className="notification-kind">{notificationKind(notification.kind, t)}</span><span className="notification-copy">{notification.body ?? notification.title ?? notification.kind.replaceAll("_", " ")}</span></MenuItem>) : <div className="notification-empty">{t("notifications.caughtUp")}</div>}
     <div className="menu__sep" /><MenuItem onSelect={() => router.push("/checkpoints")}>{t("notifications.openInbox")}</MenuItem>
   </Menu>;
 }
@@ -460,6 +476,13 @@ function UserMenu() {
 
 type DesktopState = "checking" | "off" | "on" | "unavailable";
 
+/** The browser's own permission states, named in the interface's language. */
+const PERMISSION_LABELS: Record<string, TranslationKey> = {
+  granted: "push.permission.granted",
+  denied: "push.permission.denied",
+  default: "push.permission.default",
+};
+
 /** Push setup lives in the account menu; it never displays subscription keys. */
 function DesktopNotifications() {
   const { canWrite } = useSession();
@@ -558,7 +581,11 @@ function DesktopNotifications() {
   }
 
   const status = state === "on" ? t("push.on") : state === "off" ? t("push.off") : state === "checking" ? t("push.checking") : t("push.unavailable");
-  const permissionCopy = permission === "checking" ? t("push.checking").toLowerCase() : permission;
+  const permissionCopy = permission === "checking"
+    ? t("push.checking").toLowerCase()
+    : PERMISSION_LABELS[permission]
+      ? t(PERMISSION_LABELS[permission])
+      : permission;
   const browserSupported = typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
   const serverLabel = serverStatus === "subscription saved"
     ? t("push.state.saved")

@@ -81,16 +81,13 @@ export function translate<K extends TranslationKey>(
   key: K,
   values?: TranslateValues<K>,
 ): string {
-  const dictionary = LOCALES[lang] as Record<string, string>;
-  const fallback = en as unknown as Record<string, string>;
+  const dictionary: Record<string, string> = LOCALES[lang];
+  const fallback: Record<string, string> = en;
   const raw = dictionary[key] ?? fallback[key] ?? key;
   const bag = (values ?? {}) as Record<string, string | number>;
-  const template = raw.includes("|")
-    ? bag.count === 1
-      ? raw.split("|")[0]
-      : (raw.split("|")[1] ?? raw.split("|")[0])
-    : raw;
-  if (!values) return template;
+  const forms = raw.split("|");
+  const template =
+    forms.length > 1 ? (forms[bag.count === 1 ? 0 : 1] ?? forms[0]) : raw;
   return template.replace(/\{(\w+)\}/g, (whole, name: string) => {
     const value = bag[name];
     return value === undefined ? whole : String(value);
