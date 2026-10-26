@@ -57,6 +57,7 @@ type Services struct {
 type IntegrationRequest struct {
 	Type, RunID, StepRunID, NodeID, IterationPath string
 	Workdir, Branch, RepoURL, ProductID, ItemID   string
+	ProductRepositories                           []string
 	// MirrorPath is the app-owned bare mirror the worktree was cut from. The
 	// push goes from there, not from the agent's worktree: the agent's refs
 	// are data, not authority.
@@ -129,6 +130,19 @@ func RunIntegration(ctx context.Context, svc Services, in IntegrationRequest) (I
 	}
 	if cfg.Repo == "" && in.RepoURL != "" {
 		cfg.Repo = githubRepoFromURL(in.RepoURL)
+	}
+	if in.ProductRepositories != nil {
+		found := false
+		for _, repository := range in.ProductRepositories {
+			if strings.EqualFold(strings.TrimSpace(repository), strings.TrimSpace(cfg.Repo)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return IntegrationResult{}, integrationFailure(FailureCapability,
+				fmt.Sprintf("repository %q is not connected to product %q", cfg.Repo, in.ProductID))
+		}
 	}
 	if in.IdempotencyKey == "" {
 		in.IdempotencyKey = fmt.Sprintf("run:%s:node:%s:%s:%d", in.RunID, in.NodeID, in.IterationPath, in.RunIndex)

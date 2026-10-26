@@ -134,6 +134,60 @@ func TestContentIsIsolatedByRLS(t *testing.T) {
 	}
 }
 
+func TestProductRepositoriesLifecycleAndTenantScope(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	initial, err := f.st.ListProductRepositories(ctx, f.t1, f.p1.ID)
+	if err != nil || len(initial) != 1 || initial[0].Repo != "acme/app" || !initial[0].IsDefault {
+		t.Fatalf("migrated repository list = %+v, %v", initial, err)
+	}
+
+	added, err := f.st.AddProductRepository(ctx, f.t1, f.p1.ID, "https://github.com/acme/mobile.git", "mobile", false)
+	if err != nil || added.Repo != "acme/mobile" || added.Name != "mobile" || added.IsDefault {
+		t.Fatalf("add repository = %+v, %v", added, err)
+	}
+	if _, err := f.st.AddProductRepository(ctx, f.t1, f.p1.ID, "ACME/MOBILE", "duplicate", false); !errors.Is(err, work.ErrConflict) {
+		t.Fatalf("duplicate repository error = %v, want conflict", err)
+	}
+	if _, err := f.st.AddProductRepository(ctx, f.t1, f.p2.ID, "acme/other", "cross-tenant", false); !errors.Is(err, work.ErrNotFound) {
+		t.Fatalf("other tenant product error = %v, want not found", err)
+	}
+	if _, err := f.st.ListProductRepositories(ctx, f.t2, f.p1.ID); !errors.Is(err, work.ErrNotFound) {
+		t.Fatalf("foreign repository list error = %v, want not found", err)
+	}
+
+	if err := f.st.SetDefaultProductRepository(ctx, f.t1, f.p1.ID, added.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.st.ListProductRepositories(ctx, f.t1, f.p1.ID)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("repositories after set default = %+v, %v", got, err)
+	}
+	defaults := 0
+	for _, repository := range got {
+		if repository.IsDefault {
+			defaults++
+			if repository.ID != added.ID {
+				t.Fatalf("old default was not demoted: %+v", repository)
+			}
+		}
+	}
+	if defaults != 1 {
+		t.Fatalf("default count = %d, want exactly one", defaults)
+	}
+	products, err := f.st.ListProducts(ctx, f.t1)
+	if err != nil || products[0].RepoURL != "https://github.com/acme/mobile" || len(products[0].Repositories) != 2 {
+		t.Fatalf("product compatibility shape = %+v, %v", products, err)
+	}
+	if err := f.st.RemoveProductRepository(ctx, f.t1, f.p1.ID, initial[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = f.st.ListProductRepositories(ctx, f.t1, f.p1.ID)
+	if err != nil || len(got) != 1 || got[0].ID != added.ID || !got[0].IsDefault {
+		t.Fatalf("repositories after removal = %+v, %v", got, err)
+	}
+}
+
 func TestDependencyRules(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

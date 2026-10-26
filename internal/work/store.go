@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -76,12 +78,22 @@ func (s *Store) withTenant(ctx context.Context, sc tenancy.Scope, fn func(contex
 
 // Product is a repo-backed product line.
 type Product struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Slug           string    `json:"slug"`
-	RepoURL        string    `json:"repo_url,omitempty"`
-	JiraProjectKey string    `json:"jira_project_key,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	Slug           string              `json:"slug"`
+	RepoURL        string              `json:"repo_url,omitempty"`
+	Repositories   []ProductRepository `json:"repositories"`
+	JiraProjectKey string              `json:"jira_project_key,omitempty"`
+	CreatedAt      time.Time           `json:"created_at"`
+}
+
+// ProductRepository is one GitHub repository connected to a product.
+type ProductRepository struct {
+	ID        string    `json:"id"`
+	Repo      string    `json:"repo"`
+	Name      string    `json:"name"`
+	IsDefault bool      `json:"is_default"`
+	CreatedAt time.Time `json:"-"`
 }
 
 // CreateProduct adds a product to the tenant.
@@ -89,11 +101,21 @@ func (s *Store) CreateProduct(ctx context.Context, sc tenancy.Scope, name, slug,
 	var p Product
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		p = Product{ID: newID(), Name: name, Slug: slug, RepoURL: repoURL, JiraProjectKey: jiraKey}
-		return tx.QueryRowContext(ctx, `
+		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO products (id, tenant_id, name, slug, repo_url, jira_project_key)
 			VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''))
 			RETURNING created_at`,
-			p.ID, sc.TenantID, name, slug, repoURL, jiraKey).Scan(&p.CreatedAt)
+			p.ID, sc.TenantID, name, slug, repoURL, jiraKey).Scan(&p.CreatedAt); err != nil {
+			return err
+		}
+		if strings.TrimSpace(repoURL) != "" {
+			if err := setDefaultRepositoryTx(ctx, tx, sc.TenantID, p.ID, repoURL); err != nil {
+				return err
+			}
+		}
+		var err error
+		p.Repositories, err = listProductRepositoriesTx(ctx, tx, p.ID)
+		return err
 	})
 	if err != nil {
 		return Product{}, mapPGError(err)
@@ -106,8 +128,10 @@ func (s *Store) ListProducts(ctx context.Context, sc tenancy.Scope) ([]Product, 
 	out := []Product{}
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT id, name, slug, coalesce(repo_url, ''), coalesce(jira_project_key, ''), created_at
-			  FROM products ORDER BY created_at`)
+		SELECT p.id, p.name, p.slug, coalesce(p.repo_url, ''),
+		       coalesce(p.jira_project_key, ''), p.created_at
+		  FROM products p
+		 ORDER BY p.created_at`)
 		if err != nil {
 			return err
 		}
@@ -119,9 +143,217 @@ func (s *Store) ListProducts(ctx context.Context, sc tenancy.Scope) ([]Product, 
 			}
 			out = append(out, p)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for i := range out {
+			out[i].Repositories, err = listProductRepositoriesTx(ctx, tx, out[i].ID)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return out, err
+}
+
+// ListProductRepositories returns a product's repositories in creation order.
+func (s *Store) ListProductRepositories(ctx context.Context, sc tenancy.Scope, productID string) ([]ProductRepository, error) {
+	out := []ProductRepository{}
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM products WHERE id=$1)`, productID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		var err error
+		out, err = listProductRepositoriesTx(ctx, tx, productID)
+		return err
+	})
+	return out, err
+}
+
+// AddProductRepository connects a repository to a product. Duplicate repos are
+// rejected, and selecting a default atomically demotes the previous one.
+func (s *Store) AddProductRepository(ctx context.Context, sc tenancy.Scope, productID, repo, name string, isDefault bool) (ProductRepository, error) {
+	canonical, err := canonicalRepository(repo)
+	if err != nil {
+		return ProductRepository{}, fmt.Errorf("%w: repository must be owner/name", ErrInvalid)
+	}
+	name = strings.TrimSpace(name)
+	if len(name) > 80 {
+		return ProductRepository{}, fmt.Errorf("%w: repository name is too long", ErrInvalid)
+	}
+	var out ProductRepository
+	err = s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if err := lockProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+		if isDefault {
+			if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=false WHERE product_id=$1`, productID); err != nil {
+				return err
+			}
+		}
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO product_repositories (id, tenant_id, product_id, repo, name, is_default)
+			VALUES ($1,$2,$3,$4,nullif($5,''),$6)
+			RETURNING id, repo, coalesce(name,''), is_default, created_at`,
+			newID(), sc.TenantID, productID, canonical, name, isDefault).
+			Scan(&out.ID, &out.Repo, &out.Name, &out.IsDefault, &out.CreatedAt); err != nil {
+			return err
+		}
+		if isDefault {
+			_, err := tx.ExecContext(ctx, `UPDATE products SET repo_url=$2 WHERE id=$1`, productID, "https://github.com/"+canonical)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return ProductRepository{}, mapPGError(err)
+	}
+	return out, nil
+}
+
+// RemoveProductRepository disconnects a repository. Removing the default also
+// clears the legacy repo_url mirror; remaining repositories are not promoted.
+func (s *Store) RemoveProductRepository(ctx context.Context, sc tenancy.Scope, productID, id string) error {
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if err := lockProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+		var repo string
+		var isDefault bool
+		err := tx.QueryRowContext(ctx, `DELETE FROM product_repositories
+			WHERE id=$1 AND product_id=$2 RETURNING repo, is_default`, id, productID).Scan(&repo, &isDefault)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if isDefault {
+			_, err = tx.ExecContext(ctx, `UPDATE products SET repo_url=NULL WHERE id=$1`, productID)
+		}
+		return err
+	})
+	return mapPGError(err)
+}
+
+// SetDefaultProductRepository selects one of the product's repositories.
+func (s *Store) SetDefaultProductRepository(ctx context.Context, sc tenancy.Scope, productID, id string) error {
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		if err := lockProductTx(ctx, tx, productID); err != nil {
+			return err
+		}
+		var repo string
+		if err := tx.QueryRowContext(ctx, `SELECT repo FROM product_repositories WHERE id=$1 AND product_id=$2`, id, productID).Scan(&repo); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=false WHERE product_id=$1`, productID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=true WHERE id=$1 AND product_id=$2`, id, productID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE products SET repo_url=$2 WHERE id=$1`, productID, "https://github.com/"+repo)
+		return err
+	})
+	return mapPGError(err)
+}
+
+func listProductRepositoriesTx(ctx context.Context, tx *sql.Tx, productID string) ([]ProductRepository, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, repo, coalesce(name,''), is_default, created_at
+		FROM product_repositories WHERE product_id=$1 ORDER BY created_at, id`, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ProductRepository{}
+	for rows.Next() {
+		var r ProductRepository
+		if err := rows.Scan(&r.ID, &r.Repo, &r.Name, &r.IsDefault, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func lockProductTx(ctx context.Context, tx *sql.Tx, productID string) error {
+	var id string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM products WHERE id=$1 FOR UPDATE`, productID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func setDefaultRepositoryTx(ctx context.Context, tx *sql.Tx, tenantID, productID, remote string) error {
+	if err := lockProductTx(ctx, tx, productID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(remote) == "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=false WHERE product_id=$1`, productID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE products SET repo_url=NULL WHERE id=$1`, productID)
+		return err
+	}
+	repo, err := canonicalRepository(remote)
+	if err != nil {
+		return fmt.Errorf("%w: repository must be owner/name", ErrInvalid)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=false WHERE product_id=$1`, productID); err != nil {
+		return err
+	}
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM product_repositories WHERE product_id=$1 AND repo=$2)`, productID, repo).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		if _, err := tx.ExecContext(ctx, `UPDATE product_repositories SET is_default=true WHERE product_id=$1 AND repo=$2`, productID, repo); err != nil {
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, `INSERT INTO product_repositories (id,tenant_id,product_id,repo,is_default) VALUES ($1,$2,$3,$4,true)`, newID(), tenantID, productID, repo); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE products SET repo_url=$2 WHERE id=$1`, productID, remote)
+	return err
+}
+
+var repoPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+func canonicalRepository(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", ErrInvalid
+	}
+	value = strings.TrimSuffix(value, ".git")
+	if strings.Contains(value, "://") {
+		u, err := url.Parse(value)
+		if err != nil || (u.Host != "github.com" && u.Host != "www.github.com") {
+			return "", ErrInvalid
+		}
+		value = strings.Trim(u.Path, "/")
+	} else if colon := strings.Index(value, ":"); colon >= 0 {
+		prefix := value[:colon]
+		if !strings.HasSuffix(prefix, "@github.com") && prefix != "github.com" {
+			return "", ErrInvalid
+		}
+		value = value[colon+1:]
+	}
+	parts := strings.Split(strings.Trim(value, "/"), "/")
+	if len(parts) != 2 || !repoPart.MatchString(parts[0]) || !repoPart.MatchString(parts[1]) {
+		return "", ErrInvalid
+	}
+	return strings.ToLower(parts[0] + "/" + parts[1]), nil
 }
 
 // --- projects --------------------------------------------------------------
@@ -841,9 +1073,6 @@ func (s *Store) UpdateProduct(ctx context.Context, sc tenancy.Scope, id string, 
 		if p.Slug != nil {
 			add("slug = $%d", *p.Slug)
 		}
-		if p.RepoURL != nil {
-			add("repo_url = nullif($%d, '')", *p.RepoURL)
-		}
 		if p.JiraProjectKey != nil {
 			add("jira_project_key = nullif($%d, '')", *p.JiraProjectKey)
 		}
@@ -853,9 +1082,18 @@ func (s *Store) UpdateProduct(ctx context.Context, sc tenancy.Scope, id string, 
 				return err
 			}
 		}
+		if p.RepoURL != nil {
+			if err := setDefaultRepositoryTx(ctx, tx, sc.TenantID, id, *p.RepoURL); err != nil {
+				return err
+			}
+		}
 		out, err = scanProduct(tx.QueryRowContext(ctx, `
 			SELECT id, name, slug, coalesce(repo_url, ''), coalesce(jira_project_key, ''), created_at
 			  FROM products WHERE id = $1`, id))
+		if err != nil {
+			return err
+		}
+		out.Repositories, err = listProductRepositoriesTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}

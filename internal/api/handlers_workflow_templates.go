@@ -426,6 +426,8 @@ func (s *Server) writeWorkflowTemplateError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "template_disabled", "Disabled templates are retired; enable the template or create a new version.")
 	case errors.Is(err, workflow.ErrTemplateInUse):
 		writeError(w, http.StatusConflict, "template_in_use", "That template is used by a workflow run and cannot be deleted.")
+	case errors.Is(err, workflow.ErrTemplateNameTaken):
+		writeError(w, http.StatusConflict, "template_name_taken", "This tenant already has a template with that name and version.")
 	default:
 		s.log.Error("workflow template handler", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")

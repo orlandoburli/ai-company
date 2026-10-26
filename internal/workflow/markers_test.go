@@ -95,7 +95,7 @@ func TestAICMemorizeScopesAndHumanProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	productID, _ := e.productForItem(context.Background(), f.sc, item)
+	productID, _, _ := e.productForItem(context.Background(), f.sc, item)
 	// A human-authored agent entry must remain current after a marker proposes
 	// the same key; the agent may still write other keys and workspace memory.
 	if _, err := e.memory.WriteHuman(context.Background(), f.sc, memory.Write{Scope: memory.Scope{Kind: memory.ScopeAgent, Ref: "agent-1"}, Key: "human", ContentMD: "keep human text"}); err != nil {

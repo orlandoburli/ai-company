@@ -104,15 +104,65 @@ const linkColumns = `id,tenant_id,product_id,repo,kind,issue_number,item_id,` +
 // Result names the individual changes so callers can report exactly what a
 // periodic or manual synchronization did.
 type Result struct {
-	ImportedItems  []work.Item    `json:"imported_items"`
-	UpdatedTitles  []work.Item    `json:"updated_titles"`
-	CompletedItems []work.Item    `json:"completed_items"`
-	CompletedRuns  []workflow.Run `json:"completed_runs"`
+	ImportedItems      []work.Item         `json:"imported_items"`
+	UpdatedTitles      []work.Item         `json:"updated_titles"`
+	CompletedItems     []work.Item         `json:"completed_items"`
+	CompletedRuns      []workflow.Run      `json:"completed_runs"`
+	RepositoryFailures []RepositoryFailure `json:"repository_failures"`
+}
+
+// RepositoryFailure records a repository skipped during a product sync.
+type RepositoryFailure struct {
+	Repo  string `json:"repo"`
+	Error string `json:"error"`
 }
 
 func emptyResult() Result {
 	return Result{ImportedItems: []work.Item{}, UpdatedTitles: []work.Item{},
-		CompletedItems: []work.Item{}, CompletedRuns: []workflow.Run{}}
+		CompletedItems: []work.Item{}, CompletedRuns: []workflow.Run{}, RepositoryFailures: []RepositoryFailure{}}
+}
+
+// SyncProduct imports and refreshes every repository connected to a product.
+// A remote that is missing or not accessible is logged and skipped once; other
+// repositories continue, with no tight retry loop in this pass.
+func (s *Service) SyncProduct(ctx context.Context, sc tenancy.Scope, productID string) (Result, error) {
+	if s.work == nil {
+		return Result{}, errors.New("ghsync: work store is not configured")
+	}
+	repositories, err := s.work.ListProductRepositories(ctx, sc, productID)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(repositories) == 0 {
+		return emptyResult(), nil
+	}
+	out := emptyResult()
+	for _, repository := range repositories {
+		for _, op := range []func(context.Context, tenancy.Scope, string, string) (Result, error){
+			s.ImportIssues, s.SyncIssues, s.SyncMergedPullRequests,
+		} {
+			part, err := op(ctx, sc, productID, repository.Repo)
+			if err != nil {
+				if isGitHubUnavailable(err) {
+					failure := RepositoryFailure{Repo: repository.Repo, Error: err.Error()}
+					out.RepositoryFailures = append(out.RepositoryFailures, failure)
+					s.logger.Warn("skip inaccessible GitHub repository", "repo", repository.Repo, "error", err)
+					break
+				}
+				return out, fmt.Errorf("sync repository %s: %w", repository.Repo, err)
+			}
+			out.ImportedItems = append(out.ImportedItems, part.ImportedItems...)
+			out.UpdatedTitles = append(out.UpdatedTitles, part.UpdatedTitles...)
+			out.CompletedItems = append(out.CompletedItems, part.CompletedItems...)
+			out.CompletedRuns = append(out.CompletedRuns, part.CompletedRuns...)
+		}
+	}
+	return out, nil
+}
+
+func isGitHubUnavailable(err error) bool {
+	var apiErr *integration.APIError
+	return errors.As(err, &apiErr) && (apiErr.Status == 403 || apiErr.Status == 404)
 }
 
 // ImportIssues imports the repository's issues as items and records the
@@ -650,20 +700,39 @@ func (s *Service) productRepo(ctx context.Context, sc tenancy.Scope, productID, 
 	if product.ID == "" {
 		return "", work.Product{}, ErrProductNotFound
 	}
-	repo, err := parseRepo(product.RepoURL)
-	if err != nil || repo == "" {
-		return "", work.Product{}, ErrProductWithoutRepository
-	}
 	if strings.TrimSpace(requested) != "" {
 		wanted, err := parseRepo(requested)
 		if err != nil {
 			return "", work.Product{}, ErrInvalidRepository
 		}
-		if wanted != repo {
-			return "", work.Product{}, ErrInvalidRepository
+		for _, repository := range product.Repositories {
+			if strings.EqualFold(repository.Repo, wanted) {
+				return repository.Repo, product, nil
+			}
+		}
+		return "", work.Product{}, ErrInvalidRepository
+	}
+	for _, repository := range product.Repositories {
+		if repository.IsDefault {
+			return repository.Repo, product, nil
 		}
 	}
-	return repo, product, nil
+	if len(product.Repositories) == 0 {
+		return "", work.Product{}, ErrProductWithoutRepository
+	}
+	if strings.TrimSpace(product.RepoURL) != "" {
+		// Compatibility for callers that construct a Product directly rather
+		// than obtaining it from the store.
+		repo, err := parseRepo(product.RepoURL)
+		if err == nil && repo != "" {
+			for _, repository := range product.Repositories {
+				if strings.EqualFold(repository.Repo, repo) {
+					return repository.Repo, product, nil
+				}
+			}
+		}
+	}
+	return "", work.Product{}, ErrProductWithoutRepository
 }
 
 func parseRepo(value string) (string, error) {

@@ -116,7 +116,7 @@ func (e *Engine) markerMemoryScope(ctx context.Context, sc tenancy.Scope, run Ru
 		if err != nil {
 			return memory.Scope{}, false
 		}
-		productID, _ := e.productForItem(ctx, sc, item)
+		productID, _, _ := e.productForItem(ctx, sc, item)
 		if productID == "" {
 			return memory.Scope{}, false
 		}

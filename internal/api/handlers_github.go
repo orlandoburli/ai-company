@@ -76,25 +76,19 @@ func (s *Server) handleGitHubSync(w http.ResponseWriter, r *http.Request) {
 		s.writeWorkError(w, err)
 		return
 	}
-	result := ghsync.Result{ImportedItems: []work.Item{}, UpdatedTitles: []work.Item{}, CompletedItems: []work.Item{}, CompletedRuns: []workflow.Run{}}
+	result := ghsync.Result{ImportedItems: []work.Item{}, UpdatedTitles: []work.Item{}, CompletedItems: []work.Item{},
+		CompletedRuns: []workflow.Run{}, RepositoryFailures: []ghsync.RepositoryFailure{}}
 	for _, product := range products {
-		if strings.TrimSpace(product.RepoURL) == "" {
-			continue
+		part, err := svc.SyncProduct(r.Context(), sc, product.ID)
+		if err != nil {
+			s.writeGitHubError(w, err)
+			return
 		}
-		for _, op := range []func(context.Context, tenancy.Scope, string, string) (ghsync.Result, error){
-			// ImportIssues brings the pull requests along: both become links.
-			svc.ImportIssues, svc.SyncIssues, svc.SyncMergedPullRequests,
-		} {
-			part, err := op(r.Context(), sc, product.ID, product.RepoURL)
-			if err != nil {
-				s.writeGitHubError(w, err)
-				return
-			}
-			result.ImportedItems = append(result.ImportedItems, part.ImportedItems...)
-			result.UpdatedTitles = append(result.UpdatedTitles, part.UpdatedTitles...)
-			result.CompletedItems = append(result.CompletedItems, part.CompletedItems...)
-			result.CompletedRuns = append(result.CompletedRuns, part.CompletedRuns...)
-		}
+		result.ImportedItems = append(result.ImportedItems, part.ImportedItems...)
+		result.UpdatedTitles = append(result.UpdatedTitles, part.UpdatedTitles...)
+		result.CompletedItems = append(result.CompletedItems, part.CompletedItems...)
+		result.CompletedRuns = append(result.CompletedRuns, part.CompletedRuns...)
+		result.RepositoryFailures = append(result.RepositoryFailures, part.RepositoryFailures...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }

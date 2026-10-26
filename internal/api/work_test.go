@@ -153,6 +153,75 @@ func TestWorkItemsDependenciesAndBoard(t *testing.T) {
 	}
 }
 
+func TestProductRepositoryRoutesWireShapePatchAndRoles(t *testing.T) {
+	o := newOwnerHarness(t)
+	productID, _ := o.createProductProject(o.ownerCookie)
+	products := o.do("GET", "/api/products", nil, o.ownerCookie).json(t)["products"].([]any)
+	product := products[0].(map[string]any)
+	if product["id"] != productID || product["repo_url"] != "git@github.com:acme/app.git" {
+		t.Fatalf("product compatibility shape = %#v", product)
+	}
+	repositories := product["repositories"].([]any)
+	if len(repositories) != 1 || repositories[0].(map[string]any)["repo"] != "acme/app" || repositories[0].(map[string]any)["is_default"] != true {
+		t.Fatalf("product repository wire shape = %#v", repositories)
+	}
+
+	added := o.do("POST", "/api/products/"+productID+"/repositories", map[string]any{
+		"repo": "acme/mobile", "name": "mobile",
+	}, o.ownerCookie)
+	if added.status != http.StatusCreated {
+		t.Fatalf("add repository: %d %s", added.status, added.body)
+	}
+	addedID := added.json(t)["repository"].(map[string]any)["id"].(string)
+	if duplicate := o.do("POST", "/api/products/"+productID+"/repositories", map[string]any{"repo": "acme/mobile"}, o.ownerCookie); duplicate.status != http.StatusConflict {
+		t.Fatalf("duplicate repository status=%d body=%s", duplicate.status, duplicate.body)
+	}
+	if selected := o.do("POST", "/api/products/"+productID+"/repositories/"+addedID+"/default", nil, o.ownerCookie); selected.status != http.StatusOK {
+		t.Fatalf("set default: %d %s", selected.status, selected.body)
+	}
+	patched := o.do("PATCH", "/api/products/"+productID, map[string]any{"repo_url": "https://github.com/acme/desktop.git"}, o.ownerCookie)
+	if patched.status != http.StatusOK {
+		t.Fatalf("patch default create: %d %s", patched.status, patched.body)
+	}
+	newDefaultID := ""
+	for _, repository := range patched.json(t)["product"].(map[string]any)["repositories"].([]any) {
+		entry := repository.(map[string]any)
+		if entry["is_default"] == true {
+			newDefaultID = entry["id"].(string)
+			if entry["repo"] != "acme/desktop" {
+				t.Fatalf("PATCH default = %#v", entry)
+			}
+		}
+	}
+	if newDefaultID == "" {
+		t.Fatal("PATCH did not create and select a new default repository")
+	}
+	patched = o.do("PATCH", "/api/products/"+productID, map[string]any{"repo_url": "acme/mobile"}, o.ownerCookie)
+	if patched.status != http.StatusOK {
+		t.Fatalf("PATCH existing default: %d %s", patched.status, patched.body)
+	}
+	defaultRepo := ""
+	for _, repository := range patched.json(t)["product"].(map[string]any)["repositories"].([]any) {
+		entry := repository.(map[string]any)
+		if entry["is_default"] == true {
+			defaultRepo = entry["repo"].(string)
+		}
+	}
+	if defaultRepo != "acme/mobile" {
+		t.Fatalf("PATCH did not update existing repository default: %q", defaultRepo)
+	}
+
+	tenantID := o.tenantID(o.ownerCookie)
+	o.addMember(tenantID, "repo-guest@example.com", tenancy.RoleGuest)
+	guest := o.loginTo("repo-guest@example.com", tenantID)
+	if denied := o.do("POST", "/api/products/"+productID+"/repositories", map[string]any{"repo": "acme/guest"}, guest); denied.status != http.StatusForbidden {
+		t.Fatalf("guest repository write: %d %s", denied.status, denied.body)
+	}
+	if removed := o.do("DELETE", "/api/products/"+productID+"/repositories/"+addedID, nil, o.ownerCookie); removed.status != http.StatusNoContent {
+		t.Fatalf("remove repository: %d %s", removed.status, removed.body)
+	}
+}
+
 func TestGuestCanReadButNotWriteWork(t *testing.T) {
 	o := newOwnerHarness(t)
 	tenantID := o.tenantID(o.ownerCookie)

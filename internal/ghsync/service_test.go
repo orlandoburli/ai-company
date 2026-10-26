@@ -1,11 +1,13 @@
 package ghsync
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -18,11 +20,18 @@ import (
 )
 
 type fakeGitHub struct {
-	issues []integration.Issue
-	prs    []integration.PullRequest
+	issues      []integration.Issue
+	prs         []integration.PullRequest
+	issueErrors map[string]error
+	issueRepos  []string
+	prRepos     []string
 }
 
-func (f *fakeGitHub) ListIssues(_ context.Context, _ string, _ string, _ int) ([]integration.Issue, error) {
+func (f *fakeGitHub) ListIssues(_ context.Context, repo string, _ string, _ int) ([]integration.Issue, error) {
+	f.issueRepos = append(f.issueRepos, repo)
+	if err := f.issueErrors[repo]; err != nil {
+		return nil, err
+	}
 	return append([]integration.Issue(nil), f.issues...), nil
 }
 func (f *fakeGitHub) GetIssue(_ context.Context, _ string, number int) (integration.Issue, error) {
@@ -33,7 +42,8 @@ func (f *fakeGitHub) GetIssue(_ context.Context, _ string, number int) (integrat
 	}
 	return integration.Issue{}, &integration.APIError{Status: http.StatusNotFound, Message: "Not Found"}
 }
-func (f *fakeGitHub) ListPullRequests(_ context.Context, _ string, _ string, _ int) ([]integration.PullRequest, error) {
+func (f *fakeGitHub) ListPullRequests(_ context.Context, repo string, _ string, _ int) ([]integration.PullRequest, error) {
+	f.prRepos = append(f.prRepos, repo)
 	return append([]integration.PullRequest(nil), f.prs...), nil
 }
 func (f *fakeGitHub) UpdateIssueTitle(_ context.Context, _ string, number int, title string) (integration.Issue, error) {
@@ -260,4 +270,63 @@ func TestProductRepositoryMustMatchAndWithoutRepositoryErrors(t *testing.T) {
 	if got := safeTitle(strings.Repeat("x", 1000)); len(got) > 500 {
 		t.Fatalf("untrusted title not truncated: %d", len(got))
 	}
+}
+
+func TestSyncProductWalksEveryRepository(t *testing.T) {
+	f := newGHFixture(t)
+	if _, err := f.work.AddProductRepository(context.Background(), f.scope, f.product.ID, "acme/mobile", "mobile", false); err != nil {
+		t.Fatal(err)
+	}
+	f.gh.issues = []integration.Issue{{Number: 7, Title: "Repository issue", State: "open", HTMLURL: "https://github.com/acme/demo/issues/7"}}
+	result, err := f.service.SyncProduct(context.Background(), f.scope, f.product.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ImportedItems) != 2 {
+		t.Fatalf("imported %d items from two repositories: %+v", len(result.ImportedItems), result)
+	}
+	for _, repo := range []string{"acme/demo", "acme/mobile"} {
+		if !containsString(f.gh.issueRepos, repo) || !containsString(f.gh.prRepos, repo) {
+			t.Fatalf("repository %q not walked; issue calls=%v PR calls=%v", repo, f.gh.issueRepos, f.gh.prRepos)
+		}
+	}
+}
+
+func TestSyncProductSkipsUnavailableRepositoryAndLogsItsName(t *testing.T) {
+	f := newGHFixture(t)
+	if _, err := f.work.AddProductRepository(context.Background(), f.scope, f.product.ID, "acme/healthy", "healthy", false); err != nil {
+		t.Fatal(err)
+	}
+	f.gh.issueErrors = map[string]error{
+		"acme/demo": &integration.APIError{Status: http.StatusNotFound, Message: "Not Found"},
+	}
+	f.gh.issues = []integration.Issue{{Number: 12, Title: "Healthy issue", State: "open", HTMLURL: "https://github.com/acme/healthy/issues/12"}}
+	var logOutput bytes.Buffer
+	f.service = New(Deps{DB: f.db, GitHub: f.gh, Work: f.work, Workflows: f.workflows,
+		Logger: slog.New(slog.NewTextHandler(&logOutput, nil))})
+	result, err := f.service.SyncProduct(context.Background(), f.scope, f.product.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.RepositoryFailures) != 1 || result.RepositoryFailures[0].Repo != "acme/demo" {
+		t.Fatalf("reported failures = %+v", result.RepositoryFailures)
+	}
+	if len(result.ImportedItems) != 1 || result.ImportedItems[0].Title != "Healthy issue" {
+		t.Fatalf("healthy repository was not synchronized: %+v", result)
+	}
+	if !strings.Contains(logOutput.String(), "acme/demo") {
+		t.Fatalf("failure log did not name the repository: %s", logOutput.String())
+	}
+	if !containsString(f.gh.issueRepos, "acme/healthy") {
+		t.Fatalf("healthy repository was never read: %v", f.gh.issueRepos)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

@@ -737,6 +737,71 @@ func (s *Server) handleDeleteProduct(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type addProductRepositoryRequest struct {
+	Repo      string `json:"repo"`
+	Name      string `json:"name"`
+	IsDefault bool   `json:"is_default"`
+}
+
+func (s *Server) handleAddProductRepository(w http.ResponseWriter, r *http.Request) {
+	var req addProductRepositoryRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	repo := strings.TrimSpace(req.Repo)
+	if repo == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "repo is required in owner/name form.")
+		return
+	}
+	repository, err := s.work.AddProductRepository(r.Context(), sc, r.PathValue("id"), repo,
+		strings.TrimSpace(req.Name), req.IsDefault)
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"repository": repository})
+}
+
+func (s *Server) handleRemoveProductRepository(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if err := s.work.RemoveProductRepository(r.Context(), sc, r.PathValue("id"), r.PathValue("repositoryId")); err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSetDefaultProductRepository(w http.ResponseWriter, r *http.Request) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	productID, repositoryID := r.PathValue("id"), r.PathValue("repositoryId")
+	if err := s.work.SetDefaultProductRepository(r.Context(), sc, productID, repositoryID); err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	repositories, err := s.work.ListProductRepositories(r.Context(), sc, productID)
+	if err != nil {
+		s.writeWorkError(w, err)
+		return
+	}
+	for _, repository := range repositories {
+		if repository.ID == repositoryID {
+			writeJSON(w, http.StatusOK, map[string]any{"repository": repository})
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", "That repository does not exist in this product.")
+}
+
 type updateProjectRequest struct {
 	Name        *string `json:"name"`
 	Key         *string `json:"key"`

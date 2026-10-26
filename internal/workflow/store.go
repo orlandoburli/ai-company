@@ -18,6 +18,9 @@ var (
 	ErrNotFound          = errors.New("workflow: not found")
 	ErrAlreadyDecided    = errors.New("workflow: checkpoint already decided")
 	ErrTemplatePublished = errors.New("workflow: template published")
+	// ErrTemplateNameTaken: the tenant already has a template with this name
+	// and version. It is a conflict the person can act on, not a crash.
+	ErrTemplateNameTaken = errors.New("workflow: template name already taken")
 	ErrTemplateDisabled  = errors.New("workflow: template disabled")
 	ErrTemplateInUse     = errors.New("workflow: template in use")
 	ErrTerminal          = errors.New("workflow: terminal")
@@ -64,6 +67,9 @@ func mapError(err error) error {
 		case "23505":
 			if strings.Contains(pg.ConstraintName, "step_runs_run_id_node_id_iteration_path_run_index") {
 				return fmt.Errorf("%w: %s", ErrDuplicateStep, pg.ConstraintName)
+			}
+			if strings.Contains(pg.ConstraintName, "workflow_templates_tenant_id_name_version_key") {
+				return fmt.Errorf("%w: %s", ErrTemplateNameTaken, pg.ConstraintName)
 			}
 		}
 	}

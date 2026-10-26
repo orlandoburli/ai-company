@@ -156,6 +156,12 @@ func (s *Server) Handler() http.Handler {
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handlePatchProduct)))
 	mux.Handle("DELETE /api/products/{id}",
 		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleDeleteProduct)))
+	mux.Handle("POST /api/products/{id}/repositories",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleAddProductRepository)))
+	mux.Handle("DELETE /api/products/{id}/repositories/{repositoryId}",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleRemoveProductRepository)))
+	mux.Handle("POST /api/products/{id}/repositories/{repositoryId}/default",
+		s.authenticated(s.requireRole(tenancy.Role.CanWriteWork, s.handleSetDefaultProductRepository)))
 
 	mux.Handle("GET /api/projects", s.authenticated(s.handleListProjects))
 	mux.Handle("POST /api/projects",

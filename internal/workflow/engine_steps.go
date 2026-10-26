@@ -455,7 +455,7 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 			workdir = step.Workdir
 			branch = stepBranch(step)
 		} else {
-			productID, repoURL := e.productForItem(ctx, sc, item)
+			productID, repoURL, _ := e.productForItem(ctx, sc, item)
 			if e.workspaces == nil || productID == "" || repoURL == "" {
 				scratchReason = "No repository mirror is configured; this execution uses a scratch workspace."
 			} else {
@@ -779,13 +779,13 @@ func (e *Engine) redispatchWithRunner(ctx context.Context, sc tenancy.Scope, run
 	return e.dispatchAgentOn(ctx, sc, run, t, node, step, ready, &transport, attempt)
 }
 
-func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work.Item) (string, string) {
+func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work.Item) (string, string, []string) {
 	if item.ID == "" || e.work == nil {
-		return "", ""
+		return "", "", nil
 	}
 	projects, err := e.work.ListProjects(ctx, sc, "")
 	if err != nil {
-		return "", ""
+		return "", "", nil
 	}
 	productID := ""
 	for _, p := range projects {
@@ -795,18 +795,22 @@ func (e *Engine) productForItem(ctx context.Context, sc tenancy.Scope, item work
 		}
 	}
 	if productID == "" {
-		return "", ""
+		return "", "", nil
 	}
 	products, err := e.work.ListProducts(ctx, sc)
 	if err != nil {
-		return "", ""
+		return "", "", nil
 	}
 	for _, p := range products {
 		if p.ID == productID {
-			return p.ID, p.RepoURL
+			repositories := make([]string, 0, len(p.Repositories))
+			for _, repository := range p.Repositories {
+				repositories = append(repositories, repository.Repo)
+			}
+			return p.ID, p.RepoURL, repositories
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // runIntegration executes an integration node: a deterministic, idempotent
@@ -829,7 +833,7 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 	if node.Type == "item.mark_done" {
 		return e.markItemDone(ctx, sc, run, t, claimed, item)
 	}
-	productID, repoURL := e.productForItem(ctx, sc, item)
+	productID, repoURL, productRepositories := e.productForItem(ctx, sc, item)
 	mirrorPath := ""
 	if productID != "" && e.workspaces != nil {
 		mirrorPath = e.workspaces.MirrorPath(productID)
@@ -864,21 +868,22 @@ func (e *Engine) runIntegration(ctx context.Context, sc tenancy.Scope, run Run, 
 		}
 	}
 	req := IntegrationRequest{
-		Type:           node.Type,
-		RunID:          run.ID,
-		StepRunID:      claimed.ID,
-		NodeID:         node.ID,
-		IterationPath:  ready.IterationPath,
-		RunIndex:       ready.RunIndex,
-		Config:         config,
-		Workdir:        workdir,
-		MirrorPath:     mirrorPath,
-		Branch:         branch,
-		RepoURL:        repoURL,
-		ProductID:      productID,
-		ItemID:         item.ID,
-		IdempotencyKey: fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex),
-		Inputs:         ready.Inputs,
+		Type:                node.Type,
+		RunID:               run.ID,
+		StepRunID:           claimed.ID,
+		NodeID:              node.ID,
+		IterationPath:       ready.IterationPath,
+		RunIndex:            ready.RunIndex,
+		Config:              config,
+		Workdir:             workdir,
+		MirrorPath:          mirrorPath,
+		Branch:              branch,
+		RepoURL:             repoURL,
+		ProductID:           productID,
+		ProductRepositories: productRepositories,
+		ItemID:              item.ID,
+		IdempotencyKey:      fmt.Sprintf("run:%s:%s:%s:%d", run.ID, node.ID, ready.IterationPath, ready.RunIndex),
+		Inputs:              ready.Inputs,
 	}
 	result, err := RunIntegration(ctx, *e.integrations, req)
 	if err != nil {
@@ -1197,7 +1202,7 @@ func (e *Engine) selectSkills(ctx context.Context, sc tenancy.Scope, item work.I
 		return nil, nil
 	}
 	opts := skill.SelectOptions{Task: task, MaxAttach: policy.MaxAttach, Keys: keys}
-	if productID, _ := e.productForItem(ctx, sc, item); productID != "" {
+	if productID, _, _ := e.productForItem(ctx, sc, item); productID != "" {
 		opts.ProductID = &productID
 	}
 	selected, err := skill.Select(ctx, sc, e.skills, opts)
@@ -1224,7 +1229,7 @@ func (e *Engine) readNodeMemory(ctx context.Context, sc tenancy.Scope, run Run, 
 		tier  MemoryTier
 		name  string
 	}{{memory.Scope{Kind: memory.ScopeRun, Ref: run.ID}, selector.Run, "run"}, {memory.Scope{Kind: memory.ScopeItem, Ref: item.ID}, MemoryTier{Mode: MemoryAuto}, "item"}, {memory.Scope{Kind: memory.ScopeAgent, Ref: a.ID}, selector.Agent, "agent"}}
-	productID, _ := e.productForItem(ctx, sc, item)
+	productID, _, _ := e.productForItem(ctx, sc, item)
 	if productID != "" {
 		tiers = append(tiers, struct {
 			scope memory.Scope

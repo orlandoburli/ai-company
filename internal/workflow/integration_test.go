@@ -55,6 +55,10 @@ func (f *fakeIntegrationGitHub) FindComment(_ context.Context, _ int, marker str
 
 type fakeIntegrationGit struct{ pushes int }
 
+type staticTokenSource struct{}
+
+func (staticTokenSource) Resolve(context.Context, string) (string, error) { return "token", nil }
+
 func (g *fakeIntegrationGit) PushBranch(context.Context, string, string, string) (integration.Commit, error) {
 	g.pushes++
 	return integration.Commit{SHA: "abc123", Subject: "change"}, nil
@@ -103,6 +107,38 @@ func TestIntegrationOpenPRUsesExecutionRepoAndBranchDefaults(t *testing.T) {
 	if gh.pr.Head != "aic/item-step-2" || gh.pr.Base != "main" {
 		t.Fatalf("PR refs did not use execution branch/default base: %#v", gh.pr)
 	}
+}
+
+func TestIntegrationRepositoryDefaultsNodeOverrideAndMembership(t *testing.T) {
+	var gotOwner, gotRepo string
+	factory := func(_ string, owner, repo string) GitHubService {
+		gotOwner, gotRepo = owner, repo
+		return &fakeIntegrationGitHub{}
+	}
+	services := Services{Tokens: staticTokenSource{}, GitHubFactory: factory}
+	base := IntegrationRequest{
+		Type: "github.open_pr", RepoURL: "https://github.com/acme/backend", ProductID: "product",
+		ProductRepositories: []string{"acme/backend", "acme/mobile"},
+	}
+	base.Config = json.RawMessage(`{"secret_ref":"test/credential","base":"main","head":"feature","title":"Work"}`)
+	if _, err := RunIntegration(t.Context(), services, base); err != nil {
+		t.Fatalf("default repository: %v", err)
+	}
+	if gotOwner != "acme" || gotRepo != "backend" {
+		t.Fatalf("default repo client = %s/%s, want acme/backend", gotOwner, gotRepo)
+	}
+
+	base.Config = json.RawMessage(`{"repo":"acme/mobile","secret_ref":"test/credential","base":"main","head":"feature","title":"Work"}`)
+	if _, err := RunIntegration(t.Context(), services, base); err != nil {
+		t.Fatalf("node override repository: %v", err)
+	}
+	if gotOwner != "acme" || gotRepo != "mobile" {
+		t.Fatalf("node repo client = %s/%s, want acme/mobile", gotOwner, gotRepo)
+	}
+
+	base.Config = json.RawMessage(`{"repo":"acme/other","secret_ref":"test/credential","base":"main","head":"feature","title":"Work"}`)
+	_, err := RunIntegration(t.Context(), services, base)
+	assertIntegrationFailure(t, err, FailureCapability, `repository "acme/other" is not connected to product "product"`)
 }
 
 func TestIntegrationWaitCIFailureAndTimeout(t *testing.T) {
