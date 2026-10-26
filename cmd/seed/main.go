@@ -49,6 +49,7 @@ func run() error {
 	slug := flag.String("slug", "acme", "tenant slug (unique; used to detect an existing seed)")
 	timeout := flag.Duration("timeout", 60*time.Second, "overall timeout")
 	withItems := flag.Bool("items", true, "seed the demonstration backlog (the items, their dependencies and their labels)")
+	withTemplates := flag.Bool("templates", false, "seed the demonstration workflow templates (the five example graphs)")
 	flag.Parse()
 
 	if strings.TrimSpace(*dsn) == "" {
@@ -92,8 +93,10 @@ func run() error {
 				if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
 					return fmt.Errorf("ensure agents: %w", err)
 				}
-				if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
-					return fmt.Errorf("ensure workflow templates: %w", err)
+				if *withTemplates {
+					if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
+						return fmt.Errorf("ensure workflow templates: %w", err)
+					}
 				}
 				fmt.Printf("Already seeded: tenant %q exists. Nothing new was created; the sample agents and templates are ensured.\n", *slug)
 				return nil
@@ -115,8 +118,10 @@ func run() error {
 	if err := ensureSeedAgents(ctx, db, tenancyStore, *email, *slug); err != nil {
 		return fmt.Errorf("seed agents: %w", err)
 	}
-	if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
-		return fmt.Errorf("seed workflow templates: %w", err)
+	if *withTemplates {
+		if err := ensureSeedWorkflowTemplates(ctx, db, tenancyStore, *email, *slug, slog.Default()); err != nil {
+			return fmt.Errorf("ensure workflow templates: %w", err)
+		}
 	}
 
 	fmt.Printf(`Seeded tenant %q (%s) in %s.
