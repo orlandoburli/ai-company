@@ -162,6 +162,17 @@ func WithRunVariables(vars map[string]string) RunOption {
 	}
 }
 
+// WithRunLanguage sets the language the run works in.
+//
+// The run remembers it: a tenant that changes its language later does not
+// change the language of a run already under way, and every agent of the run
+// writes in the same language whatever node it is on.
+func WithRunLanguage(language tenancy.Language) RunOption {
+	return func(in *NewRun) {
+		in.Language = language
+	}
+}
+
 // StartRun snapshots the chosen template and queues a run for its first tick.
 func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, itemID, actorUserID string, opts ...RunOption) (Run, error) {
 	tpl, err := e.store.GetTemplate(ctx, sc, templateID)
@@ -182,6 +193,12 @@ func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, ite
 		if opt != nil {
 			opt(&in)
 		}
+	}
+	// The language of a run is one of the two the product speaks. It is
+	// refused here, before the row exists, so a run is never queued in a
+	// language no agent would be told.
+	if in.Language != "" && !in.Language.Valid() {
+		return Run{}, fmt.Errorf("%w: %q", ErrUnknownLanguage, in.Language)
 	}
 	run, err := e.store.CreateRun(ctx, sc, in)
 	if err != nil {

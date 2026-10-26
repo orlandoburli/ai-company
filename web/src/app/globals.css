@@ -767,6 +767,43 @@ table.data tr.is-selected td {
   z-index: 30;
 }
 
+/* The language switch: two codes, the live one in the product's indigo. */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--theme-border-radius);
+  background: var(--panel-2);
+}
+
+.lang-switch__opt {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.lang-switch__opt:hover {
+  color: var(--text-strong);
+}
+
+.lang-switch__opt--on,
+.lang-switch__opt--on:hover {
+  background: var(--theme-primary);
+  color: #ffffff;
+}
+
 .nav {
   display: flex;
   gap: 2px;
@@ -808,11 +845,12 @@ table.data tr.is-selected td {
 }
 
 @media (max-width: 600px) {
-  .topbar .btn[aria-label="Current company, open to switch"] > span:not(.chip),
-  .topbar .btn[aria-label="Current company, open to switch"] > .chip,
-  .topbar .btn[aria-label="Account menu"] .tiny { display: none; }
-  .topbar .btn[aria-label="Current company, open to switch"],
-  .topbar .btn[aria-label="Account menu"] { min-width: 32px; padding-inline: 7px; }
+  .topbar [data-tenant-switch] > span:not(.chip),
+  .topbar [data-tenant-switch] > .chip,
+  .topbar [data-account-menu] .tiny { display: none; }
+  .topbar [data-tenant-switch],
+  .topbar [data-account-menu] { min-width: 32px; padding-inline: 7px; }
+  .lang-switch__opt { padding-inline: 6px; }
 }
 
 /* --- tree ----------------------------------------------------------------- */

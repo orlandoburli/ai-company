@@ -533,14 +533,23 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
+	// The language is the run's, not the node's: every agent of the run writes
+	// in the same language, whatever the node does. The directive goes into the
+	// soul — the trusted part of the context — so the work item's text cannot
+	// forge it and the budget cannot trim it away.
+	language := run.Language
+	if !language.Valid() {
+		language = tenancy.DefaultLanguage
+	}
+	soul := soulWithLanguage(a.SoulMD, language)
 	// The soul is a column, not a versioned row, so its fingerprint is its
 	// content hash: the manifest then says exactly which persona was used.
-	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Soul: a.SoulMD, SoulFingerprint: fingerprint(a.SoulMD), Memory: memEntries, Task: task.String(), Sections: sections, Skills: skills})
+	bundle, err := ctxbundle.Assemble(ctxbundle.AssembleInput{Soul: soul, SoulFingerprint: fingerprint(soul), Memory: memEntries, Task: task.String(), Sections: sections, Skills: skills})
 	if err != nil {
 		return e.failClaim(ctx, sc, run, t, step, "capability", err.Error())
 	}
 	bundle.DroppedMarkers = append(bundle.DroppedMarkers, issueMarkers...)
-	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "trimmed": bundle.Trimmed, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs})
+	contextJSON := rawJSON(map[string]any{"manifest": bundle.Manifest, "memory_manifest": bundle.MemoryManifest, "trimmed": bundle.Trimmed, "task_file_sha": bundle.TaskFileSHA, "dropped_markers": bundle.DroppedMarkers, "inputs": ready.Inputs, "language": language})
 	key := jobKey(run.ID, node.ID, ready.IterationPath, ready.RunIndex, attempt)
 	// The job carries a SNAPSHOT of the runner: its id, its kind and its
 	// config. A queued job never changes when somebody edits the runner, and
@@ -559,7 +568,7 @@ func (e *Engine) dispatchAgentOn(ctx context.Context, sc tenancy.Scope, run Run,
 		// integration has something stable to talk about.
 		branch = fmt.Sprintf("aic/%s-%s-%d", item.ID, step.ID, maxInt(1, ready.Attempt))
 	}
-	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "trimmed": bundle.Trimmed, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir})
+	contextManifest := rawJSON(map[string]any{"manifest": bundle.Manifest, "trimmed": bundle.Trimmed, "workspace_note": scratchReason, "dropped_markers": bundle.DroppedMarkers, "branch": branch, "workdir": workdir, "language": language})
 	// The step remembers which runner it is on: the result says what ran, and
 	// the tried list is what keeps a fallback from retrying the same runner.
 	// The credential reference travels with it: it is the identity the run's

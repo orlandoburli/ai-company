@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
+import { useT } from "@/lib/i18n";
 import type { Priority, Product, Project, Status } from "@/lib/types";
 import { Dialog, apiErrorMessage, Field, KindCombobox, LabelInput, StatusSelect } from "./primitives";
 export function NewItemDialog(props: {
@@ -13,6 +14,7 @@ export function NewItemDialog(props: {
   onClose: () => void;
   onCreated: (item: { id: string; project_id: string }) => void;
 }) {
+  const t = useT();
   const [projectId, setProjectId] = useState(
     props.defaultProjectId ?? props.projects[0]?.id ?? "",
   );
@@ -49,19 +51,19 @@ export function NewItemDialog(props: {
 
   return (
     <Dialog
-      title="New work item"
-      description="Items live in a project and can nest under another item later on its own page."
+      title={t("newItem.title")}
+      description={t("newItem.description")}
       onClose={props.onClose}
     >
       <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
         {error ? <div className="error-note">{error}</div> : null}
         {props.projects.length === 0 ? (
           <p className="tiny" style={{ color: "var(--warn)" }}>
-            Create a project first — this company has none yet.
+            {t("newItem.noProject")}
           </p>
         ) : (
           <>
-            <Field label="Project">
+            <Field label={t("field.project")}>
               <select
                 className="input"
                 value={projectId}
@@ -78,7 +80,7 @@ export function NewItemDialog(props: {
                 })}
               </select>
             </Field>
-            <Field label="Title">
+            <Field label={t("field.title")}>
               <input
                 className="input"
                 autoFocus
@@ -89,8 +91,8 @@ export function NewItemDialog(props: {
             </Field>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <Field
-                label="Kind"
-                hint={kinds.error ? "Project kinds could not load; any value is still allowed." : kinds.loading ? "Loading project kinds…" : "Choose a project kind or enter your own."}
+                label={t("field.kind")}
+                hint={kinds.error ? t("newItem.kindError") : kinds.loading ? t("newItem.kindLoading") : t("newItem.kindHint")}
               >
                 <KindCombobox
                   value={kind}
@@ -98,30 +100,30 @@ export function NewItemDialog(props: {
                   onChange={setKind}
                 />
               </Field>
-              <Field label="Priority">
+              <Field label={t("field.priority")}>
                 <select
                   className="input"
                   value={priority}
                   onChange={(e) => setPriority(e.target.value)}
                 >
-                  <option value="">No priority</option>
-                  <option value="priority:p0">P0 — highest</option>
+                  <option value="">{t("field.noPriority")}</option>
+                  <option value="priority:p0">{t("newItem.p0")}</option>
                   <option value="priority:p1">P1</option>
                   <option value="priority:p2">P2</option>
                 </select>
               </Field>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Field label="Status">
+              <Field label={t("field.status")}>
                 <StatusSelect
                   value={status === "" ? "backlog" : status}
-                  ariaLabel="Status"
+                  ariaLabel={t("field.status")}
                   onChange={setStatus}
                 />
               </Field>
               <Field
-                label="Labels"
-                hint={usedLabels.error ? "Labels could not load; you can still add any label." : usedLabels.loading ? "Loading labels…" : "Choose a label in use or add a new one."}
+                label={t("field.labels")}
+                hint={usedLabels.error ? t("newItem.labelsError") : usedLabels.loading ? t("newItem.labelsLoading") : t("newItem.labelsHint")}
               >
                 <LabelInput
                   value={labels}
@@ -132,14 +134,14 @@ export function NewItemDialog(props: {
             </div>
             <div className="dialog__row">
               <button type="button" className="btn" onClick={props.onClose}>
-                Cancel
+                {t("field.cancel")}
               </button>
               <button
                 type="submit"
                 className="btn btn--primary"
                 disabled={busy || !title.trim()}
               >
-                {busy ? "Creating…" : "Create item"}
+                {busy ? t("newItem.creating") : t("newItem.create")}
               </button>
             </div>
           </>

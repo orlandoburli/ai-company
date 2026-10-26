@@ -1,13 +1,33 @@
 import type { Item, Priority, Status } from "./types";
+import { getCurrentLang, translate } from "./locales";
 
+/**
+ * The status names, in the language on screen. They are the product's shared
+ * vocabulary — the board's columns, the status picker, the activity feed — so
+ * they follow the interface everywhere it is used.
+ */
 export const STATUS_LABELS: Record<Status, string> = {
-  backlog: "Backlog",
-  todo: "To do",
-  in_progress: "In progress",
-  waiting_human: "Waiting on human",
-  in_review: "In review",
-  done: "Done",
-  cancelled: "Cancelled",
+  get backlog() {
+    return translate(getCurrentLang(), "status.backlog");
+  },
+  get todo() {
+    return translate(getCurrentLang(), "status.todo");
+  },
+  get in_progress() {
+    return translate(getCurrentLang(), "status.in_progress");
+  },
+  get waiting_human() {
+    return translate(getCurrentLang(), "status.waiting_human");
+  },
+  get in_review() {
+    return translate(getCurrentLang(), "status.in_review");
+  },
+  get done() {
+    return translate(getCurrentLang(), "status.done");
+  },
+  get cancelled() {
+    return translate(getCurrentLang(), "status.cancelled");
+  },
 };
 
 export const PRIORITY_LABELS: Record<Priority, string> = {
@@ -40,7 +60,7 @@ export function formatDate(value?: string): string {
   const d = new Date(value);
   // due_date arrives as a timestamp in JSON; show the date part only.
   if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString(getCurrentLang(), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -51,7 +71,7 @@ export function formatDateTime(value?: string): string {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString(getCurrentLang(), {
     month: "short",
     day: "numeric",
     hour: "2-digit",

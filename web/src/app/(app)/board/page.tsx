@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useAsync, useToasts } from "@/lib/hooks";
 import { useSession } from "@/lib/session";
+import { useT } from "@/lib/i18n";
 import type { BoardColumn, Item, Status } from "@/lib/types";
 import { STATUSES } from "@/lib/types";
 import { firstName, STATUS_LABELS } from "@/lib/format";
@@ -57,6 +58,7 @@ function BoardView() {
 
   const { canWrite } = useSession();
   const { toasts, push } = useToasts();
+  const t = useT();
 
   const products = useAsync(
     () => api.listProducts().then((r) => r.products),
@@ -168,7 +170,7 @@ function BoardView() {
       });
       push(
         "error",
-        err instanceof ApiError ? err.message : "Could not move the card.",
+        err instanceof ApiError ? err.message : t("board.moveFailed"),
       );
     }
   }
@@ -218,10 +220,10 @@ function BoardView() {
   return (
     <>
       <div className="pagehead">
-        <h1>Board</h1>
+        <h1>{t("board.title")}</h1>
         <span className="pagehead__sub">
-          {activeProject ? activeProject.name : "All projects"}
-          {labelFilter ? ` · label “${labelFilter}”` : ""}
+          {activeProject ? activeProject.name : t("board.allProjects")}
+          {labelFilter ? ` · ${t("board.labelSuffix", { label: labelFilter })}` : ""}
         </span>
         <span style={{ marginLeft: "auto" }}>
           {canWrite && projectsList.length > 0 ? (
@@ -230,7 +232,7 @@ function BoardView() {
               className="btn btn--primary btn--sm"
               onClick={() => { setNewItemStatus("backlog"); setShowNew(true); }}
             >
-              <IconPlus /> New item
+              <IconPlus /> {t("board.newItem")}
             </button>
           ) : null}
         </span>
@@ -238,7 +240,7 @@ function BoardView() {
 
       <div className="filters">
         <div className="field">
-          <label htmlFor="f-product">Product</label>
+          <label htmlFor="f-product">{t("field.product")}</label>
           <select
             id="f-product"
             className="input input--inline"
@@ -249,7 +251,7 @@ function BoardView() {
               setParam("project_id", "");
             }}
           >
-            <option value="">All</option>
+            <option value="">{t("field.all")}</option>
             {productsList.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -258,14 +260,14 @@ function BoardView() {
           </select>
         </div>
         <div className="field">
-          <label htmlFor="f-project">Project</label>
+          <label htmlFor="f-project">{t("field.project")}</label>
           <select
             id="f-project"
             className="input input--inline"
             value={projectFilter}
             onChange={(e) => setParam("project_id", e.target.value)}
           >
-            <option value="">All</option>
+            <option value="">{t("field.all")}</option>
             {projectsList
               .filter((p) => !productFilter || p.product_id === productFilter)
               .map((p) => (
@@ -276,7 +278,7 @@ function BoardView() {
           </select>
         </div>
         <div className="field">
-          <label htmlFor="f-label">Label</label>
+          <label htmlFor="f-label">{t("field.label")}</label>
           <select
             id="f-label"
             className="input input--inline"
@@ -284,27 +286,27 @@ function BoardView() {
             onChange={(e) => setParam("label", e.target.value)}
             aria-describedby={labelOptionsQuery.error ? "f-label-note" : undefined}
           >
-            <option value="">All</option>
+            <option value="">{t("field.all")}</option>
             {labelOptions.map((l) => (
               <option key={l} value={l}>{l}</option>
             ))}
             {labelFilter && !labelOptions.includes(labelFilter) ? (
-              <option value={labelFilter}>{labelFilter} (no longer in use)</option>
+              <option value={labelFilter}>{t("board.labelUnused", { label: labelFilter })}</option>
             ) : null}
           </select>
           {labelOptionsQuery.error ? (
-            <span id="f-label-note" className="tiny muted">Labels could not load.</span>
+            <span id="f-label-note" className="tiny muted">{t("board.labelsFailed")}</span>
           ) : null}
         </div>
         <div className="field">
-          <label htmlFor="f-assignee">Assignee</label>
+          <label htmlFor="f-assignee">{t("field.assignee")}</label>
           <select
             id="f-assignee"
             className="input input--inline"
             value={assigneeFilter}
             onChange={(e) => setParam("assignee_user_id", e.target.value)}
           >
-            <option value="">All</option>
+            <option value="">{t("field.all")}</option>
             {(members.data ?? []).map((m) => (
               <option key={m.user_id} value={m.user_id}>
                 {m.name}
@@ -316,16 +318,16 @@ function BoardView() {
 
       {selected.size > 0 && canWrite ? (
         <div className="bulkbar" style={{ marginBottom: 12 }}>
-          <span className="count">{selected.size} selected</span>
+          <span className="count">{t("board.selected", { count: selected.size })}</span>
           <button
             type="button"
             className="btn btn--sm"
             style={{ marginRight: "auto" }}
             onClick={() => setSelected(new Set())}
           >
-            Clear
+            {t("board.clear")}
           </button>
-          <span className="tiny muted">Move to:</span>
+          <span className="tiny muted">{t("board.moveTo")}</span>
           {STATUSES.filter((s) => s !== "backlog").map((s) => (
             <button
               key={s}
@@ -353,7 +355,7 @@ function BoardView() {
           {STATUS_LIST_PLACEHOLDERS.map((s) => (
             <div key={s} className="board-col">
               <div className="board-col__head">
-                <strong style={{ fontSize: 12.5 }}>{s}</strong>
+                <strong style={{ fontSize: 12.5 }}>{STATUS_LABELS[s]}</strong>
               </div>
               <div className="board-col__list">
                 <Skeleton h={66} />
@@ -412,11 +414,11 @@ function BoardView() {
   );
 }
 
-const STATUS_LIST_PLACEHOLDERS = [
-  "Backlog",
-  "To do",
-  "In progress",
-  "Waiting on human",
+const STATUS_LIST_PLACEHOLDERS: Status[] = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "waiting_human",
 ];
 
 /* --- columns ---------------------------------------------------------------- */
@@ -439,6 +441,7 @@ function BoardBody(props: {
   onCreateClick: (status: Status) => void;
   itemCount: number;
 }) {
+  const t = useT();
   if (props.itemCount === 0) {
     return (
       <EmptyBoard
@@ -456,7 +459,7 @@ function BoardBody(props: {
           className={`board-col ${
             props.dragOverStatus === col.status ? "board-col--drop" : ""
           }`}
-          aria-label={`${STATUS_LABELS[col.status]} column`}
+          aria-label={t("board.column", { status: STATUS_LABELS[col.status] })}
           onDragOver={(e) => {
             if (!props.canWrite) return;
             e.preventDefault();
@@ -479,7 +482,7 @@ function BoardBody(props: {
               <button
                 type="button"
                 className="board-col__add"
-                aria-label={`Add item to ${STATUS_LABELS[col.status]}`}
+                aria-label={t("board.addToColumn", { status: STATUS_LABELS[col.status] })}
                 onClick={() => props.onCreateClick(col.status)}
               >
                 <IconPlus width={14} height={14} />
@@ -493,7 +496,7 @@ function BoardBody(props: {
                 style={{ margin: "2px 4px 6px" }}
                 aria-hidden
               >
-                Drop here to move to {STATUS_LABELS[col.status]}.
+                {t("board.dropHere", { status: STATUS_LABELS[col.status] })}
               </p>
             ) : null}
             {col.items.map((it) => (
@@ -518,17 +521,18 @@ function BoardBody(props: {
 }
 
 function EmptyBoard(props: { canWrite: boolean; onCreateClick: () => void }) {
+  const t = useT();
   return (
     <div className="empty panel" style={{ padding: "48px 20px" }}>
-      <h3>No cards to show</h3>
+      <h3>{t("board.empty.title")}</h3>
       <p>
         {props.canWrite
-          ? "Create a work item, or check the filters above — an active filter can hide everything."
-          : "Nothing matches the filters. Ask someone with write access to add work."}
+          ? t("board.empty.body")
+          : t("board.empty.readOnly")}
       </p>
       {props.canWrite ? (
         <button type="button" className="btn" onClick={props.onCreateClick}>
-          <IconPlus /> New item
+          <IconPlus /> {t("board.newItem")}
         </button>
       ) : null}
     </div>
@@ -548,6 +552,7 @@ function BoardCard(props: {
   onOverride: (id: string, action: "pin" | "unpin" | "pause" | "unpause") => void;
   onToggleSelect: (id: string) => void;
 }) {
+  const t = useT();
   const it = props.item;
   return (
     <Link
@@ -586,21 +591,21 @@ function BoardCard(props: {
             <button
               type="button"
               className="minibtn"
-              aria-label={it.pinned ? "Unpin" : "Pin to rank 1"}
+              aria-label={it.pinned ? t("board.unpin") : t("board.pin")}
               aria-pressed={Boolean(it.pinned)}
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onOverride(it.id, it.pinned ? "unpin" : "pin"); }}
             ><IconPin width={12} height={12} /></button>
             <button
               type="button"
               className="minibtn"
-              aria-label={it.paused ? "Unpause" : "Pause"}
+              aria-label={it.paused ? t("board.unpause") : t("board.pause")}
               aria-pressed={Boolean(it.paused)}
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onOverride(it.id, it.paused ? "unpause" : "pause"); }}
             ><IconPause width={12} height={12} /></button>
             <button
               type="button"
               className={props.selected ? "selbtn on" : "selbtn"}
-              aria-label={props.selected ? "Deselect" : "Select"}
+              aria-label={props.selected ? t("board.deselect") : t("board.select")}
               aria-pressed={props.selected}
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.onToggleSelect(it.id); }}
             >
@@ -619,7 +624,7 @@ function BoardCard(props: {
         {it.assignee_user_id && !props.canWrite ? (
           <span
             className="attr-assignee"
-            title={props.memberName.get(it.assignee_user_id) ?? "Assigned"}
+            title={props.memberName.get(it.assignee_user_id) ?? t("board.assigned")}
             style={{ marginLeft: "auto", flex: "none", maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}
           >
             {firstName(props.memberName.get(it.assignee_user_id)) || "@user"}
@@ -628,18 +633,20 @@ function BoardCard(props: {
         {props.canWrite ? (
           <span
             className="attr-assignee"
-            title={props.memberName.get(it.assignee_user_id ?? "") ?? "Unassigned"}
+            title={props.memberName.get(it.assignee_user_id ?? "") ?? t("board.unassigned")}
             style={{ marginLeft: "auto", overflow: "hidden", textOverflow: "ellipsis", maxWidth: it.assignee_user_id ? 80 : undefined, flex: "none" }}
           >
             {it.assignee_user_id
               ? firstName(props.memberName.get(it.assignee_user_id)) || "@user"
-              : "Unassigned"}
+              : t("board.unassigned")}
           </span>
         ) : null}
       </div>
       {it.paused_at ? (
         <div className="tiny muted" style={{ marginTop: 4 }}>
-          Paused{props.memberName.get(it.paused_by ?? "") ? ` by ${firstName(props.memberName.get(it.paused_by ?? ""))}` : ""}
+          {props.memberName.get(it.paused_by ?? "")
+            ? t("item.pausedBy", { name: firstName(props.memberName.get(it.paused_by ?? "")) })
+            : t("item.paused")}
           {it.pause_reason ? ` — ${it.pause_reason}` : ""}
         </div>
       ) : null}

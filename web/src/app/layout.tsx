@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Outfit } from "next/font/google";
 import { SessionProvider } from "@/lib/session";
 import { ConfirmProvider } from "@/lib/confirm";
+import { I18nProvider } from "@/lib/i18n";
 import "./globals.css";
 
 const outfit = Outfit({
@@ -37,9 +38,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${outfit.variable} ${plexMono.variable}`}>
       <body>
-        <SessionProvider>
-          <ConfirmProvider>{children}</ConfirmProvider>
-        </SessionProvider>
+        <I18nProvider>
+          <SessionProvider>
+            <ConfirmProvider>{children}</ConfirmProvider>
+          </SessionProvider>
+        </I18nProvider>
       </body>
     </html>
   );

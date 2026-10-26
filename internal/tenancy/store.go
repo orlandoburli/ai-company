@@ -220,6 +220,9 @@ var (
 	ErrUnauthenticated = errors.New("tenancy: session not valid")
 	ErrAlreadyMember   = errors.New("tenancy: already a member")
 	ErrAlreadyInvited  = errors.New("tenancy: already invited")
+	// ErrInvalidLanguage is returned when a language the product does not
+	// speak is asked for. It is refused, never ignored.
+	ErrInvalidLanguage = errors.New("tenancy: unknown language")
 )
 
 // roleError maps a function's reason string to an error. NULL means success.
@@ -238,6 +241,8 @@ func roleError(reason sql.NullString) error {
 		return ErrSelfRoleChange
 	case "invalid_role":
 		return ErrInvalidRole
+	case "invalid_language":
+		return ErrInvalidLanguage
 	case "unauthenticated":
 		return ErrUnauthenticated
 	case "already_member":

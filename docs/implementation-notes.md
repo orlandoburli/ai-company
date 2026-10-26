@@ -546,6 +546,35 @@ which step produced it. The buttons say *why* they are disabled instead of
 just being grey.
 
 
+## The language (M5)
+
+**A company declares the language its work is done in.** The tenant carries
+a `language` — English or Portuguese (Brazil) — set through the identity
+plane's own door (the application role has no privileges on `tenants`, so the
+change goes through a definer function exactly like the tenant's name ✓).
+
+**A run remembers the language it started in.** The start request may name
+one; otherwise the run inherits the tenant's ✓ — and the language is stored on
+the run ✓, so a run that continues after the company changed its setting
+still speaks the language it began in ✓. An unknown language is refused, not
+silently ignored ✓.
+
+**The agents are told, in the trusted part of their context.** The directive
+is appended to the **soul** — the agent's own voice ✓ — so the work item's
+untrusted text can never forge it ✓ and the prompt budget can never trim it
+away ✓. It names the language explicitly ✓ and covers everything the agent
+produces: its answers and summaries ✓, the documents it writes ✓, the
+pull-request title and body ✓, the comments it leaves ✓, its commit
+messages ✓ — while code, identifiers, file names, command lines and quoted
+text stay exactly as they are ✓. Every agent of the run is told ✓, on every
+node ✓, because the language is a property of the run ✓.
+
+**What is not translated.** A pull-request title hard-coded in a workflow
+template's integration config is platform configuration ✓, not agent
+output ✓. A chat outside a workflow run has no run and therefore no
+language ✓.
+
+
 ## The credentials (M5)
 
 **The rule.** A secret never enters the database, a log line or the

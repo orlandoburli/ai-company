@@ -36,6 +36,10 @@ type startRunRequest struct {
 	// filled with, and the values a node's `config.runner` may resolve
 	// ($NAME). They win over the tenant's defaults.
 	Variables map[string]string `json:"variables"`
+	// Language is the language this run works in. It is optional: without it
+	// the run inherits the company's language. An unknown language is refused
+	// rather than ignored.
+	Language string `json:"language"`
 }
 
 type runWire struct {
@@ -44,6 +48,7 @@ type runWire struct {
 	TemplateID             string            `json:"template_id"`
 	TemplateVersion        int               `json:"template_version"`
 	Variables              map[string]string `json:"variables"`
+	Language               tenancy.Language  `json:"language"`
 	State                  workflow.RunState `json:"state"`
 	MaxConcurrency         int               `json:"max_concurrency"`
 	StartedBy              string            `json:"started_by"`
@@ -69,8 +74,12 @@ func runResponse(run workflow.Run) runWire {
 	if variables == nil {
 		variables = map[string]string{}
 	}
+	language := run.Language
+	if !language.Valid() {
+		language = tenancy.DefaultLanguage
+	}
 	return runWire{ID: run.ID, ItemID: run.ItemID, TemplateID: run.TemplateID,
-		TemplateVersion: run.TemplateVersion, Variables: variables, State: run.State, MaxConcurrency: run.MaxConcurrency,
+		TemplateVersion: run.TemplateVersion, Variables: variables, Language: language, State: run.State, MaxConcurrency: run.MaxConcurrency,
 		StartedBy: run.StartedBy, StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
 		Error: errText, FailureKind: failure, Branch: run.Branch, WorktreePath: run.WorktreePath,
 		DefinitionSnapshotJSON: run.DefinitionSnapshot, CreatedAt: run.CreatedAt}
@@ -179,6 +188,18 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "A template_id and a positive template_version are required.")
 		return
 	}
+	// The language of the run: the one the request names, the company's own
+	// when the request names none. An unknown language is refused here, so a
+	// run is never queued in a language no agent would be told.
+	language, err := s.resolveRunLanguage(r, req.Language)
+	if err != nil {
+		if errors.Is(err, workflow.ErrUnknownLanguage) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "Language must be one of en, pt-BR.")
+			return
+		}
+		s.internal(w, "resolve run language", err)
+		return
+	}
 	// Validate the item separately so a missing item is not misreported as a
 	// missing workflow template by StartRun.
 	if _, err := s.work.GetItem(r.Context(), sc, r.PathValue("id")); err != nil {
@@ -216,10 +237,13 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "template_not_published", "No matching published template version exists.")
 		return
 	}
-	run, err := s.engine.StartRun(r.Context(), sc, chosen.ID, r.PathValue("id"), sc.UserID, workflow.WithRunVariables(req.Variables))
+	run, err := s.engine.StartRun(r.Context(), sc, chosen.ID, r.PathValue("id"), sc.UserID,
+		workflow.WithRunVariables(req.Variables), workflow.WithRunLanguage(language))
 	if err != nil {
 		if errors.Is(err, workflow.ErrNotFound) {
 			writeError(w, http.StatusUnprocessableEntity, "template_not_published", "The selected template is no longer published.")
+		} else if errors.Is(err, workflow.ErrUnknownLanguage) {
+			writeError(w, http.StatusBadRequest, "invalid_request", "Language must be one of en, pt-BR.")
 		} else if isWorkflowValidationError(err) {
 			writeTemplateInvalid(w, err)
 		} else {
@@ -228,6 +252,27 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"run": runResponse(run)})
+}
+
+// resolveRunLanguage resolves the language a run works in.
+//
+// The request may name one; otherwise the company's own language is the run's.
+// The run remembers the answer, so a company that changes its language later
+// does not change the language of a run already under way.
+func (s *Server) resolveRunLanguage(r *http.Request, requested string) (tenancy.Language, error) {
+	if strings.TrimSpace(requested) != "" {
+		// The request names one, so the company's setting is not consulted.
+		return workflow.ResolveLanguage(requested, "")
+	}
+	tenantLanguage := ""
+	if digest, ok := tenancy.SessionHashFrom(r.Context()); ok {
+		language, err := s.tenancy.TenantLanguage(r.Context(), digest)
+		if err != nil {
+			return "", err
+		}
+		tenantLanguage = string(language)
+	}
+	return workflow.ResolveLanguage("", tenantLanguage)
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {

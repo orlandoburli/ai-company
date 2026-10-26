@@ -314,7 +314,12 @@ type Run struct {
 	// Variables are the run's inputs: the values a template's placeholders
 	// are filled with and the values a node's `config.runner` may resolve
 	// ($NAME). They win over the tenant's defaults.
-	Variables      map[string]string
+	Variables map[string]string
+	// Language is the language this run works in. It is resolved when the run
+	// starts — the request may name one, otherwise the tenant's language is
+	// inherited — and it never changes afterwards, so the agents of a running
+	// workflow all write in the same language.
+	Language       tenancy.Language
 	State          RunState
 	MaxConcurrency int
 	StartedBy      string
@@ -333,7 +338,9 @@ type NewRun struct {
 	DefinitionSnapshot json.RawMessage
 	// Variables are the run's own inputs. Empty means the run inherits the
 	// tenant's defaults.
-	Variables      map[string]string
+	Variables map[string]string
+	// Language is the language the run works in. Empty means English.
+	Language       tenancy.Language
 	MaxConcurrency int
 	StartedBy      string
 }
@@ -343,20 +350,22 @@ type RunFilter struct {
 	Limit  int
 }
 
-const runCols = `id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,state,max_concurrency,started_by,worktree_path,branch,started_at,finished_at,error,failure_kind,created_at`
+const runCols = `id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,language,state,max_concurrency,started_by,worktree_path,branch,started_at,finished_at,error,failure_kind,created_at`
 
 func scanRun(r rowScanner) (Run, error) {
 	var x Run
 	var item, by, worktree, branch, errText, failure sql.NullString
 	var snap, variables []byte
+	var language sql.NullString
 	var started, finished sql.NullTime
-	e := r.Scan(&x.ID, &x.TenantID, &x.TemplateID, &x.TemplateVersion, &item, &snap, &variables, &x.State, &x.MaxConcurrency, &by, &worktree, &branch, &started, &finished, &errText, &failure, &x.CreatedAt)
+	e := r.Scan(&x.ID, &x.TenantID, &x.TemplateID, &x.TemplateVersion, &item, &snap, &variables, &language, &x.State, &x.MaxConcurrency, &by, &worktree, &branch, &started, &finished, &errText, &failure, &x.CreatedAt)
 	if e != nil {
 		return x, e
 	}
 	x.ItemID = nullString(item)
 	x.DefinitionSnapshot = snap
 	x.Variables = decodeVariables(variables)
+	x.Language = tenancy.Language(nullString(language))
 	x.StartedBy = nullString(by)
 	x.WorktreePath = nullString(worktree)
 	x.Branch = nullString(branch)
@@ -401,6 +410,15 @@ func (s *Store) CreateRun(ctx context.Context, sc tenancy.Scope, in NewRun) (Run
 	if in.MaxConcurrency == 0 {
 		in.MaxConcurrency = 4
 	}
+	// The language of a run is one of the two the product speaks. An unknown
+	// one is refused here too, so a caller that skipped the resolution cannot
+	// store a language no agent would be told.
+	if in.Language == "" {
+		in.Language = tenancy.DefaultLanguage
+	}
+	if !in.Language.Valid() {
+		return Run{}, fmt.Errorf("%w: %q", ErrUnknownLanguage, in.Language)
+	}
 	variables, err := encodeVariables(in.Variables)
 	if err != nil {
 		return Run{}, err
@@ -408,7 +426,7 @@ func (s *Store) CreateRun(ctx context.Context, sc tenancy.Scope, in NewRun) (Run
 	var out Run
 	err = s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		var e error
-		out, e = scanRun(tx.QueryRowContext(ctx, `INSERT INTO workflow_runs (id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,max_concurrency,started_by) VALUES ($1,$2,$3,$4,nullif($5,''),$6::jsonb,$7::jsonb,$8,nullif($9,'')) RETURNING `+runCols, newID(), sc.TenantID, in.TemplateID, in.TemplateVersion, in.ItemID, in.DefinitionSnapshot, variables, in.MaxConcurrency, in.StartedBy))
+		out, e = scanRun(tx.QueryRowContext(ctx, `INSERT INTO workflow_runs (id,tenant_id,template_id,template_version,item_id,definition_snapshot_json,variables_json,language,max_concurrency,started_by) VALUES ($1,$2,$3,$4,nullif($5,''),$6::jsonb,$7::jsonb,$8,$9,nullif($10,'')) RETURNING `+runCols, newID(), sc.TenantID, in.TemplateID, in.TemplateVersion, in.ItemID, in.DefinitionSnapshot, variables, string(in.Language), in.MaxConcurrency, in.StartedBy))
 		return e
 	})
 	if err != nil {

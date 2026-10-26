@@ -26,6 +26,19 @@ type memberView struct {
 type updateTenantRequest struct {
 	Name string `json:"name"`
 	Slug string `json:"slug"`
+	// Language is the language the company works in. It is optional: an empty
+	// value leaves the setting unchanged, and an unknown one is refused.
+	Language string `json:"language"`
+}
+
+// tenantSettingsView is the company's own settings: who it is, and the
+// language its work is done in.
+//
+// The language is a company setting, not a per-user preference, so it belongs
+// with the tenant's identity rather than with the session.
+type tenantSettingsView struct {
+	tenantView
+	Language tenancy.Language `json:"language"`
 }
 
 type setRoleRequest struct {
@@ -126,14 +139,32 @@ func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in to continue.")
 		return
 	}
-	tenant := tenantView{ID: id.TenantID, Role: id.Role}
+	tenant := tenantSettingsView{tenantView: tenantView{ID: id.TenantID, Role: id.Role}}
 	for _, m := range id.Memberships {
 		if m.TenantID == id.TenantID {
 			tenant.Name, tenant.Slug = m.TenantName, m.TenantSlug
 			break
 		}
 	}
+	language, err := s.tenantLanguage(r)
+	if err != nil {
+		s.internal(w, "read tenant language", err)
+		return
+	}
+	tenant.Language = language
 	writeJSON(w, http.StatusOK, map[string]any{"tenant": tenant})
+}
+
+// tenantLanguage reads the language the company works in.
+//
+// The read goes through the identity plane's function surface, keyed on the
+// session, so it can only ever return the tenant the request acts in.
+func (s *Server) tenantLanguage(r *http.Request) (tenancy.Language, error) {
+	digest, ok := tenancy.SessionHashFrom(r.Context())
+	if !ok {
+		return "", tenancy.ErrUnauthenticated
+	}
+	return s.tenancy.TenantLanguage(r.Context(), digest)
 }
 
 func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +175,7 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(req.Name)
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
+	language := strings.TrimSpace(req.Language)
 
 	// Empty means "leave unchanged"; anything provided is validated.
 	if name != "" && (len(name) > 200) {
@@ -154,8 +186,12 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_tenant_slug", "The company handle must be 3-63 characters: lowercase letters, digits and hyphens.")
 		return
 	}
-	if name == "" && slug == "" {
-		writeError(w, http.StatusBadRequest, "no_changes", "Provide a name or a handle to change.")
+	if language != "" && !tenancy.Language(language).Valid() {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Language must be one of en, pt-BR.")
+		return
+	}
+	if name == "" && slug == "" && language == "" {
+		writeError(w, http.StatusBadRequest, "no_changes", "Provide a name, a handle or a language to change.")
 		return
 	}
 
@@ -165,18 +201,39 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.tenancy.UpdateTenant(r.Context(), digest, name, slug)
-	switch {
-	case err == nil:
-	case errors.Is(err, tenancy.ErrForbiddenRole):
-		writeError(w, http.StatusForbidden, "forbidden", "Your role does not allow changing company settings.")
-		return
-	case isUniqueViolation(err):
-		writeError(w, http.StatusConflict, "conflict", "That company handle is already in use.")
-		return
-	default:
-		s.internal(w, "update tenant", err)
-		return
+	if name != "" || slug != "" {
+		err := s.tenancy.UpdateTenant(r.Context(), digest, name, slug)
+		switch {
+		case err == nil:
+		case errors.Is(err, tenancy.ErrForbiddenRole):
+			writeError(w, http.StatusForbidden, "forbidden", "Your role does not allow changing company settings.")
+			return
+		case isUniqueViolation(err):
+			writeError(w, http.StatusConflict, "conflict", "That company handle is already in use.")
+			return
+		default:
+			s.internal(w, "update tenant", err)
+			return
+		}
+	}
+
+	if language != "" {
+		err := s.tenancy.SetTenantLanguage(r.Context(), digest, tenancy.Language(language))
+		switch {
+		case err == nil:
+		case errors.Is(err, tenancy.ErrForbiddenRole):
+			writeError(w, http.StatusForbidden, "forbidden", "Your role does not allow changing company settings.")
+			return
+		case errors.Is(err, tenancy.ErrInvalidLanguage):
+			writeError(w, http.StatusBadRequest, "invalid_request", "Language must be one of en, pt-BR.")
+			return
+		case errors.Is(err, tenancy.ErrUnauthenticated):
+			writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in to continue.")
+			return
+		default:
+			s.internal(w, "update tenant language", err)
+			return
+		}
 	}
 
 	// Re-resolve so the response reflects what the next request will see, rather
@@ -186,13 +243,19 @@ func (s *Server) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "reload tenant", err)
 		return
 	}
-	tenant := tenantView{ID: id.TenantID, Role: id.Role}
+	tenant := tenantSettingsView{tenantView: tenantView{ID: id.TenantID, Role: id.Role}}
 	for _, m := range id.Memberships {
 		if m.TenantID == id.TenantID {
 			tenant.Name, tenant.Slug = m.TenantName, m.TenantSlug
 			break
 		}
 	}
+	current, err := s.tenantLanguage(r)
+	if err != nil {
+		s.internal(w, "read tenant language", err)
+		return
+	}
+	tenant.Language = current
 	writeJSON(w, http.StatusOK, map[string]any{"tenant": tenant})
 }
 

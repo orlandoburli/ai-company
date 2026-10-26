@@ -3,6 +3,8 @@
 import { cloneElement, useEffect, useId, useRef, useState } from "react";
 import type { Priority, Status } from "@/lib/types";
 import { PRIORITY_LABELS, STATUS_LABELS } from "@/lib/format";
+import { getCurrentLang, translate } from "@/lib/locales";
+import { useT } from "@/lib/i18n";
 import { IconCheck, IconClose } from "./icons";
 
 /* --- Buttons, fields ------------------------------------------------------ */
@@ -31,6 +33,7 @@ export function KindCombobox(props: {
   disabled?: boolean;
 }) {
   const id = useId();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const matches = props.options.filter((name) =>
@@ -46,7 +49,7 @@ export function KindCombobox(props: {
       <input
         className="input"
         role="combobox"
-        aria-label={props.ariaLabel ?? "Kind"}
+        aria-label={props.ariaLabel ?? t("field.kind")}
         aria-autocomplete="list"
         aria-expanded={open}
         aria-controls={`${id}-options`}
@@ -70,7 +73,7 @@ export function KindCombobox(props: {
         onBlur={() => setOpen(false)}
       />
       {open && !props.disabled ? (
-        <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label="Project kinds">
+        <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label={t("field.projectKinds")}>
           {matches.map((name, index) => (
             <button
               id={`${id}-option-${index}`}
@@ -92,9 +95,9 @@ export function KindCombobox(props: {
               className="picker-option picker-option--custom"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => { props.onChange(props.value.trim()); setOpen(false); }}
-            >Use “{props.value.trim()}”</button>
+            >{t("field.useValue", { value: props.value.trim() })}</button>
           ) : null}
-          {matches.length === 0 && !addCustom ? <span className="picker-empty">No project kinds yet.</span> : null}
+          {matches.length === 0 && !addCustom ? <span className="picker-empty">{t("field.noKinds")}</span> : null}
         </div>
       ) : null}
     </div>
@@ -110,6 +113,7 @@ export function LabelInput(props: {
   disabled?: boolean;
 }) {
   const id = useId();
+  const t = useT();
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -142,7 +146,7 @@ export function LabelInput(props: {
               {!props.disabled ? (
                 <button
                   type="button"
-                  aria-label={`Remove label ${label}`}
+                  aria-label={t("field.removeLabel", { label })}
                   onClick={() => props.onChange(props.value.filter((item) => item !== label))}
                 >×</button>
               ) : null}
@@ -154,12 +158,12 @@ export function LabelInput(props: {
         <input
           className="label-input__text"
           role="combobox"
-          aria-label={props.ariaLabel ?? "Add label"}
+          aria-label={props.ariaLabel ?? t("field.addLabel")}
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={`${id}-options`}
           aria-activedescendant={open && activeIndex >= 0 ? `${id}-label-option-${activeIndex}` : undefined}
-          placeholder={props.value.length ? "Add another label…" : "Type a label…"}
+          placeholder={props.value.length ? t("field.addAnotherLabel") : t("field.typeLabel")}
           value={query}
           disabled={props.disabled}
           onFocus={() => { setOpen(true); setActiveIndex(-1); }}
@@ -181,7 +185,7 @@ export function LabelInput(props: {
           }}
         />
         {open && !props.disabled && (matches.length > 0 || custom) ? (
-          <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label="Available labels">
+          <div className="picker-menu" id={`${id}-options`} role="listbox" aria-label={t("field.availableLabels")}>
             {matches.map((label, index) => (
               <button
                 id={`${id}-label-option-${index}`}
@@ -203,7 +207,7 @@ export function LabelInput(props: {
                 className="picker-option picker-option--custom"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => add(query)}
-              >Add “{query.trim()}”</button>
+              >{t("field.addValue", { value: query.trim() })}</button>
             ) : null}
           </div>
         ) : null}
@@ -221,12 +225,13 @@ export function StatusSelect(props: {
   ariaLabel?: string;
   className?: string;
 }) {
+  const t = useT();
   return (
     <select
       className={`input input--inline ${props.className ?? ""}`}
       value={props.value}
       disabled={props.disabled}
-      aria-label={props.ariaLabel ?? "Status"}
+      aria-label={props.ariaLabel ?? t("field.status")}
       onChange={(e) => props.onChange(e.target.value as Status)}
     >
       {(
@@ -246,20 +251,21 @@ export function PrioritySelect(props: {
   disabled?: boolean;
   ariaLabel?: string;
 }) {
+  const t = useT();
   const options: (Priority | null)[] = [null, "priority:p2", "priority:p1", "priority:p0"];
   return (
     <select
       className="input input--inline"
       value={props.value ?? ""}
       disabled={props.disabled}
-      aria-label={props.ariaLabel ?? "Priority"}
+      aria-label={props.ariaLabel ?? t("field.priority")}
       onChange={(e) =>
         props.onChange((e.target.value || null) as Priority | null)
       }
     >
       {options.map((p) => (
         <option key={p ?? "none"} value={p ?? ""}>
-          {p ? PRIORITY_LABELS[p] : "No priority"}
+          {p ? PRIORITY_LABELS[p] : t("field.noPriority")}
         </option>
       ))}
     </select>
@@ -321,16 +327,17 @@ export function EmptyState(props: {
 }
 
 export function ErrorBlock(props: { title?: string; message: string; retry?: () => void }) {
+  const t = useT();
   return (
     <div role="alert" className="error-note" style={{ display: "grid", gap: 8 }}>
       <div>
-        <strong>{props.title ?? "Something went wrong."}</strong>{" "}
+        <strong>{props.title ?? t("error.title")}</strong>{" "}
         {props.message}
       </div>
       {props.retry ? (
         <div>
           <button type="button" className="btn btn--sm" onClick={props.retry}>
-            Try again
+            {t("error.retry")}
           </button>
         </div>
       ) : null}
@@ -349,6 +356,7 @@ export function Dialog(props: {
   showCloseButton?: boolean;
 }) {
   const titleId = useId();
+  const t = useT();
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -376,7 +384,7 @@ export function Dialog(props: {
             <button
               type="button"
               className="btn btn--ghost btn--sm"
-              aria-label="Close dialog"
+              aria-label={t("dialog.close")}
               onClick={props.onClose}
               style={{ marginRight: -10 }}
             >
@@ -474,6 +482,7 @@ export function MenuItemCheck({ on = false }: { on?: boolean }) {
 /* --- Copy button ------------------------------------------------------------ */
 
 export function CopyButton(props: { text: string; label?: string }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -489,7 +498,7 @@ export function CopyButton(props: { text: string; label?: string }) {
         window.setTimeout(() => setCopied(false), 1600);
       }}
     >
-      {copied ? "Copied" : (props.label ?? "Copy")}
+      {copied ? t("copy.copied") : (props.label ?? t("copy.copy"))}
     </button>
   );
 }
@@ -512,8 +521,8 @@ export function Toasts(props: {
 
 export function apiErrorMessage(err: unknown): string {
   if (err instanceof Error && "code" in err) {
-    return err.message || "Something went wrong.";
+    return err.message || translate(getCurrentLang(), "error.title");
   }
   if (err instanceof Error) return err.message;
-  return "Something went wrong.";
+  return translate(getCurrentLang(), "error.title");
 }

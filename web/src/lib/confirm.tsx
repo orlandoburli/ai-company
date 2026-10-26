@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { ReactNode, KeyboardEvent } from "react";
 import { Dialog } from "@/components/primitives";
+import { useT } from "@/lib/i18n";
 
 export type ConfirmOptions = {
   title: string;
@@ -98,6 +99,7 @@ function ConfirmDialog({
   const confirmRef = useRef<HTMLButtonElement>(null);
   const settledRef = useRef(false);
   const { options } = request;
+  const t = useT();
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -157,7 +159,7 @@ function ConfirmDialog({
         {options.message ? <p className="confirm-dialog__message">{options.message}</p> : null}
         <div className="dialog__row confirm-dialog__actions">
           <button ref={cancelRef} type="button" className="btn btn--ghost" onClick={() => resolve(false)}>
-            {options.cancelLabel ?? "Cancel"}
+            {options.cancelLabel ?? t("field.cancel")}
           </button>
           <button
             ref={confirmRef}
@@ -165,7 +167,7 @@ function ConfirmDialog({
             className={`btn ${options.destructive ? "btn--confirm-danger" : "btn--primary"}`}
             onClick={() => resolve(true)}
           >
-            {options.confirmLabel ?? "Confirm"}
+            {options.confirmLabel ?? t("field.confirm")}
           </button>
         </div>
       </Dialog>
