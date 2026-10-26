@@ -546,6 +546,29 @@ which step produced it. The buttons say *why* they are disabled instead of
 just being grey.
 
 
+## A workflow begins and ends (M5)
+
+**The shape and the completeness are two checks.** The *shape* of a graph —
+the ids, the kinds, the ports, the edges, the reachability — is checked when
+a draft is saved ✓, and it accepts an empty canvas ✓ (the editor autosaves
+while a workflow is still being drawn ✓ — that must never fail ✓). The
+*completeness* — exactly one start, exactly one end, at least one node — is
+the gate on **publishing** ✓, and it is what the editor's validation panel
+shows ✓ so the person can see what the workflow still needs ✓.
+
+**Why the old behaviour went.** A graph with no explicit start and no
+explicit end used to be valid ✓: the engine fell back to "whatever has no
+incoming edge" ✓ and the flow simply stopped ✓. That was ambiguity dressed
+as flexibility ✓. The engine keeps the fallback as a **safety net** ✓ for a
+graph that somehow reaches it unvalidated ✓ — it is a net, not a licence ✓.
+
+**The codes**: `missing_start_node` ✓, `missing_end_node` ✓, `empty_graph` ✓
+(the last one moved out of the shape check ✓, where it blocked a blank
+canvas ✓, into the completeness check ✓, where it belongs ✓). Publishing an
+incomplete template is a `422 template_invalid` ✓ that names what is
+missing ✓ — not a crash ✓.
+
+
 ## The language (M5)
 
 **A company declares the language its work is done in.** The tenant carries
