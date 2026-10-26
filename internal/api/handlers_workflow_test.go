@@ -184,7 +184,7 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	}
 	template := created.json(t)["template"].(map[string]any)
 	templateID := template["id"].(string)
-	if template["tenant_id"] != tenantID || template["created_by"] == "" || template["graph"] == nil {
+	if template["tenant_id"] != tenantID || template["created_by"] == "" || template["graph"] == nil || template["disabled_at"] != nil {
 		t.Fatalf("template response omitted stored fields: %v", template)
 	}
 
@@ -219,6 +219,21 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	if remove.status != http.StatusConflict || workflowErrCode(t, remove) != "template_published" {
 		t.Fatalf("delete published template: %d %s", remove.status, remove.body)
 	}
+	disabled := h.do("POST", "/api/workflow-templates/"+templateID+"/disable", nil, ownerCookie)
+	if disabled.status != http.StatusOK || disabled.json(t)["template"].(map[string]any)["disabled_at"] == nil {
+		t.Fatalf("disable published template: %d %s", disabled.status, disabled.body)
+	}
+	if republish := h.do("POST", "/api/workflow-templates/"+templateID+"/publish", nil, ownerCookie); republish.status != http.StatusConflict || workflowErrCode(t, republish) != "template_disabled" {
+		t.Fatalf("publish disabled template: %d %s", republish.status, republish.body)
+	}
+	listedDisabled := h.do("GET", "/api/workflow-templates", nil, ownerCookie)
+	if listedDisabled.status != http.StatusOK || listedDisabled.json(t)["templates"].([]any)[0].(map[string]any)["disabled_at"] == nil {
+		t.Fatalf("list disabled template: %d %s", listedDisabled.status, listedDisabled.body)
+	}
+	enabled := h.do("POST", "/api/workflow-templates/"+templateID+"/enable", nil, ownerCookie)
+	if enabled.status != http.StatusOK || enabled.json(t)["template"].(map[string]any)["disabled_at"] != nil {
+		t.Fatalf("enable published template: %d %s", enabled.status, enabled.body)
+	}
 	version := h.do("POST", "/api/workflow-templates/"+templateID+"/versions", nil, ownerCookie)
 	if version.status != http.StatusCreated || version.json(t)["template"].(map[string]any)["version"].(float64) != 2 {
 		t.Fatalf("new version: %d %s", version.status, version.body)
@@ -242,6 +257,9 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	if res := h.do("POST", "/api/workflow-templates", templateBody("Member"), memberCookie); res.status != http.StatusForbidden {
 		t.Fatalf("member create template: %d %s", res.status, res.body)
 	}
+	if res := h.do("POST", "/api/workflow-templates/"+templateID+"/disable", nil, memberCookie); res.status != http.StatusForbidden {
+		t.Fatalf("member disable template: %d %s", res.status, res.body)
+	}
 	guestCookie := h.addMember(tenantID, "guest@example.com", tenancy.RoleGuest)
 	if res := h.do("GET", "/api/workflow-templates", nil, guestCookie); res.status != http.StatusOK {
 		t.Fatalf("guest read templates: %d %s", res.status, res.body)
@@ -258,6 +276,12 @@ func TestWorkflowTemplateHTTPAndRoles(t *testing.T) {
 	foreignID := foreign.json(t)["template"].(map[string]any)["id"].(string)
 	if res := h.do("GET", "/api/workflow-templates/"+foreignID, nil, ownerCookie); res.status != http.StatusNotFound || workflowErrCode(t, res) != "template_not_found" {
 		t.Fatalf("cross-tenant template read: %d %s", res.status, res.body)
+	}
+	if res := h.do("POST", "/api/workflow-templates/"+templateID+"/disable", nil, ownerCookie); res.status != http.StatusOK {
+		t.Fatalf("disable before removal: %d %s", res.status, res.body)
+	}
+	if res := h.do("DELETE", "/api/workflow-templates/"+templateID, nil, ownerCookie); res.status != http.StatusNoContent {
+		t.Fatalf("delete disabled published template: %d %s", res.status, res.body)
 	}
 }
 

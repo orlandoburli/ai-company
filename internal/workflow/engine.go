@@ -179,6 +179,9 @@ func (e *Engine) StartRun(ctx context.Context, sc tenancy.Scope, templateID, ite
 	if err != nil {
 		return Run{}, err
 	}
+	if tpl.DisabledAt != nil {
+		return Run{}, TemplateDisabledError{}
+	}
 	if _, err := ParseTemplate(tpl.GraphJSON); err != nil {
 		return Run{}, err
 	}

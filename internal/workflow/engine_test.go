@@ -71,6 +71,34 @@ func (f *engineFixture) createRun(t *testing.T, graph Template) Run {
 	return run
 }
 
+func TestStartRunRefusesDisabledTemplateAsConfigurationFailure(t *testing.T) {
+	f := newEngineFixture(t)
+	ctx := context.Background()
+	graph := Template{SchemaVersion: 1, Nodes: []Node{{
+		ID: "n", Kind: NodeAgent, Name: "work", Type: "agent.worker", TypeVersion: 1,
+		Config: json.RawMessage(`{"agent_id":"agent"}`), OnError: OnErrorStop,
+	}}, Edges: []Edge{}}
+	tpl, err := f.store.CreateTemplate(ctx, f.sc, NewTemplate{Name: "retired", Graph: graph, CreatedBy: f.sc.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.store.PublishTemplate(ctx, f.sc, tpl.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.store.DisableTemplate(ctx, f.sc, tpl.ID); err != nil {
+		t.Fatal(err)
+	}
+	e := NewEngine(EngineDeps{Store: f.store})
+	if _, err = e.StartRun(ctx, f.sc, tpl.ID, "", f.sc.UserID); !errors.Is(err, ErrTemplateDisabled) {
+		t.Fatalf("StartRun disabled template error = %v", err)
+	} else {
+		var classified interface{ FailureKind() FailureKind }
+		if !errors.As(err, &classified) || classified.FailureKind() != FailureCapability {
+			t.Fatalf("disabled template failure classification = %v, want capability", err)
+		}
+	}
+}
+
 type engineAdapter struct {
 	output      string
 	failure     error

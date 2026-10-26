@@ -18,6 +18,7 @@ var (
 	ErrNotFound          = errors.New("workflow: not found")
 	ErrAlreadyDecided    = errors.New("workflow: checkpoint already decided")
 	ErrTemplatePublished = errors.New("workflow: template published")
+	ErrTemplateDisabled  = errors.New("workflow: template disabled")
 	ErrTemplateInUse     = errors.New("workflow: template in use")
 	ErrTerminal          = errors.New("workflow: terminal")
 	ErrClaimLost         = errors.New("workflow: claim lost")
@@ -94,8 +95,19 @@ type TemplateRow struct {
 	MaxConcurrency     int
 	CreatedBy          string
 	PublishedAt        *time.Time
+	DisabledAt         *time.Time
 	CreatedAt          time.Time
 }
+
+// TemplateDisabledError marks a retired template as an invalid run configuration.
+type TemplateDisabledError struct{}
+
+func (TemplateDisabledError) Error() string {
+	return ErrTemplateDisabled.Error() + ": retired templates cannot start runs"
+}
+func (TemplateDisabledError) Unwrap() error            { return ErrTemplateDisabled }
+func (TemplateDisabledError) FailureKind() FailureKind { return FailureCapability }
+
 type NewTemplate struct {
 	Name           string
 	AppliesTo      string
@@ -110,20 +122,21 @@ type TemplatePatch struct {
 	MaxConcurrency *int
 }
 
-const templateCols = `id, tenant_id, name, version, applies_to, graph_json, max_concurrency, created_by, published_at, created_at`
+const templateCols = `id, tenant_id, name, version, applies_to, graph_json, max_concurrency, created_by, published_at, disabled_at, created_at`
 
 func scanTemplate(r rowScanner) (TemplateRow, error) {
 	var x TemplateRow
 	var raw []byte
 	var by sql.NullString
-	var pub sql.NullTime
-	err := r.Scan(&x.ID, &x.TenantID, &x.Name, &x.Version, &x.AppliesTo, &raw, &x.MaxConcurrency, &by, &pub, &x.CreatedAt)
+	var pub, disabled sql.NullTime
+	err := r.Scan(&x.ID, &x.TenantID, &x.Name, &x.Version, &x.AppliesTo, &raw, &x.MaxConcurrency, &by, &pub, &disabled, &x.CreatedAt)
 	if err != nil {
 		return x, err
 	}
 	x.GraphJSON = raw
 	x.CreatedBy = nullString(by)
 	x.PublishedAt = nullableTime(pub)
+	x.DisabledAt = nullableTime(disabled)
 	return x, nil
 }
 func (s *Store) CreateTemplate(ctx context.Context, sc tenancy.Scope, in NewTemplate) (TemplateRow, error) {
@@ -173,6 +186,9 @@ func (s *Store) UpdateTemplate(ctx context.Context, sc tenancy.Scope, id string,
 		if old.PublishedAt != nil {
 			return ErrTemplatePublished
 		}
+		if old.DisabledAt != nil {
+			return ErrTemplateDisabled
+		}
 		if p.Graph != nil {
 			if e = p.Graph.Validate(); e != nil {
 				return e
@@ -206,12 +222,15 @@ func (s *Store) PublishTemplate(ctx context.Context, sc tenancy.Scope, id string
 	var out TemplateRow
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
 		var e error
-		out, e = scanTemplate(tx.QueryRowContext(ctx, `UPDATE workflow_templates SET published_at=now() WHERE id=$1 AND published_at IS NULL RETURNING `+templateCols, id))
+		out, e = scanTemplate(tx.QueryRowContext(ctx, `UPDATE workflow_templates SET published_at=now() WHERE id=$1 AND published_at IS NULL AND disabled_at IS NULL RETURNING `+templateCols, id))
 		if errors.Is(e, sql.ErrNoRows) {
 			out, e = scanTemplate(tx.QueryRowContext(ctx, `SELECT `+templateCols+` FROM workflow_templates WHERE id=$1`, id))
 		}
 		if errors.Is(e, sql.ErrNoRows) {
 			return ErrNotFound
+		}
+		if e == nil && out.DisabledAt != nil {
+			return ErrTemplateDisabled
 		}
 		return e
 	})
@@ -257,6 +276,36 @@ func (s *Store) ListTemplates(ctx context.Context, sc tenancy.Scope, onlyPublish
 	})
 	return out, err
 }
+
+// DisableTemplate retires a template without changing its immutable published definition.
+func (s *Store) DisableTemplate(ctx context.Context, sc tenancy.Scope, id string) (TemplateRow, error) {
+	return s.setTemplateDisabled(ctx, sc, id, true)
+}
+
+// EnableTemplate clears a template's retired marker. Published definitions remain immutable.
+func (s *Store) EnableTemplate(ctx context.Context, sc tenancy.Scope, id string) (TemplateRow, error) {
+	return s.setTemplateDisabled(ctx, sc, id, false)
+}
+
+func (s *Store) setTemplateDisabled(ctx context.Context, sc tenancy.Scope, id string, disabled bool) (TemplateRow, error) {
+	var out TemplateRow
+	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
+		const update = `UPDATE workflow_templates SET disabled_at=CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1 AND (($2 AND disabled_at IS NULL) OR (NOT $2 AND disabled_at IS NOT NULL)) RETURNING `
+		var e error
+		out, e = scanTemplate(tx.QueryRowContext(ctx, update+templateCols, id, disabled))
+		if errors.Is(e, sql.ErrNoRows) {
+			out, e = scanTemplate(tx.QueryRowContext(ctx, `SELECT `+templateCols+` FROM workflow_templates WHERE id=$1`, id))
+		}
+		if errors.Is(e, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return e
+	})
+	if err != nil {
+		return TemplateRow{}, mapError(err)
+	}
+	return out, nil
+}
 func (s *Store) GetTemplateVersion(ctx context.Context, sc tenancy.Scope, name string, version int) (TemplateRow, error) {
 	var out TemplateRow
 	err := s.withTenant(ctx, sc, func(ctx context.Context, tx *sql.Tx) error {
@@ -278,7 +327,7 @@ func (s *Store) DeleteTemplate(ctx context.Context, sc tenancy.Scope, id string)
 		if e != nil {
 			return e
 		}
-		if x.PublishedAt != nil {
+		if x.PublishedAt != nil && x.DisabledAt == nil {
 			return ErrTemplatePublished
 		}
 		var used bool

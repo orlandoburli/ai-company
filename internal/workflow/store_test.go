@@ -106,6 +106,50 @@ func TestWorkflowTemplateLifecycleAndTenantIsolation(t *testing.T) {
 	if err = f.st.DeleteTemplate(ctx, f.t1, unused.ID); err != nil {
 		t.Fatalf("delete draft: %v", err)
 	}
+
+	retiring, err := f.st.CreateTemplate(ctx, f.t1, workflow.NewTemplate{Name: "retiring", Graph: graph(), CreatedBy: f.t1.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiring, err = f.st.PublishTemplate(ctx, f.t1, retiring.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiring, err = f.st.DisableTemplate(ctx, f.t1, retiring.ID)
+	if err != nil || retiring.DisabledAt == nil {
+		t.Fatalf("disable published template: %+v %v", retiring, err)
+	}
+	listed, err := f.st.ListTemplates(ctx, f.t1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDisabled := false
+	for _, row := range listed {
+		if row.ID == retiring.ID && row.DisabledAt != nil {
+			foundDisabled = true
+		}
+	}
+	if !foundDisabled {
+		t.Fatal("published template list omitted the disabled marker")
+	}
+	if _, err = f.st.PublishTemplate(ctx, f.t1, retiring.ID); !errors.Is(err, workflow.ErrTemplateDisabled) {
+		t.Fatalf("republish disabled template: %v", err)
+	}
+	clone, err := f.st.NewTemplateVersion(ctx, f.t1, retiring.ID)
+	if err != nil || clone.DisabledAt != nil || clone.Version != retiring.Version+1 {
+		t.Fatalf("copy retired template into new version: %+v %v", clone, err)
+	}
+	retiring, err = f.st.EnableTemplate(ctx, f.t1, retiring.ID)
+	if err != nil || retiring.DisabledAt != nil {
+		t.Fatalf("enable published template: %+v %v", retiring, err)
+	}
+	retiring, err = f.st.DisableTemplate(ctx, f.t1, retiring.ID)
+	if err != nil || retiring.DisabledAt == nil {
+		t.Fatalf("disable again: %+v %v", retiring, err)
+	}
+	if err = f.st.DeleteTemplate(ctx, f.t1, retiring.ID); err != nil {
+		t.Fatalf("delete disabled published template: %v", err)
+	}
 }
 
 func TestRunStepClaimTerminalAndSupersede(t *testing.T) {

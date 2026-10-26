@@ -22,6 +22,8 @@ func (s *Server) registerWorkflowTemplateRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/workflow-templates/{id}", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleDeleteWorkflowTemplate)))
 	mux.Handle("POST /api/workflow-templates/{id}/publish", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handlePublishWorkflowTemplate)))
 	mux.Handle("POST /api/workflow-templates/{id}/versions", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleNewWorkflowTemplateVersion)))
+	mux.Handle("POST /api/workflow-templates/{id}/disable", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleDisableWorkflowTemplate)))
+	mux.Handle("POST /api/workflow-templates/{id}/enable", s.authenticated(s.requireRole(tenancy.Role.CanManageSettings, s.handleEnableWorkflowTemplate)))
 }
 
 // registerWorkflowValidateRoute installs the read-only graph validation API.
@@ -46,6 +48,7 @@ type workflowTemplateResponse struct {
 	MaxConcurrency int                       `json:"max_concurrency"`
 	CreatedBy      string                    `json:"created_by"`
 	PublishedAt    any                       `json:"published_at"`
+	DisabledAt     any                       `json:"disabled_at"`
 	CreatedAt      any                       `json:"created_at"`
 	Versions       []workflowTemplateVersion `json:"versions,omitempty"`
 }
@@ -67,6 +70,7 @@ type workflowTemplateSummary struct {
 	AppliesTo      string `json:"applies_to"`
 	MaxConcurrency int    `json:"max_concurrency"`
 	PublishedAt    any    `json:"published_at"`
+	DisabledAt     any    `json:"disabled_at"`
 	CreatedAt      any    `json:"created_at"`
 }
 
@@ -78,7 +82,7 @@ func templateResponse(row workflow.TemplateRow) (workflowTemplateResponse, error
 	return workflowTemplateResponse{
 		ID: row.ID, TenantID: row.TenantID, Name: row.Name, Version: row.Version,
 		AppliesTo: row.AppliesTo, Graph: graph, MaxConcurrency: row.MaxConcurrency,
-		CreatedBy: row.CreatedBy, PublishedAt: row.PublishedAt, CreatedAt: row.CreatedAt,
+		CreatedBy: row.CreatedBy, PublishedAt: row.PublishedAt, DisabledAt: row.DisabledAt, CreatedAt: row.CreatedAt,
 	}, nil
 }
 
@@ -101,7 +105,7 @@ func (s *Server) handleListWorkflowTemplates(w http.ResponseWriter, r *http.Requ
 		items = append(items, workflowTemplateSummary{
 			ID: row.ID, TenantID: row.TenantID, Name: row.Name, Version: row.Version,
 			AppliesTo: row.AppliesTo, MaxConcurrency: row.MaxConcurrency,
-			PublishedAt: row.PublishedAt, CreatedAt: row.CreatedAt,
+			PublishedAt: row.PublishedAt, DisabledAt: row.DisabledAt, CreatedAt: row.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"templates": items})
@@ -354,6 +358,43 @@ func (s *Server) handleNewWorkflowTemplateVersion(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusCreated, map[string]any{"template": result})
 }
 
+func (s *Server) handleDisableWorkflowTemplate(w http.ResponseWriter, r *http.Request) {
+	s.setWorkflowTemplateDisabled(w, r, true)
+}
+
+func (s *Server) handleEnableWorkflowTemplate(w http.ResponseWriter, r *http.Request) {
+	s.setWorkflowTemplateDisabled(w, r, false)
+}
+
+func (s *Server) setWorkflowTemplateDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
+	sc, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	if s.workflows == nil {
+		writeWorkflowUnavailable(w)
+		return
+	}
+	var row workflow.TemplateRow
+	var err error
+	if disabled {
+		row, err = s.workflows.DisableTemplate(r.Context(), sc, r.PathValue("id"))
+	} else {
+		row, err = s.workflows.EnableTemplate(r.Context(), sc, r.PathValue("id"))
+	}
+	if err != nil {
+		s.writeWorkflowTemplateError(w, err)
+		return
+	}
+	result, err := templateResponse(row)
+	if err != nil {
+		s.log.Error("decode stored workflow template", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "Something went wrong.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"template": result})
+}
+
 func parseWorkflowGraph(raw json.RawMessage) (*workflow.Template, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("invalid_graph: graph is required")
@@ -381,6 +422,8 @@ func (s *Server) writeWorkflowTemplateError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "template_not_found", "That workflow template does not exist in this tenant.")
 	case errors.Is(err, workflow.ErrTemplatePublished):
 		writeError(w, http.StatusConflict, "template_published", "Published templates are immutable; create a new version to change this template.")
+	case errors.Is(err, workflow.ErrTemplateDisabled):
+		writeError(w, http.StatusConflict, "template_disabled", "Disabled templates are retired; enable the template or create a new version.")
 	case errors.Is(err, workflow.ErrTemplateInUse):
 		writeError(w, http.StatusConflict, "template_in_use", "That template is used by a workflow run and cannot be deleted.")
 	default:

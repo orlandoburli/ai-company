@@ -215,6 +215,10 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		s.writeRunError(w, err, "template")
 		return
 	}
+	if requested.DisabledAt != nil {
+		writeError(w, http.StatusConflict, "template_disabled", "That workflow template is disabled and cannot start a run.")
+		return
+	}
 	published, err := s.workflows.ListTemplates(r.Context(), sc, true)
 	if err != nil {
 		s.writeRunError(w, err, "template")
@@ -224,6 +228,9 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	for i := range published {
 		candidate := &published[i]
 		if candidate.Name != requested.Name {
+			continue
+		}
+		if candidate.DisabledAt != nil {
 			continue
 		}
 		if req.TemplateVersion != nil && candidate.Version != *req.TemplateVersion {
@@ -242,6 +249,8 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, workflow.ErrNotFound) {
 			writeError(w, http.StatusUnprocessableEntity, "template_not_published", "The selected template is no longer published.")
+		} else if errors.Is(err, workflow.ErrTemplateDisabled) {
+			writeError(w, http.StatusConflict, "template_disabled", "That workflow template is disabled and cannot start a run.")
 		} else if errors.Is(err, workflow.ErrUnknownLanguage) {
 			writeError(w, http.StatusBadRequest, "invalid_request", "Language must be one of en, pt-BR.")
 		} else if isWorkflowValidationError(err) {
